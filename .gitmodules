@@ -1,0 +1,21 @@
+[submodule "deps/b4"]
+	path = deps/b4
+	url = https://git.kernel.org/pub/scm/utils/b4/b4.git
+[submodule "deps/liblore"]
+	path = deps/liblore
+	url = https://git.kernel.org/pub/scm/utils/liblore/liblore.git
+[submodule "deps/review-prompts"]
+	path = deps/review-prompts
+	url = https://github.com/masoncl/review-prompts.git
+[submodule "deps/kernel-style"]
+	path = deps/kernel-style
+	url = https://github.com/rikvanriel/kernel-style.git
+[submodule "deps/virtme-ng"]
+	path = deps/virtme-ng
+	url = https://github.com/arighi/virtme-ng.git
+[submodule "deps/kres"]
+	path = deps/kres
+	url = https://github.com/masoncl/kres.git
+[submodule "deps/semcode"]
+	path = deps/semcode
+	url = https://github.com/facebookexperimental/semcode.git
