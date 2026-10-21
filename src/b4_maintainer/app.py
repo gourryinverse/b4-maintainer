@@ -37,7 +37,7 @@ from .reader import (
     root_label,
     thread_replies,
 )
-from .rows import DEFAULT_SYMBOLS, Symbols, render_row
+from .rows import DEFAULT_SYMBOLS, Segments, Symbols, row_segments
 from .views import ViewIndex
 from .widgets import TextPane, printable
 from .workspace import Snapshot
@@ -45,10 +45,22 @@ from .workspace import Snapshot
 FIXES_STYLE = Style(color='dark_orange')
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
+# Author names by MAINTAINERS role.
+ROLE_STYLES = {'maintainer': Style(color='green'), 'reviewer': Style(color='blue')}
 
 
 class AgentLauncher(Protocol):
     def launch(self, request: Any) -> None: ...
+
+
+class SourceActions(Protocol):
+    """Explicit maintainer actions on a live workspace; both block, so run in workers."""
+
+    def refresh(self, progress: Callable[[str], None]) -> str: ...
+
+    def track(self, item: WorkItem) -> str: ...
+
+    def toggle_hidden(self, item: WorkItem) -> str: ...
 
 
 class SeriesList(ScrollView, can_focus=True):
@@ -78,7 +90,7 @@ class SeriesList(ScrollView, can_focus=True):
         self.project_width = 0
         self.cursor = 0
         self._items: tuple[WorkItem, ...] = ()
-        self._rows: dict[int, str] = {}
+        self._rows: dict[int, Segments] = {}
 
     @property
     def row_count(self) -> int:
@@ -98,10 +110,15 @@ class SeriesList(ScrollView, can_focus=True):
         self.refresh()
         self.post_message(self.Highlighted(self.highlighted_item))
 
-    def _row(self, index: int) -> str:
+    def select_identity(self, identity: str, fallback: int = 0) -> None:
+        """Move to the item with this identity, else to the fallback position."""
+        index = next((n for n, i in enumerate(self._items) if i.identity == identity), fallback)
+        self._set_cursor(index)
+
+    def _row(self, index: int) -> Segments:
         row = self._rows.get(index)
         if row is None:
-            row = render_row(self._items[index], self.symbols, self.project_width)
+            row = row_segments(self._items[index], self.symbols, self.project_width)
             self._rows[index] = row
         return row
 
@@ -116,9 +133,15 @@ class SeriesList(ScrollView, can_focus=True):
             style = FIXES_STYLE
         elif item.state.unread:
             style = UNREAD_STYLE
-        if index == self.cursor:
-            style = style + CURSOR_STYLE
-        return Strip([Segment(pad_display(self._row(index), width), style)], width)
+        segments = []
+        for text, role in self._row(index):
+            seg_style = style + ROLE_STYLES[role] if role in ROLE_STYLES else style
+            if index == self.cursor:
+                seg_style = seg_style + CURSOR_STYLE
+            segments.append(Segment(text, seg_style))
+        fill = style + CURSOR_STYLE if index == self.cursor else style
+        segments.append(Segment(' ' * width, fill))
+        return Strip(segments).crop(0, width)
 
     def _set_cursor(self, index: int) -> None:
         if not self._items:
@@ -236,6 +259,11 @@ class MaintainerApp(App[None]):
         Binding('n', 'next_comment', 'next comment'),
         Binding('z', 'toggle_quotes', 'quotes'),
         Binding('p', 'toggle_preview', 'preview'),
+        Binding('t', 'track', 'track'),
+        # One key; the enabled action (and footer label) follows the item's state.
+        Binding('x', 'hide', 'hide'),
+        Binding('x', 'unhide', 'unhide'),
+        Binding('r', 'refresh', 'refresh'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
         Binding('Q', 'quit', 'quit'),
     ]
@@ -247,9 +275,13 @@ class MaintainerApp(App[None]):
         breakpoints: Optional[Breakpoints] = None,
         symbols: Symbols = DEFAULT_SYMBOLS,
         thread_loader: Callable[[Series], SeriesThread] = load_thread,
+        actions: Optional[SourceActions] = None,
     ) -> None:
         super().__init__()
         self._loader = loader
+        self._actions = actions
+        self._notice = ''
+        self._item_keys: Optional[tuple[Optional[bool], Optional[bool]]] = None
         self._thread_loader = thread_loader
         # Held for explicit maintainer launches; passive actions never call it.
         self.launcher = launcher
@@ -310,6 +342,10 @@ class MaintainerApp(App[None]):
         self.call_from_thread(self._apply_snapshot, snapshot, index)
 
     def _apply_snapshot(self, snapshot: Snapshot, index: ViewIndex) -> None:
+        # A reload keeps the view and selection when they still exist.
+        previous = self._series_list.highlighted_item if self.snapshot else None
+        position = self._series_list.cursor
+        view = self.current_view if any(v.id == self.current_view for v in index.views) else 'all'
         self.snapshot = snapshot
         self.index = index
         if self._breakpoints is None:
@@ -325,7 +361,9 @@ class MaintainerApp(App[None]):
         self._drawer = self._drawer_line()
         self.query_one('#drawer', Static).update(self._drawer)
         self.query_one('#drawer-panel', Static).update(self._drawer_panel())
-        self.select_view('all', force=True)
+        self.select_view(view, force=True)
+        if previous is not None:
+            self._series_list.select_identity(previous.identity, fallback=position)
 
     def select_view(self, view_id: str, force: bool = False) -> None:
         if self.index is None or (view_id == self.current_view and not force):
@@ -360,6 +398,15 @@ class MaintainerApp(App[None]):
     def on_series_list_highlighted(self, event: SeriesList.Highlighted) -> None:
         self._item = event.item
         self._show_summary()
+        # Rebuilding the footer is costly; only do it when a per-item key's state flips.
+        keys = (
+            (self.check_action('track', ()), self.check_action('hide', ()))
+            if self.screen_stack
+            else None
+        )
+        if keys != self._item_keys:
+            self._item_keys = keys
+            self.refresh_bindings()
 
     def _show_summary(self) -> None:
         self._summary = self._summary_for(self._item)
@@ -407,6 +454,21 @@ class MaintainerApp(App[None]):
             return reading or (narrow and summary_open)
         if action == 'toggle_preview':
             return not reading
+        if action == 'refresh':
+            return self._actions is not None and not reading
+        if action in ('hide', 'unhide'):
+            item = self._item
+            if self._actions is None or reading or item is None:
+                return False
+            return item.hidden == (action == 'unhide')
+        if action == 'track':
+            item = self._item
+            return (
+                self._actions is not None
+                and not reading
+                and item is not None
+                and not item.state.to_review
+            )
         if action in ('next_post', 'next_comment', 'toggle_quotes'):
             if not reading or self._thread is None:
                 return False
@@ -629,14 +691,79 @@ class MaintainerApp(App[None]):
     def action_toggle_drawer(self) -> None:
         self.screen.toggle_class('-drawer-open')
 
+    def action_refresh(self) -> None:
+        actions = self._actions
+        if actions is None:
+            return
+
+        def work() -> None:
+            def progress(message: str) -> None:
+                self.call_from_thread(self._set_notice, message)
+
+            try:
+                result, reload = actions.refresh(progress), True
+            except Exception as exc:  # Network and b4 failures are shown, not raised.
+                result, reload = f'Refresh failed: {type(exc).__name__}: {exc}', False
+            self.call_from_thread(self._action_done, result, reload)
+
+        self._set_notice('Refreshing…')
+        self.run_worker(work, thread=True, group='action', exclusive=True)
+
+    def action_track(self) -> None:
+        actions, item = self._actions, self._item
+        if actions is None or item is None:
+            return
+
+        def work() -> None:
+            try:
+                result, reload = actions.track(item), True
+            except Exception as exc:
+                result, reload = f'Track failed: {exc}', False
+            self.call_from_thread(self._action_done, result, reload)
+
+        self._set_notice(f'Tracking {item.series.subject}…')
+        self.run_worker(work, thread=True, group='action', exclusive=True)
+
+    def action_hide(self) -> None:
+        self._toggle_hidden()
+
+    def action_unhide(self) -> None:
+        self._toggle_hidden()
+
+    def _toggle_hidden(self) -> None:
+        actions, item = self._actions, self._item
+        if actions is None or item is None:
+            return
+
+        def work() -> None:
+            try:
+                result, reload = actions.toggle_hidden(item), True
+            except Exception as exc:
+                result, reload = f'Hide failed: {exc}', False
+            self.call_from_thread(self._action_done, result, reload)
+
+        self.run_worker(work, thread=True, group='action', exclusive=True)
+
+    def _set_notice(self, notice: str) -> None:
+        self._notice = notice
+        if self.index is not None:
+            self._update_status()
+
+    def _action_done(self, notice: str, reload: bool) -> None:
+        self._set_notice(notice)
+        if reload:
+            self.run_worker(self._load, thread=True, name='load', exclusive=True)
+
     def _update_status(self) -> None:
         assert self.index is not None
         view = next(v for v in self.index.views if v.id == self.current_view)
-        status = f' b4-maintainer — {view.label} ({self.index.count(view.id)}) · fixture data'
+        status = f' b4-maintainer — {view.label} ({self.index.count(view.id)})'
+        if self._actions is None:
+            status += ' · fixture data'
+        if self._notice:
+            status += f' · {self._notice}'
         if self.index.needs_setup:
-            status += (
-                ' · No subsystem profiles configured: set up profiles to fill My Responsibilities'
-            )
+            status += ' · No subsystem profiles configured: add [[profiles]] with lists to browse'
         self._set_status(status)
 
     def _set_status(self, status: str) -> None:

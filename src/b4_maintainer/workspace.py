@@ -2,10 +2,15 @@
 """Workspace configuration, project routing, and series identity merging."""
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Collection, Iterable, Mapping, Optional
 
 from .layout import Breakpoints
 from .model import Authority, Series, SeriesState, WorkItem
+
+
+def list_id(name: str) -> str:
+    """Lore's list-ID form (linux-mm.kvack.org) of a list address or list ID."""
+    return name.strip().lower().replace('@', '.', 1)
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,11 @@ class Project:
     short: str
     lists: tuple[str, ...]
     refs: tuple[Ref, ...] = ()
+    path: str = ''
+    # Ownership: MAINTAINERS in the checkout, asked through get_maintainer
+    # (default: scripts/get_maintainer.pl when present; empty disables).
+    maintainers: str = 'MAINTAINERS'
+    get_maintainer: Optional[tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +68,7 @@ class Workspace:
     profiles: tuple[Profile, ...] = ()
     sessions: tuple[Session, ...] = ()
     breakpoints: Breakpoints = Breakpoints()
+    window_days: int = 14
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -66,10 +77,15 @@ class Workspace:
                 id=p['id'],
                 label=p.get('label', p['id']),
                 short=p.get('short', p['id'][:4]),
-                lists=tuple(lst.lower() for lst in p.get('lists', [])),
+                lists=tuple(list_id(lst) for lst in p.get('lists', [])),
                 refs=tuple(
                     Ref(r['label'], r['name'], Authority[r['authority'].upper()])
                     for r in p.get('refs', [])
+                ),
+                path=p.get('path', f'projects/{p["id"]}'),
+                maintainers=p.get('maintainers', 'MAINTAINERS'),
+                get_maintainer=(
+                    tuple(p['get_maintainer']) if p.get('get_maintainer') is not None else None
                 ),
             )
             for p in config.get('projects', [])
@@ -79,7 +95,7 @@ class Workspace:
                 id=p['id'],
                 label=p.get('label', p['id']),
                 project=p['project'],
-                lists=tuple(lst.lower() for lst in p.get('lists', [])),
+                lists=tuple(list_id(lst) for lst in p.get('lists', [])),
                 paths=tuple(p.get('paths', [])),
                 enabled=p.get('enabled', True),
             )
@@ -102,6 +118,7 @@ class Workspace:
             profiles=profiles,
             sessions=sessions,
             breakpoints=Breakpoints.from_config(config.get('layout', {})),
+            window_days=int(config.get('browse', {}).get('window_days', 14)),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:
@@ -131,6 +148,36 @@ def _merge_postings(a: Series, b: Series) -> Series:
     )
 
 
+def family_key(series: Series) -> str:
+    """b4's fallback for finding a series' other revisions: sender plus subject."""
+    return f'{series.author_email.lower()}\0{" ".join(series.subject.lower().split())}'
+
+
+def _families(series: Iterable[Series]) -> dict[str, str]:
+    """Map each posting's identity to its series identity.
+
+    Change-ids are authoritative and never merge with each other. Postings
+    without one join the family's only change-id, or, absent any, each other.
+    Several change-ids for one family are ambiguous; those postings stay apart.
+    """
+    groups: dict[str, list[Series]] = {}
+    for s in series:
+        groups.setdefault(family_key(s), []).append(s)
+    canonical: dict[str, str] = {}
+    for group in groups.values():
+        with_id = {s.identity for s in group if s.change_id}
+        loose = [s for s in group if not s.change_id]
+        if len(with_id) == 1:
+            target = next(iter(with_id))
+        elif not with_id and loose:
+            target = max(loose, key=lambda s: s.revision).identity
+        else:
+            target = None
+        for s in group:
+            canonical[s.identity] = s.identity if s.change_id or target is None else target
+    return canonical
+
+
 def _route(series: Series, ws: Workspace) -> tuple[Optional[str], tuple[str, ...]]:
     """Suggest a project from list membership; ambiguity needs confirmation."""
     lists = set(series.list_candidates())
@@ -141,22 +188,42 @@ def _route(series: Series, ws: Workspace) -> tuple[Optional[str], tuple[str, ...
 
 
 def build_items(
-    series: Iterable[Series], states: Mapping[str, SeriesState], ws: Workspace
+    series: Iterable[Series],
+    states: Mapping[str, SeriesState],
+    ws: Workspace,
+    assigned: Optional[Mapping[str, str]] = None,
+    responsible: Collection[str] = (),
 ) -> tuple[WorkItem, ...]:
-    """One work item per series identity, showing its latest revision."""
+    """One work item per series identity, showing its latest revision.
+
+    *assigned* maps identities to projects already chosen, e.g. by native tracking.
+    *responsible* holds identities of series the maintainer maintains.
+    """
+    series = list(series)
+    canonical = _families(series)
+    members: dict[str, list[str]] = {}
     latest: dict[str, Series] = {}
     versions: dict[str, set[int]] = {}
     for s in series:
-        versions.setdefault(s.identity, set()).add(s.revision)
-        current = latest.get(s.identity)
+        identity = canonical[s.identity]
+        if s.identity not in members.setdefault(identity, []):
+            members[identity].append(s.identity)
+        versions.setdefault(identity, set()).add(s.revision)
+        current = latest.get(identity)
         if current is None or s.revision > current.revision:
-            latest[s.identity] = s
+            latest[identity] = replace(s, identity=identity)
         elif s.revision == current.revision:
-            latest[s.identity] = _merge_postings(current, s)
+            latest[identity] = _merge_postings(current, s)
+
+    def first(mapping: Mapping[str, Any], identity: str) -> Any:
+        return next((mapping[m] for m in [identity, *members[identity]] if m in mapping), None)
 
     items = []
     for identity, s in latest.items():
         project, candidates = _route(s, ws)
+        chosen = first(assigned or {}, identity)
+        if chosen:
+            project, candidates = chosen, ()
         routes = {project, *candidates}
         profiles = frozenset(
             p.id for p in ws.profiles if p.enabled and p.project in routes and p.matches(s)
@@ -165,12 +232,13 @@ def build_items(
         items.append(
             WorkItem(
                 series=s,
-                state=states.get(identity, SeriesState()),
+                state=first(states, identity) or SeriesState(),
                 project=project,
                 project_short=proj.short if proj else '',
                 candidates=candidates,
                 profiles=profiles,
                 versions=tuple(sorted(versions[identity])),
+                responsible=any(m in responsible for m in [identity, *members[identity]]),
             )
         )
     # Newest first; undated postings last.

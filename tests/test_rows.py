@@ -2,7 +2,14 @@ from b4._textwidth import display_width
 
 from b4_maintainer.fixtures import make_item
 from b4_maintainer.model import Authority, Coverage, Progress
-from b4_maintainer.rows import DEFAULT_SYMBOLS, Symbols, render_row, tree_field
+from b4_maintainer.rows import (
+    AUTHOR_WIDTH,
+    DEFAULT_SYMBOLS,
+    Symbols,
+    render_row,
+    row_segments,
+    tree_field,
+)
 
 ACC = Authority.ACCEPTANCE
 MAIN = Authority.MAINLINE
@@ -20,12 +27,12 @@ def test_row_matches_documented_example():
         draft=True,
         tree=[('n', ACC, Coverage.PARTIAL)],
     )
-    assert render_row(item) == '●⚠✎ CAR· n≈ v3  mm: fix foo leak'
+    assert render_row(item) == '●⚠✎ CAR· n≈ Synthetic Author v3  mm: fix foo leak'
 
 
 def test_quiet_incomplete_unchecked_row():
     item = make_item(subject='ndctl: baz cleanup', complete=False)
-    assert render_row(item) == '    I···  ? v1  ndctl: baz cleanup'
+    assert render_row(item) == '    I···  ? Synthetic Author v1  ndctl: baz cleanup'
 
 
 def test_progress_symbols():
@@ -77,3 +84,28 @@ def test_carried_commit_tags_show_in_row():
     from b4_maintainer.model import Trailers
 
     assert ' C·R· ' in render_row(make_item(carried=Trailers(reviewed=1)))
+
+
+def test_author_column_fits_names_by_display_width():
+    def author(**kwargs):
+        [segment] = [t for t, role in row_segments(make_item(**kwargs)) if role is not None]
+        return segment
+
+    assert author(author_name='Ann') == 'Ann'.ljust(AUTHOR_WIDTH)
+    long = author(author_name='Bartholomew Longname-Example')
+    assert display_width(long) == AUTHOR_WIDTH and long.endswith('…')
+    wide = author(author_name='山田太郎山田太郎山田太郎')
+    assert display_width(wide) == AUTHOR_WIDTH
+    assert author(author_name='', author_email='someone@example.org').startswith('someone ')
+
+
+def test_author_segment_carries_maintainers_role():
+    roles = {
+        role
+        for item_role in ('maintainer', 'reviewer', '')
+        for _, role in row_segments(make_item(author_role=item_role))
+        if role is not None
+    }
+    assert roles == {'maintainer', 'reviewer', ''}
+    text = ''.join(t for t, _ in row_segments(make_item(author_role='maintainer')))
+    assert text == render_row(make_item(author_role='maintainer'))

@@ -55,3 +55,6 @@ Configure remotes after initialization:
   In-Reply-To cycles; `LiteThreadScreen` accepts a mailbox; per-repository
   `b4.data-dir`/`b4.cache-dir`.
 - b4 `LoreMailbox.get_series()` hangs on a two-message reply cycle carrying trailers.
+- b4 `get_series()` runs `git patch-id` once per patch; parsing a list window is slow.
+- liblore has no linear-time thread splitter; the client keys threads by References root.
+  Remove the client grouping when liblore provides one.

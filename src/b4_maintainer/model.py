@@ -183,6 +183,12 @@ class WorkItem:
     candidates: tuple[str, ...] = ()
     profiles: frozenset[str] = field(default_factory=frozenset)
     versions: tuple[int, ...] = ()
+    # Touches files the maintainer maintains (e.g. MAINTAINERS M: entries).
+    responsible: bool = False
+    # The author's role in the project's MAINTAINERS: 'maintainer', 'reviewer', or ''.
+    author_role: str = ''
+    # Dismissed by the maintainer; shown only in the Hidden view.
+    hidden: bool = False
 
     @property
     def identity(self) -> str:

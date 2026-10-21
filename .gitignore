@@ -15,6 +15,7 @@ htmlcov/
 /projects/*
 !/projects/README.md
 /state/
+/workspace.toml
 /var/
 *.swp
 *.swo

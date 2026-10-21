@@ -31,7 +31,19 @@ def test_one_profile_matches_by_list_or_path():
     ]
     idx = index_for(config, series)
     assert [i.series.subject for i in idx.items('profile:mm')] == ['mm: by path']
-    assert idx.count('responsibilities') == 1
+
+
+def test_responsibilities_are_maintained_series_not_profile_matches():
+    config = workspace_config(profiles=[{'id': 'mm', 'project': 'linux', 'lists': LINUX_LISTS}])
+    series = [
+        make_series('mm: mine', lists=LINUX_LISTS, paths=['mm/mempolicy.c']),
+        make_series('mm: elsewhere', lists=LINUX_LISTS, paths=['mm/vmscan.c']),
+    ]
+    ws = Workspace.from_config(config)
+    mine = {series[0].identity}
+    idx = ViewIndex(ws, build_items(series, {}, ws, responsible=mine))
+    assert idx.count('profile:mm') == 2
+    assert [i.series.subject for i in idx.items('responsibilities')] == ['mm: mine']
 
 
 def test_cross_posted_series_is_one_item_in_both_projects():
@@ -104,3 +116,72 @@ def test_zero_one_and_many_projects():
     assert [v.id for v in one.views if v.kind == 'project'] == ['project:linux']
     many = index_for(workspace_config(), [s])
     assert [v.id for v in many.views if v.kind == 'project'] == ['project:linux', 'project:qemu']
+
+
+def test_configured_lists_accept_addresses_or_list_ids():
+    config = {
+        'projects': [{'id': 'linux', 'lists': ['Linux-MM@kvack.org', 'linux-cxl.vger.kernel.org']}],
+        'profiles': [{'id': 'mm', 'project': 'linux', 'lists': ['linux-mm@kvack.org']}],
+    }
+    ws = Workspace.from_config(config)
+    assert ws.project('linux').lists == ('linux-mm.kvack.org', 'linux-cxl.vger.kernel.org')
+    [item] = build_items([make_series('mm: a', lists=LINUX_LISTS)], {}, ws)
+    assert item.project == 'linux'
+    assert item.profiles == {'mm'}
+
+
+def test_revisions_without_change_id_group_by_subject_and_sender():
+    # b4's own fallback for finding other revisions: subject plus sender.
+    v1 = make_series('mm: tidy thing', revision=1, msgid='v1@example.org', lists=LINUX_LISTS)
+    v2 = make_series('mm: tidy thing', revision=2, msgid='v2@example.org', lists=LINUX_LISTS)
+    idx = index_for(workspace_config(), [v1, v2], {v1.identity: SeriesState(to_review=True)})
+    [item] = idx.items('all')
+    assert item.series.revision == 2
+    assert item.versions == (1, 2)
+    assert item.state.to_review  # State recorded against an older revision follows it.
+
+
+def test_change_id_revision_absorbs_earlier_one_without():
+    v1 = make_series('mm: tidy thing', revision=1, msgid='v1@example.org', lists=LINUX_LISTS)
+    v2 = make_series('mm: tidy thing', revision=2, change_id='tidy-2', lists=LINUX_LISTS)
+    [item] = index_for(workspace_config(), [v1, v2]).items('all')
+    assert item.identity == 'change-id:tidy-2'
+    assert item.versions == (1, 2)
+
+
+def test_same_subject_from_different_senders_stays_separate():
+    a = make_series('mm: fix typo', msgid='a@example.org', lists=LINUX_LISTS)
+    b = make_series(
+        'mm: fix typo', msgid='b@example.org', lists=LINUX_LISTS, author_email='x@example.org'
+    )
+    assert index_for(workspace_config(), [a, b]).count('all') == 2
+
+
+def test_different_change_ids_stay_separate_despite_subject():
+    a = make_series('mm: same words', revision=1, change_id='one', lists=LINUX_LISTS)
+    b = make_series('mm: same words', revision=1, change_id='two', lists=LINUX_LISTS)
+    assert index_for(workspace_config(), [a, b]).count('all') == 2
+
+
+def test_hidden_series_leave_every_view_but_hidden():
+    import dataclasses
+
+    ws = Workspace.from_config(
+        workspace_config(profiles=[{'id': 'mm', 'project': 'linux', 'lists': LINUX_LISTS}])
+    )
+    keep, drop = build_items(
+        [
+            make_series('mm: keep', msgid='k@example.org', lists=LINUX_LISTS),
+            make_series('mm: drop', msgid='d@example.org', lists=LINUX_LISTS),
+        ],
+        {},
+        ws,
+    )
+    drop = dataclasses.replace(drop, hidden=True, state=SeriesState(to_review=True))
+    idx = ViewIndex(ws, [keep, drop])
+    assert list(idx.items('hidden')) == [drop]
+    for view in idx.views:
+        if view.id != 'hidden':
+            assert drop not in idx.items(view.id), view.id
+    assert keep in idx.items('profile:mm') and keep in idx.items('cached')
+    assert 'hidden' not in [v.id for v in ViewIndex(ws, [keep]).views]

@@ -38,7 +38,8 @@ class FixtureSource:
         state_path = self.root / 'state.json'
         raw_states = json.loads(state_path.read_text()) if state_path.exists() else {}
         states = {k: state_from_config(v) for k, v in raw_states.items()}
+        responsible = {k for k, v in raw_states.items() if v.get('responsible')}
         series = []
         for path in sorted((self.root / 'mail').glob('*.mbx')):
             series.extend(parse_mbox(path))
-        return Snapshot(ws, build_items(series, states, ws))
+        return Snapshot(ws, build_items(series, states, ws, responsible=responsible))

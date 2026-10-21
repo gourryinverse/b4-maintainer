@@ -49,5 +49,9 @@ Mail configuration and delivery use b4's existing integrations.
     .venv/bin/python -m pytest
     .venv/bin/b4-maintainer --demo .local/demo
 
+- `b4-maintainer` in a workspace with `workspace.toml` opens it live: `r` fetches profile
+  lists from lore, `t` tracks the selected series through b4 (it then shows in To Review).
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
+- `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
+  existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.

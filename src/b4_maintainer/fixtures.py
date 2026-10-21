@@ -113,6 +113,7 @@ def make_series(
     change_id: Optional[str] = None,
     msgid: Optional[str] = None,
     author_email: str = CONTRIBUTOR[1],
+    author_name: str = 'Synthetic Author',
     complete: bool = True,
     trailers: Trailers = Trailers(),
     carried: Trailers = Trailers(),
@@ -129,7 +130,7 @@ def make_series(
         expected=expected,
         complete=complete,
         has_cover=expected > 1,
-        author_name='Synthetic Author',
+        author_name=author_name,
         author_email=author_email,
         sent=sent or EPOCH,
         patches=(
@@ -168,17 +169,24 @@ def make_item(
     candidates: tuple[str, ...] = (),
     preview: str = '',
     carried: Trailers = Trailers(),
+    author_name: str = 'Synthetic Author',
+    author_email: str = CONTRIBUTOR[1],
+    author_role: str = '',
 ) -> WorkItem:
     series = make_series(
         subject,
         revision,
+        author_email=author_email,
+        author_name=author_name,
         complete=complete,
         trailers=Trailers(acked, reviewed, tested),
         carried=carried,
         preview=preview,
     )
     state = SeriesState(unread, fixes_pending, progress, draft, to_review, tuple(tree))
-    return WorkItem(series, state, project, short, candidates, versions=(revision,))
+    return WorkItem(
+        series, state, project, short, candidates, versions=(revision,), author_role=author_role
+    )
 
 
 @dataclass(frozen=True)
@@ -359,6 +367,7 @@ def build_demo_workspace(
             'unread': 1,
             'fixes_pending': True,
             'draft': True,
+            'responsible': True,
             'tree': _tree(('n', 'acceptance', 'partial')),
         },
         subject='mm: fix foo leak',
@@ -382,7 +391,11 @@ def build_demo_workspace(
     )
     add(
         'cxl-bar',
-        {'progress': 'partial', 'tree': _tree(('n', 'acceptance', 'unchecked'))},
+        {
+            'progress': 'partial',
+            'responsible': True,
+            'tree': _tree(('n', 'acceptance', 'unchecked')),
+        },
         subject='cxl: add bar region',
         revision=2,
         lists=['linux-cxl.vger.kernel.org'],
@@ -473,7 +486,7 @@ def synthetic_snapshot(n: int, seed: int = 0) -> Snapshot:
     linux = PROJECTS['linux']['lists']
     areas = ['mm', 'cxl', 'net', 'fs', 'virtio', 'selftests/mm']
     coverages = list(Coverage)
-    series, states = [], {}
+    series, states, responsible = [], {}, set()
     for k in range(n):
         area = rng.choice(areas)
         lists = ['qemu-devel.nongnu.org'] if area == 'virtio' else [rng.choice(linux)]
@@ -500,4 +513,6 @@ def synthetic_snapshot(n: int, seed: int = 0) -> Snapshot:
             to_review=rng.random() < 0.2,
             tree=tuple(tree),
         )
-    return Snapshot(ws, build_items(series, states, ws))
+        if rng.random() < 0.3:
+            responsible.add(s.identity)
+    return Snapshot(ws, build_items(series, states, ws, responsible=responsible))
