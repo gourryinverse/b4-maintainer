@@ -190,11 +190,6 @@ def load_thread(series: Series) -> SeriesThread:
     for root in roots:
         unattached.append(Reply(_message(root.lmsg), 0))
         unattached.extend(replies(root.children, 1, set()))
-    # Workaround: build_thread_tree() returns only nodes reachable from a root,
-    # so replies in an In-Reply-To cycle vanish. Keep them as unattached.
-    # Remove once b4's thread tree keeps cyclic messages.
-    omitted = [lmsg for msgid, lmsg in lmbx.msgid_map.items() if msgid not in nodes]
-    unattached.extend(Reply(_message(m), 0) for m in sorted(omitted, key=lambda m: m.date))
     return SeriesThread(
         identity=series.identity,
         revision=series.revision,
