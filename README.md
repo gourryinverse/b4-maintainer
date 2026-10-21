@@ -4,6 +4,8 @@ Mailing-list maintainer workspace: patch review, bug triage, interactive agents,
 
 Stage: design. Next milestone: fixture-backed interface prototype.
 
+Python, Textual, GPL-2.0-or-later. See [decisions](docs/design/architecture.md#decisions).
+
 ## Scope
 
 - User-managed project repositories under projects/: Linux, QEMU, ndctl, and others.
@@ -25,6 +27,7 @@ in the background.
 - [Architecture](docs/design/architecture.md)
 - [Backlogs](docs/design/backlogs.md)
 - [Project workspaces](docs/design/projects.md)
+- [Open decisions](docs/design/open.md)
 - [Contributor instructions](AGENTS.md)
 
 ## Dependencies

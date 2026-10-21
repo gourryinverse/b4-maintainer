@@ -5,6 +5,7 @@ Read [README.md](README.md) and the relevant [design requirements](docs/design/)
 ## Work
 
 - Resolve open design decisions before production implementation.
+- Track open decisions in [docs/design/open.md](docs/design/open.md); remove them when resolved.
 - Start behavior changes with a failing contract test; implement, verify, refactor.
 - Use disposable fixtures for mail, providers, agents, workspaces, and jobs.
 - Report checks actually run. Verify documentation links and whitespace.
@@ -14,6 +15,7 @@ Read [README.md](README.md) and the relevant [design requirements](docs/design/)
 - Support configured mailing-list projects; route b4 operations to their project repositories.
 - Test zero, one, and multiple profiles; preserve cross-posted series identity.
 - Prefer improvements in the owning dependency over client-side workarounds.
+- Reuse existing connectors or build new ones; do not reimplement dependency behavior.
 - Develop dependency changes on maintainer fork branches; follow upstream conventions.
 - Test both dependency behavior and client integration; update pins explicitly.
 - Document unavoidable workarounds with a reason and removal condition.
