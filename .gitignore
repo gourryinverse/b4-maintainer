@@ -14,6 +14,8 @@ htmlcov/
 /backlogs/
 /projects/*
 !/projects/README.md
+/state/
+/var/
 *.swp
 *.swo
 *.egg-info/
