@@ -37,4 +37,5 @@ Read [README.md](README.md) and the relevant [design requirements](docs/design/)
 - Keep blocking parsing, database, network, and Git work off the UI thread.
 - Preserve user edits, editor files, and each project's HEAD/index/worktrees.
 - Keep runtime data and secrets out of source commits.
+- Put one-off helper scripts and drafts in ignored tmp/.
 - Commit or push only when requested.
