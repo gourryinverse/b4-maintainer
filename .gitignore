@@ -16,3 +16,5 @@ htmlcov/
 !/projects/README.md
 *.swp
 *.swo
+*.egg-info/
+build/

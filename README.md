@@ -2,7 +2,7 @@
 
 Mailing-list maintainer workspace: patch review, bug triage, interactive agents, project tests.
 
-Stage: design. Next milestone: fixture-backed interface prototype.
+Stage: fixture-backed interface prototype (browse screen).
 
 Python, Textual, GPL-2.0-or-later. See [decisions](docs/design/architecture.md#decisions).
 
@@ -40,3 +40,14 @@ forks and upstream contributions. Client adapters stay focused on integration.
 
 Workspace paths, LLM providers/credentials, and backlogs are maintainer configuration.
 Mail configuration and delivery use b4's existing integrations.
+
+## Development
+
+    git submodule update --init --recursive
+    python3 -m venv .venv
+    .venv/bin/pip install -e deps/liblore -e 'deps/b4[tui]' -e . pytest pytest-asyncio ruff
+    .venv/bin/python -m pytest
+    .venv/bin/b4-maintainer --demo .local/demo
+
+- `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
+- Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.

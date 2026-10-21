@@ -1,0 +1,106 @@
+import b4
+import pytest
+
+from b4_maintainer.adapters.b4mbox import parse_mbox
+from b4_maintainer.fixtures import Followup, PatchSpec, write_series_mbox
+
+KSELFTEST = 'linux-kselftest.vger.kernel.org'
+LINUX_MM = 'linux-mm.kvack.org'
+
+
+def test_single_patch_without_cover(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'a.mbx',
+        subject='selftests/mm: merge: keep far targets in the carveout',
+        revision=2,
+        patches=[PatchSpec('tools/testing/selftests/mm/merge.c')],
+        cover=False,
+        lists=[KSELFTEST, LINUX_MM],
+    )
+    [series] = parse_mbox(mail.path)
+    assert series.revision == 2
+    assert series.complete
+    assert not series.has_cover
+    assert series.change_id is None
+    assert series.identity == mail.msgids[1]
+    assert series.subject == 'selftests/mm: merge: keep far targets in the carveout'
+    assert series.paths == ('tools/testing/selftests/mm/merge.c',)
+    assert series.lists == (KSELFTEST,)
+    assert 'linux-mm@kvack.org' in series.recipients
+    assert {KSELFTEST, LINUX_MM} <= set(series.list_candidates())
+    assert series.author_email.endswith('@example.org')
+
+
+def test_missing_patch_is_incomplete_and_change_id_is_identity(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'b.mbx',
+        subject='cxl: add bar region',
+        patches=[
+            PatchSpec('drivers/cxl/a.c'),
+            PatchSpec('drivers/cxl/b.c'),
+            PatchSpec('drivers/cxl/c.c'),
+        ],
+        omit=(2,),
+        change_id='20261001-cxl-bar-0123456789ab',
+    )
+    [series] = parse_mbox(mail.path)
+    assert series.has_cover
+    assert not series.complete
+    assert series.identity == 'change-id:20261001-cxl-bar-0123456789ab'
+    assert [p.counter for p in series.patches] == [1, 3]
+
+
+def test_followup_trailers_keep_cover_and_patch_evidence_separate(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'c.mbx',
+        subject='mm: two step change',
+        patches=[PatchSpec('mm/a.c'), PatchSpec('mm/b.c')],
+        followups=[
+            Followup(0, 'Acked-by: Reviewer One <reviewer1@example.org>'),
+            Followup(1, 'Reviewed-by: Reviewer Two <reviewer2@example.org>'),
+            Followup(2, 'Tested-by: Tester One <tester1@example.org>'),
+        ],
+    )
+    [series] = parse_mbox(mail.path)
+    assert series.cover_trailers.acked == 1
+    assert [(p.trailers.reviewed, p.trailers.tested) for p in series.patches] == [(1, 0), (0, 1)]
+    assert series.trailer_totals() == (1, 1, 1)
+
+
+def test_all_revisions_in_a_mailbox_are_returned(tmp_path):
+    first = write_series_mbox(tmp_path / 'v1.mbx', subject='mm: tidy', revision=1, change_id='x-1')
+    write_series_mbox(first.path, subject='mm: tidy', revision=2, change_id='x-1', append=True)
+    revisions = sorted(s.revision for s in parse_mbox(first.path))
+    assert revisions == [1, 2]
+
+
+def test_parsing_never_queries_lore(tmp_path, monkeypatch):
+    def refuse(*args, **kwargs):
+        pytest.fail('parse_mbox must not search lore for trailers')
+
+    monkeypatch.setattr(b4, 'get_pi_search_results', refuse)
+    mail = write_series_mbox(
+        tmp_path / 'd.mbx', subject='mm: x', followups=[Followup(1, 'Acked-by: A <a@example.org>')]
+    )
+    assert parse_mbox(mail.path)
+
+
+def test_preview_is_cover_letter_when_present(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'e.mbx',
+        subject='mm: with cover',
+        patches=[PatchSpec('mm/a.c'), PatchSpec('mm/b.c')],
+        cover_text='Why this series exists.\n\nMore detail.',
+    )
+    [series] = parse_mbox(mail.path)
+    assert series.preview_label == 'Cover letter'
+    assert 'Why this series exists.' in series.preview
+
+
+def test_preview_is_commit_message_without_cover(tmp_path):
+    mail = write_series_mbox(tmp_path / 'f.mbx', subject='mm: single', cover=False)
+    [series] = parse_mbox(mail.path)
+    assert series.preview_label == 'Patch 1/1 (no cover letter)'
+    assert 'Synthetic change touching mm/example.c' in series.preview
+    assert '1 file changed' in series.preview
+    assert 'diff --git' not in series.preview
