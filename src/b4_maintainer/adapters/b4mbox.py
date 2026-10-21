@@ -6,8 +6,9 @@ import os
 from typing import Iterable, Optional
 
 import b4
+from b4.review_tui._lite_app import ThreadNode, build_thread_tree
 
-from ..model import Patch, Series, Trailers
+from ..model import Message, Patch, Post, Reply, Series, SeriesThread, Trailers
 
 TRAILER_KINDS = {'acked-by': 'acked', 'reviewed-by': 'reviewed', 'tested-by': 'tested'}
 
@@ -65,7 +66,7 @@ def _preview(cover: Optional['b4.LoreMessage'], first: 'b4.LoreMessage', expecte
     return f'Patch {first.counter}/{expected} (no cover letter)', description.strip('\n')
 
 
-def _series(lser: 'b4.LoreSeries') -> Series:
+def _series(lser: 'b4.LoreSeries', source: str) -> Series:
     cover = lser.patches[0]
     patches = [p for p in lser.patches[1:] if p is not None]
     change_id = getattr(lser, 'change_id', None)
@@ -96,6 +97,7 @@ def _series(lser: 'b4.LoreSeries') -> Series:
         msgids=tuple(p.msgid for p in present),
         preview_label=preview_label,
         preview=preview,
+        source=source,
     )
 
 
@@ -105,12 +107,95 @@ def parse_mbox(path: 'os.PathLike[str] | str') -> list[Series]:
     Offline: lore trailer searches and reroll gap-filling stay disabled so
     completeness and trailers reflect the local mail only.
     """
+    source = os.fspath(path)
+    lmbx = _mailbox(source)
+    return [_series(lser, source) for lser in _revisions(lmbx).values()]
+
+
+def _mailbox(source: str) -> 'b4.LoreMailbox':
     lmbx = b4.LoreMailbox()
-    for msg in b4.get_msgs_from_mailbox_or_maildir(os.fspath(path)):
+    for msg in b4.get_msgs_from_mailbox_or_maildir(source):
         lmbx.add_message(msg)
-    result = []
+    return lmbx
+
+
+def _revisions(lmbx: 'b4.LoreMailbox') -> dict[int, 'b4.LoreSeries']:
+    result = {}
     for revision in sorted(lmbx.series):
         lser = lmbx.get_series(revision, reroll=False, codereview_trailers=False)
         if lser is not None and any(lser.patches[1:]):
-            result.append(_series(lser))
+            result[revision] = lser
     return result
+
+
+def _message(lmsg: 'b4.LoreMessage') -> Message:
+    return Message(
+        lmsg.msgid, lmsg.fromname, lmsg.fromemail, lmsg.date, lmsg.full_subject, lmsg.body
+    )
+
+
+def load_thread(series: Series) -> SeriesThread:
+    """Load one revision's postings with discussion grouped by posting.
+
+    Threading comes from b4's build_thread_tree. Postings of every revision
+    split the tree, so a reply belongs to its nearest posting; messages that
+    reach no posting are unattached. Subjects never link messages.
+    """
+    if not series.source:
+        raise ValueError('no mail source for this series')
+    lmbx = _mailbox(series.source)
+    revisions = _revisions(lmbx)
+    lser = revisions[series.revision]
+    nodes = {node.lmsg.msgid: node for node in build_thread_tree(lmbx)}
+    posts = {p.msgid for rev in revisions.values() for p in rev.patches if p is not None}
+
+    def replies(children: list[ThreadNode], depth: int, seen: set[str]) -> list[Reply]:
+        found = []
+        for child in children:
+            msgid = child.lmsg.msgid
+            if msgid in posts or msgid in seen:
+                continue
+            seen.add(msgid)
+            found.append(Reply(_message(child.lmsg), depth))
+            found.extend(replies(child.children, depth + 1, seen))
+        return found
+
+    reached: set[str] = set()
+    for msgid in posts:
+        replies(nodes[msgid].children, 0, reached)
+
+    def post(counter: int, lmsg: 'b4.LoreMessage') -> Post:
+        description, _, diff = lmsg.body.partition('\ndiff --git ')
+        return Post(
+            counter,
+            _message(lmsg),
+            description.strip('\n'),
+            f'diff --git {diff}'.rstrip('\n') if diff else '',
+            tuple(replies(nodes[lmsg.msgid].children, 0, set())),
+        )
+
+    cover = lser.patches[0]
+    roots = [
+        n
+        for n in nodes.values()
+        if n.lmsg.msgid not in posts
+        and n.lmsg.msgid not in reached
+        and n.lmsg.in_reply_to not in nodes
+    ]
+    roots.sort(key=lambda n: n.lmsg.date)
+    unattached: list[Reply] = []
+    for root in roots:
+        unattached.append(Reply(_message(root.lmsg), 0))
+        unattached.extend(replies(root.children, 1, set()))
+    # Workaround: build_thread_tree() returns only nodes reachable from a root,
+    # so replies in an In-Reply-To cycle vanish. Keep them as unattached.
+    # Remove once b4's thread tree keeps cyclic messages.
+    omitted = [lmsg for msgid, lmsg in lmbx.msgid_map.items() if msgid not in nodes]
+    unattached.extend(Reply(_message(m), 0) for m in sorted(omitted, key=lambda m: m.date))
+    return SeriesThread(
+        identity=series.identity,
+        revision=series.revision,
+        cover=post(0, cover) if cover is not None else None,
+        patches=tuple(post(p.counter, p) for p in lser.patches[1:] if p is not None),
+        unattached=tuple(unattached),
+    )

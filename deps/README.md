@@ -48,3 +48,9 @@ Configure remotes after initialization:
     '
 
 - See [dependency-first requirements](../docs/design/architecture.md).
+
+## Known gaps
+
+- b4 `build_thread_tree()` drops replies in an In-Reply-To cycle; the client keeps
+  them as unattached (`src/b4_maintainer/adapters/b4mbox.py`) until b4 is fixed.
+- b4 `LiteThreadScreen` always fetches from lore; offline reuse needs a mailbox input.

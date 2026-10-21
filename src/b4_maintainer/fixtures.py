@@ -155,16 +155,25 @@ class PatchSpec:
 
 @dataclass(frozen=True)
 class Followup:
-    """A reply carrying a trailer; target 0 is the cover letter."""
+    """A reply; target 0 is the cover letter.
+
+    parent is the 1-based index of an earlier followup to reply to (0 replies
+    to the target); threaded=False omits In-Reply-To/References.
+    """
 
     target: int
-    trailer: str
+    trailer: str = ''
+    body: str = ''
+    parent: int = 0
+    threaded: bool = True
+    sender: tuple[str, str] = ('Reviewer One', 'reviewer1@example.org')
 
 
 @dataclass
 class SeriesMail:
     path: pathlib.Path
     msgids: dict[int, str] = field(default_factory=dict)
+    followups: list[str] = field(default_factory=list)
 
 
 def _list_address(list_id: str) -> str:
@@ -255,10 +264,14 @@ def write_series_mbox(
         if n not in omit:
             messages.append(msg)
     for k, fu in enumerate(followups, start=1):
-        target = result.msgids[fu.target]
-        name, addr = email.utils.parseaddr(fu.trailer.split(':', 1)[1])
-        body = f'> Synthetic quoted text.\n\n{fu.trailer}\n'
-        _, msg = message(100 + k, f'Re: {subject}', body, (name, addr), target)
+        parent = result.followups[fu.parent - 1] if fu.parent else result.msgids[fu.target]
+        sender = email.utils.parseaddr(fu.trailer.split(':', 1)[1]) if fu.trailer else fu.sender
+        text = '\n\n'.join(t for t in (fu.body, fu.trailer) if t)
+        body = f'> Synthetic quoted text.\n\n{text}\n'
+        msgid, msg = message(
+            100 + k, f'Re: {subject}', body, sender, parent if fu.threaded else None
+        )
+        result.followups.append(msgid)
         messages.append(msg)
 
     box = mailbox.mbox(path)

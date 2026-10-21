@@ -87,7 +87,7 @@ async def test_layout_follows_breakpoints(demo_root):
         await pilot.resize_terminal(90, 40)
         await pilot.pause()
         assert app.visible_panes() == ('series',)
-        await pilot.press('enter')
+        await pilot.press('p')
         await pilot.pause()
         assert app.visible_panes() == ('summary',)
         await pilot.press('escape')
@@ -139,8 +139,8 @@ async def test_footer_shows_only_applicable_keys(demo_root):
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         keys = footer_keys(app)
-        assert {'grave_accent', 'tab', 'p', 'Q'} <= keys
-        assert not {'v', 'enter', 'escape'} & keys
+        assert {'enter', 'grave_accent', 'tab', 'p', 'Q'} <= keys
+        assert not {'v', 'escape'} & keys
 
         await pilot.resize_terminal(130, 40)
         await pilot.pause()
@@ -152,11 +152,10 @@ async def test_footer_shows_only_applicable_keys(demo_root):
         assert {'enter', 'grave_accent', 'p'} <= keys
         assert not {'v', 'tab', 'escape'} & keys
 
-        await pilot.press('enter')
+        await pilot.press('p')
         await pilot.pause()
         keys = footer_keys(app)
-        assert {'escape', 'grave_accent'} <= keys
-        assert 'enter' not in keys
+        assert {'escape', 'enter', 'grave_accent'} <= keys
 
 
 async def test_cover_letter_hidden_until_preview_expands_pane(demo_root):

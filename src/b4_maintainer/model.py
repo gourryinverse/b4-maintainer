@@ -75,6 +75,7 @@ class Series:
     msgids: tuple[str, ...] = ()
     preview_label: str = ''
     preview: str = ''
+    source: str = ''
 
     def list_candidates(self) -> tuple[str, ...]:
         """List IDs plus recipients in lore's name.domain list-ID form.
@@ -90,6 +91,44 @@ class Series:
         for patch in self.patches:
             total = total + patch.trailers
         return total.acked, total.reviewed, total.tested
+
+
+@dataclass(frozen=True)
+class Message:
+    msgid: str
+    author_name: str
+    author_email: str
+    date: Optional[datetime.datetime]
+    subject: str
+    body: str
+
+
+@dataclass(frozen=True)
+class Reply:
+    message: Message
+    depth: int
+
+
+@dataclass(frozen=True)
+class Post:
+    """A cover letter (counter 0) or patch with its own discussion."""
+
+    counter: int
+    message: Message
+    description: str
+    diff: str
+    replies: tuple[Reply, ...] = ()
+
+
+@dataclass(frozen=True)
+class SeriesThread:
+    """One revision's postings and discussion, loaded on demand for reading."""
+
+    identity: str
+    revision: int
+    cover: Optional[Post]
+    patches: tuple[Post, ...]
+    unattached: tuple[Reply, ...] = ()
 
 
 @dataclass(frozen=True)

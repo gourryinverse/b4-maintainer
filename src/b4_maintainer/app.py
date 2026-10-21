@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Browse screen: Views | Series list | Summary, with a collapsed session drawer."""
+"""Browse screen (Views | Series | Summary) and pre-apply reader, with a session drawer."""
 
-import re
-import textwrap
 from typing import Any, Callable, Optional, Protocol
 
 from b4._textwidth import pad_display
@@ -13,7 +11,9 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.content import Content
 from textual.geometry import Size
+from textual.markup import escape
 from textual.message import Message
 from textual.reactive import Reactive
 from textual.screen import ModalScreen
@@ -23,23 +23,18 @@ from textual.widget import Widget
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
+from .adapters.b4mbox import load_thread
 from .layout import Breakpoints, Mode, layout_mode
-from .model import WorkItem
+from .model import Series, SeriesThread, WorkItem
+from .reader import ContentMode, content_title, find_post, post_blocks, post_keys, post_label
 from .rows import DEFAULT_SYMBOLS, Symbols, render_row
 from .views import ViewIndex
+from .widgets import TextPane, printable
 from .workspace import Snapshot
 
 FIXES_STYLE = Style(color='dark_orange')
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
-
-# Mail is data: drop terminal escape sequences and other control characters.
-ESCAPE_RE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.)')
-CONTROL_RE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
-
-
-def printable(text: str) -> str:
-    return CONTROL_RE.sub('', ESCAPE_RE.sub('', text)).expandtabs(8)
 
 
 class AgentLauncher(Protocol):
@@ -159,58 +154,6 @@ class StatusLine(Widget):
         return Text(self._text)
 
 
-class TextPane(ScrollView, can_focus=True):
-    """Scrollable text that wraps once per width and renders only visible lines.
-
-    Its size comes from the layout, so updates never relayout the screen,
-    unlike Static.update().
-    """
-
-    virtual_size: Reactive[Size] = Reactive(Size(0, 0), layout=False)
-
-    def __init__(self, text: str = '', **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._text = text
-        self._lines: list[str] = []
-        self._width = 0
-
-    @property
-    def text(self) -> str:
-        return self._text
-
-    def set_text(self, text: str) -> None:
-        self._text = text
-        self._width = 0
-        self._wrap()
-        self.scroll_to(0, 0, animate=False, immediate=True)
-        self.refresh()
-
-    def _wrap(self) -> None:
-        width = self.scrollable_content_region.width
-        if width <= 0 or width == self._width:
-            return
-        self._width = width
-        self._lines = [
-            wrapped
-            for line in self._text.split('\n')
-            for wrapped in textwrap.wrap(
-                line, width, replace_whitespace=False, drop_whitespace=False
-            )
-            or ['']
-        ]
-        self.virtual_size = Size(width, len(self._lines))
-
-    def on_resize(self, event: events.Resize) -> None:
-        self._wrap()
-
-    def render_line(self, y: int) -> Strip:
-        width = self.scrollable_content_region.width
-        index = self.scroll_offset.y + y
-        if index >= len(self._lines):
-            return Strip.blank(width)
-        return Strip([Segment(pad_display(self._lines[index], width))], width)
-
-
 class ConfirmQuit(ModalScreen[bool]):
     """Quit? [y|N]: only y confirms; any other key cancels."""
 
@@ -237,8 +180,12 @@ class MaintainerApp(App[None]):
     CSS = """
     #status { height: 1; background: $primary-darken-2; }
     #main { height: 1fr; }
-    #views, #series, #summary { border: none; border-top: solid $panel-lighten-2; }
-    #views:focus, #series:focus, #summary:focus { border: none; border-top: solid $accent; }
+    #views, #series, #summary, #posts, #content {
+        border: none; border-top: solid $panel-lighten-2;
+    }
+    #views:focus, #series:focus, #summary:focus, #posts:focus, #content:focus {
+        border: none; border-top: solid $accent;
+    }
     #summary, #summary:focus { border-left: solid $panel-lighten-2; }
     #views { width: 34; }
     #series { width: 1fr; }
@@ -246,6 +193,11 @@ class MaintainerApp(App[None]):
         width: 64; padding: 0 1;
         scrollbar-gutter: stable;
     }
+    #reader { height: 1fr; display: none; }
+    #posts { width: 24; }
+    #content { width: 1fr; padding: 0 1; scrollbar-gutter: stable; }
+    Screen.-reading #main { display: none; }
+    Screen.-reading #reader { display: block; }
     #drawer { height: 1; background: $panel; }
     #drawer-panel { height: 40%; display: none; border-top: solid $accent; padding: 0 1; }
     Screen.-drawer-open #drawer-panel { display: block; }
@@ -260,8 +212,10 @@ class MaintainerApp(App[None]):
         Binding('v', 'toggle_views', 'views'),
         # Priority so the footer shows this hint instead of Screen's hidden tab binding.
         Binding('tab', 'focus_next', 'next pane', priority=True),
-        Binding('enter', 'open_summary', 'summary'),
-        Binding('escape', 'close_summary', 'back'),
+        Binding('enter', 'open_reader', 'read'),
+        Binding('escape', 'back', 'back'),
+        Binding('d', 'show_mode("diff")', 'diff'),
+        Binding('c', 'show_mode("comments")', 'comments'),
         Binding('p', 'toggle_preview', 'preview'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
         Binding('Q', 'quit', 'quit'),
@@ -273,9 +227,11 @@ class MaintainerApp(App[None]):
         launcher: Optional[AgentLauncher] = None,
         breakpoints: Optional[Breakpoints] = None,
         symbols: Symbols = DEFAULT_SYMBOLS,
+        thread_loader: Callable[[Series], SeriesThread] = load_thread,
     ) -> None:
         super().__init__()
         self._loader = loader
+        self._thread_loader = thread_loader
         # Held for explicit maintainer launches; passive actions never call it.
         self.launcher = launcher
         self._breakpoints = breakpoints
@@ -289,6 +245,10 @@ class MaintainerApp(App[None]):
         self._mode: Mode = 'wide'
         self._preview = False
         self._item: Optional[WorkItem] = None
+        self._reading: Optional[WorkItem] = None
+        self._thread: Optional[SeriesThread] = None
+        self._post_key = ''
+        self._content_mode: ContentMode = 'diff'
 
     def compose(self) -> ComposeResult:
         yield StatusLine(self._status, id='status')
@@ -296,6 +256,9 @@ class MaintainerApp(App[None]):
             yield OptionList(id='views')
             yield SeriesList(self.symbols, id='series')
             yield TextPane(self._summary, id='summary')
+        with Horizontal(id='reader'):
+            yield OptionList(id='posts')
+            yield TextPane(id='content')
         yield Static('', id='drawer-panel', markup=False)
         yield Static('', id='drawer', markup=False)
         yield Footer()
@@ -307,6 +270,9 @@ class MaintainerApp(App[None]):
         self._views.border_title = 'Views'
         self._series_list.border_title = 'Series'
         self._summary_pane.border_title = 'Summary'
+        self._posts = self.query_one('#posts', OptionList)
+        self._content = self.query_one('#content', TextPane)
+        self._posts.border_title = 'Patches'
         self._status_widget = self.query_one('#status', StatusLine)
         self._apply_layout(self.size.width)
         self._series_list.focus()
@@ -327,7 +293,8 @@ class MaintainerApp(App[None]):
         views = self._views
         views.clear_options()
         views.add_options(
-            Option(f'{pad_display(v.label, 21)}{index.count(v.id):>5}', id=v.id)
+            # Titles and option prompts are markup; labels are configured text.
+            Option(escape(f'{pad_display(v.label, 21)}{index.count(v.id):>5}'), id=v.id)
             for v in index.views
         )
         self._drawer = self._drawer_line()
@@ -349,7 +316,11 @@ class MaintainerApp(App[None]):
         self._update_status()
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option_id:
+        if not event.option_id:
+            return
+        if event.option_list.id == 'posts':
+            self._show_post(event.option_id)
+        else:
             self.select_view(event.option_id)
 
     def on_series_list_highlighted(self, event: SeriesList.Highlighted) -> None:
@@ -388,14 +359,20 @@ class MaintainerApp(App[None]):
             return False  # The prompt owns every key while it is open.
         narrow = self._mode == 'narrow'
         summary_open = self.screen.has_class('-show-summary')
+        reading = self._reading is not None
         if action == 'toggle_views':
-            return self._mode == 'medium'
+            return not reading and self._mode == 'medium'
         if action == 'focus_next':
-            return not narrow
-        if action == 'open_summary':
-            return narrow and not summary_open
-        if action == 'close_summary':
-            return narrow and summary_open
+            return reading or not narrow
+        if action == 'open_reader':
+            return not reading and self._item is not None
+        if action == 'back':
+            return reading or (narrow and summary_open)
+        if action == 'toggle_preview':
+            return not reading
+        if action == 'show_mode':
+            post = find_post(self._thread, self._post_key) if reading and self._thread else None
+            return bool(post and post.counter and parameters[0] != self._content_mode)
         return True
 
     # Text accessors for tests and status rendering.
@@ -409,6 +386,8 @@ class MaintainerApp(App[None]):
         return self._drawer
 
     def visible_panes(self) -> tuple[str, ...]:
+        if not self.query_one('#main').display:
+            return ()
         return tuple(
             name for name in ('views', 'series', 'summary') if self.query_one(f'#{name}').display
         )
@@ -421,9 +400,85 @@ class MaintainerApp(App[None]):
         self._summary_pane.focus()
         self.refresh_bindings()
 
-    def action_close_summary(self) -> None:
+    def action_back(self) -> None:
+        if self._reading is not None:
+            self._close_reader()
+            return
         self.screen.remove_class('-show-summary')
         self._series_list.focus()
+        self.refresh_bindings()
+
+    # Reader: the thread loads in a worker; the drawer and status stay visible.
+    @property
+    def reading(self) -> Optional[WorkItem]:
+        return self._reading
+
+    def post_labels(self) -> list[str]:
+        return [
+            Content.from_markup(str(self._posts.get_option_at_index(i).prompt)).plain
+            for i in range(self._posts.option_count)
+        ]
+
+    def content_text(self) -> str:
+        return self._content.text
+
+    def action_open_reader(self) -> None:
+        item = self._item
+        if item is None:
+            return
+        self._reading, self._thread, self._post_key = item, None, ''
+        self.screen.add_class('-reading')
+        self._posts.clear_options()
+        self._content.border_title = ''
+        self._content.set_text('Loading thread…')
+        self._set_status(f' b4-maintainer — Reading: {item.series.subject} v{item.series.revision}')
+        self._posts.focus()
+        self.refresh_bindings()
+        self.run_worker(
+            lambda: self._load_thread(item), thread=True, group='thread', exclusive=True
+        )
+
+    def _load_thread(self, item: WorkItem) -> None:
+        try:
+            thread, error = self._thread_loader(item.series), None
+        except Exception as exc:  # Shown to the maintainer; mail is untrusted input.
+            thread, error = None, f'{type(exc).__name__}: {exc}'
+        self.call_from_thread(self._apply_thread, item, thread, error)
+
+    def _apply_thread(
+        self, item: WorkItem, thread: Optional[SeriesThread], error: Optional[str]
+    ) -> None:
+        if self._reading is not item:
+            return  # Closed or reopened on another series while loading.
+        if thread is None:
+            self._content.set_text(f'Could not load thread: {error}')
+            return
+        self._thread = thread
+        self._posts.add_options(
+            Option(escape(post_label(thread, key, item, self.symbols.absent)), id=key)
+            for key in post_keys(thread)
+        )
+        self._posts.highlighted = 0
+
+    def _show_post(self, key: str) -> None:
+        if self._thread is None or self._reading is None:
+            return
+        self._post_key = key
+        self._content.border_title = escape(content_title(self._thread, key, self._content_mode))
+        self._content.set_blocks(post_blocks(self._thread, key, self._reading, self._content_mode))
+        self.refresh_bindings()
+
+    def action_show_mode(self, mode: ContentMode) -> None:
+        self._content_mode = mode
+        self._show_post(self._post_key)
+
+    def _close_reader(self) -> None:
+        self.workers.cancel_group(self, 'thread')
+        self._reading, self._thread, self._post_key = None, None, ''
+        self.screen.remove_class('-reading')
+        self._series_list.focus()
+        if self.index is not None:
+            self._update_status()
         self.refresh_bindings()
 
     async def action_quit(self) -> None:
@@ -457,6 +512,9 @@ class MaintainerApp(App[None]):
             status += (
                 ' · No subsystem profiles configured: set up profiles to fill My Responsibilities'
             )
+        self._set_status(status)
+
+    def _set_status(self, status: str) -> None:
         self._status = status
         self._status_widget.set_text(status)
 
