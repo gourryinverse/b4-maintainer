@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Pre-apply reader content: patch-list labels and per-posting blocks."""
+"""Pre-apply reader content: patch list, per-posting comment tree, and message blocks."""
 
-from typing import Literal, Optional
+from typing import Optional
 
 from rich.style import Style
 
-from .model import Message, Post, Reply, SeriesThread, Trailers, WorkItem
+from .model import Message, Post, Reply, SeriesThread, Tag, Trailers, WorkItem
 from .widgets import Block
 
-ContentMode = Literal['diff', 'comments']
 UNATTACHED = 'unattached'
 
 HEADER = Style(bold=True)
@@ -16,6 +15,8 @@ QUOTE = Style(dim=True)
 
 
 def diff_style(line: str) -> Style:
+    if line == '-- ':
+        return Style()  # Mail signature separator after the diff, not a removed line.
     if line.startswith(('diff --git', '+++', '---', 'index ')):
         return Style(bold=True)
     if line.startswith('@@'):
@@ -85,16 +86,69 @@ def post_label(thread: SeriesThread, key: str, item: WorkItem, absent: str = '·
     return f'{post.counter}/{total} {_marks(_trailers(item, post.counter), absent)}{replies}'
 
 
-def content_title(thread: SeriesThread, key: str, mode: ContentMode) -> str:
+def thread_replies(thread: SeriesThread, key: str) -> tuple[Reply, ...]:
     if key == UNATTACHED:
-        return f'Unattached ({len(thread.unattached)})'
+        return thread.unattached
     post = find_post(thread, key)
     assert post is not None
-    if post.counter == 0:
-        return f'Cover letter · comments ({len(post.replies)})'
-    if mode == 'diff':
-        return f'Patch {post.counter} · Diff · [c] comments ({len(post.replies)})'
-    return f'Patch {post.counter} · Comments ({len(post.replies)}) · [d] diff'
+    return post.replies
+
+
+def tree_art(depths: list[int]) -> list[str]:
+    """Connector art for DFS-ordered depths, drawn under an implicit root line."""
+    art = []
+    for i, depth in enumerate(depths):
+        prefix = ''
+        for level in range(depth):
+            prefix += '  ' if _is_last(depths, i, level) else '│ '
+        art.append(prefix + ('└─>' if _is_last(depths, i, depth) else '├─>'))
+    return art
+
+
+def _is_last(depths: list[int], i: int, level: int) -> bool:
+    """No later sibling at `level` before the subtree containing depths[i] closes."""
+    for depth in depths[i + 1 :]:
+        if depth < level:
+            return True
+        if depth == level:
+            return False
+    return True
+
+
+def _tag_marks(tags: frozenset[Tag]) -> str:
+    kinds = {kind for kind, _ in tags}
+    return ''.join(
+        c for c, kind in (('A', 'acked'), ('R', 'reviewed'), ('T', 'tested')) if kind in kinds
+    )
+
+
+def root_label(thread: SeriesThread, key: str) -> str:
+    if key == UNATTACHED:
+        return f'Unattached replies ({len(thread.unattached)})'
+    post = find_post(thread, key)
+    assert post is not None
+    return post.message.subject
+
+
+def reply_labels(replies: tuple[Reply, ...]) -> list[str]:
+    labels = []
+    for art, reply in zip(tree_art([r.depth for r in replies]), replies):
+        m = reply.message
+        date = f' {m.date:%m-%d}' if m.date else ''
+        marks = _tag_marks(m.tags)
+        labels.append(f'{art} {m.author_name}{date}{" " + marks if marks else ""}')
+    return labels
+
+
+def content_title(thread: SeriesThread, key: str, reply: Optional[Reply], total: int) -> str:
+    if reply is not None:
+        date = f' · {reply.message.date:%Y-%m-%d %H:%M}' if reply.message.date else ''
+        return f'{reply.message.author_name}{date}'
+    if key == UNATTACHED:
+        return 'Unattached replies'
+    post = find_post(thread, key)
+    assert post is not None
+    return 'Cover letter' if post.counter == 0 else f'Patch {post.counter}/{total}'
 
 
 def _header(message: Message) -> str:
@@ -102,24 +156,55 @@ def _header(message: Message) -> str:
     return f'{message.author_name} <{message.author_email}>{date}'
 
 
-def reply_blocks(replies: tuple[Reply, ...]) -> list[Block]:
-    if not replies:
-        return [Block('No comments.')]
+def _is_quote(line: str) -> bool:
+    return line.lstrip().startswith('>')
+
+
+def collapse_quotes(text: str, expand: bool, keep: int = 2, threshold: int = 3) -> list[Block]:
+    """Fold quoted runs longer than threshold to a marker plus their last `keep` lines."""
+    lines = text.split('\n')
     blocks: list[Block] = []
-    for reply in replies:
-        indent = reply.depth * 2
-        arrow = '└─> ' if reply.depth else ''
-        blocks.append(Block(f'{arrow}{_header(reply.message)}', style=HEADER, indent=indent))
-        body = reply.message.body.strip('\n')
-        blocks.append(Block(body, style=prose_style, indent=indent + 2))
-        blocks.append(Block(''))
+    i = 0
+    while i < len(lines):
+        j = i
+        while j < len(lines) and _is_quote(lines[j]) == _is_quote(lines[i]):
+            j += 1
+        run = lines[i:j]
+        if not _is_quote(lines[i]):
+            blocks.append(Block('\n'.join(run)))
+        elif expand or len(run) <= threshold:
+            blocks.append(Block('\n'.join(run), style=QUOTE))
+        else:
+            hidden = len(run) - keep
+            blocks.append(Block(f'> [{hidden} quoted lines]', style=QUOTE))
+            blocks.append(Block('\n'.join(run[-keep:]), style=QUOTE))
+        i = j
     return blocks
 
 
-def post_blocks(thread: SeriesThread, key: str, item: WorkItem, mode: ContentMode) -> list[Block]:
+def has_long_quote(reply: Reply, threshold: int = 3) -> bool:
+    run = 0
+    for line in reply.message.body.split('\n'):
+        run = run + 1 if _is_quote(line) else 0
+        if run > threshold:
+            return True
+    return False
+
+
+def message_blocks(reply: Reply, expand: bool) -> list[Block]:
+    m = reply.message
+    blocks = [Block(m.subject, style=HEADER), Block(f'From: {_header(m)}')]
+    marks = _tag_marks(m.tags)
+    if marks:
+        blocks.append(Block(f'Gives: {marks}'))
+    blocks.append(Block(''))
+    return blocks + collapse_quotes(m.body.strip('\n'), expand)
+
+
+def root_blocks(thread: SeriesThread, key: str, item: WorkItem) -> list[Block]:
     if key == UNATTACHED:
         intro = 'These messages could not be linked to a posting by their thread headers.'
-        return [Block(intro), Block('')] + reply_blocks(thread.unattached)
+        return [Block(intro)]
     post = find_post(thread, key)
     assert post is not None
     blocks = [
@@ -128,12 +213,9 @@ def post_blocks(thread: SeriesThread, key: str, item: WorkItem, mode: ContentMod
         Block(trailer_line(item, post.counter)),
         Block(''),
         Block(post.description, style=prose_style),
-        Block(''),
     ]
-    if post.counter == 0 or mode == 'comments':
-        blocks.append(Block(f'── Comments ({len(post.replies)}) ──', style=HEADER))
-        blocks.append(Block(''))
-        return blocks + reply_blocks(post.replies)
-    blocks.append(Block('── Diff ──', style=HEADER))
+    if post.counter == 0:
+        return blocks
+    blocks += [Block(''), Block('── Diff ──', style=HEADER)]
     blocks.append(Block(post.diff or 'No diff.', wrap=False, style=diff_style))
     return blocks

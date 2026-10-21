@@ -26,7 +26,17 @@ from textual.widgets.option_list import Option
 from .adapters.b4mbox import load_thread
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Series, SeriesThread, WorkItem
-from .reader import ContentMode, content_title, find_post, post_blocks, post_keys, post_label
+from .reader import (
+    content_title,
+    has_long_quote,
+    message_blocks,
+    post_keys,
+    post_label,
+    reply_labels,
+    root_blocks,
+    root_label,
+    thread_replies,
+)
 from .rows import DEFAULT_SYMBOLS, Symbols, render_row
 from .views import ViewIndex
 from .widgets import TextPane, printable
@@ -180,10 +190,10 @@ class MaintainerApp(App[None]):
     CSS = """
     #status { height: 1; background: $primary-darken-2; }
     #main { height: 1fr; }
-    #views, #series, #summary, #posts, #content {
+    #views, #series, #summary, #posts, #thread, #content {
         border: none; border-top: solid $panel-lighten-2;
     }
-    #views:focus, #series:focus, #summary:focus, #posts:focus, #content:focus {
+    #views:focus, #series:focus, #summary:focus, #posts:focus, #thread:focus, #content:focus {
         border: none; border-top: solid $accent;
     }
     #summary, #summary:focus { border-left: solid $panel-lighten-2; }
@@ -194,8 +204,15 @@ class MaintainerApp(App[None]):
         scrollbar-gutter: stable;
     }
     #reader { height: 1fr; display: none; }
-    #posts { width: 24; }
+    #posts { width: 18; }
+    #thread { width: 44; }
     #content { width: 1fr; padding: 0 1; scrollbar-gutter: stable; }
+    Screen.-medium #posts { display: none; }
+    Screen.-narrow.-reading #posts, Screen.-narrow.-reading #thread,
+    Screen.-narrow.-reading #content { display: none; }
+    Screen.-narrow.-rpane-posts #posts { display: block; width: 1fr; }
+    Screen.-narrow.-rpane-thread #thread { display: block; width: 1fr; }
+    Screen.-narrow.-rpane-content #content { display: block; width: 1fr; }
     Screen.-reading #main { display: none; }
     Screen.-reading #reader { display: block; }
     #drawer { height: 1; background: $panel; }
@@ -214,8 +231,10 @@ class MaintainerApp(App[None]):
         Binding('tab', 'focus_next', 'next pane', priority=True),
         Binding('enter', 'open_reader', 'read'),
         Binding('escape', 'back', 'back'),
-        Binding('d', 'show_mode("diff")', 'diff'),
-        Binding('c', 'show_mode("comments")', 'comments'),
+        Binding('left_square_bracket', 'next_post(-1)', 'prev', key_display='['),
+        Binding('right_square_bracket', 'next_post(1)', 'next', key_display=']'),
+        Binding('n', 'next_comment', 'next comment'),
+        Binding('z', 'toggle_quotes', 'quotes'),
         Binding('p', 'toggle_preview', 'preview'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
         Binding('Q', 'quit', 'quit'),
@@ -248,7 +267,10 @@ class MaintainerApp(App[None]):
         self._reading: Optional[WorkItem] = None
         self._thread: Optional[SeriesThread] = None
         self._post_key = ''
-        self._content_mode: ContentMode = 'diff'
+        self._node = 0
+        self._pending_node: Optional[int] = None
+        self._expand_quotes = False
+        self._reader_pane = 'posts'
 
     def compose(self) -> ComposeResult:
         yield StatusLine(self._status, id='status')
@@ -258,6 +280,7 @@ class MaintainerApp(App[None]):
             yield TextPane(self._summary, id='summary')
         with Horizontal(id='reader'):
             yield OptionList(id='posts')
+            yield OptionList(id='thread')
             yield TextPane(id='content')
         yield Static('', id='drawer-panel', markup=False)
         yield Static('', id='drawer', markup=False)
@@ -271,8 +294,10 @@ class MaintainerApp(App[None]):
         self._series_list.border_title = 'Series'
         self._summary_pane.border_title = 'Summary'
         self._posts = self.query_one('#posts', OptionList)
+        self._thread_list = self.query_one('#thread', OptionList)
         self._content = self.query_one('#content', TextPane)
         self._posts.border_title = 'Patches'
+        self._thread_list.border_title = 'Thread'
         self._status_widget = self.query_one('#status', StatusLine)
         self._apply_layout(self.size.width)
         self._series_list.focus()
@@ -316,12 +341,21 @@ class MaintainerApp(App[None]):
         self._update_status()
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if not event.option_id:
+        if event.option_list.id == 'thread':
+            self._show_node(event.option_index)
+        elif not event.option_id:
             return
-        if event.option_list.id == 'posts':
+        elif event.option_list.id == 'posts':
             self._show_post(event.option_id)
         else:
             self.select_view(event.option_id)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        # Enter descends: patch list -> thread -> content.
+        if event.option_list.id == 'posts':
+            self._set_reader_pane('thread')
+        elif event.option_list.id == 'thread':
+            self._set_reader_pane('content')
 
     def on_series_list_highlighted(self, event: SeriesList.Highlighted) -> None:
         self._item = event.item
@@ -335,10 +369,13 @@ class MaintainerApp(App[None]):
         self._apply_layout(event.size.width)
 
     def _apply_layout(self, width: int) -> None:
+        previous = self._mode
         self._mode = layout_mode(width, self._breakpoints or Breakpoints())
         for name in ('wide', 'medium', 'narrow'):
             self.screen.set_class(self._mode == name, f'-{name}')
         self._apply_preview_width()
+        if self._reading is not None and self._mode != previous:
+            self._set_reader_pane('posts' if self._mode == 'narrow' else self._reader_pane)
         self.refresh_bindings()
 
     def _apply_preview_width(self) -> None:
@@ -363,16 +400,22 @@ class MaintainerApp(App[None]):
         if action == 'toggle_views':
             return not reading and self._mode == 'medium'
         if action == 'focus_next':
-            return reading or not narrow
+            return not narrow
         if action == 'open_reader':
             return not reading and self._item is not None
         if action == 'back':
             return reading or (narrow and summary_open)
         if action == 'toggle_preview':
             return not reading
-        if action == 'show_mode':
-            post = find_post(self._thread, self._post_key) if reading and self._thread else None
-            return bool(post and post.counter and parameters[0] != self._content_mode)
+        if action in ('next_post', 'next_comment', 'toggle_quotes'):
+            if not reading or self._thread is None:
+                return False
+            if action == 'next_post':
+                return self._posts.option_count > 1
+            if action == 'next_comment':
+                return any(thread_replies(self._thread, k) for k in post_keys(self._thread))
+            reply = self._current_reply()
+            return reply is not None and has_long_quote(reply)
         return True
 
     # Text accessors for tests and status rendering.
@@ -384,6 +427,13 @@ class MaintainerApp(App[None]):
 
     def drawer_text(self) -> str:
         return self._drawer
+
+    def reader_panes(self) -> tuple[str, ...]:
+        if self._reading is None:
+            return ()
+        return tuple(
+            name for name in ('posts', 'thread', 'content') if self.query_one(f'#{name}').display
+        )
 
     def visible_panes(self) -> tuple[str, ...]:
         if not self.query_one('#main').display:
@@ -402,7 +452,11 @@ class MaintainerApp(App[None]):
 
     def action_back(self) -> None:
         if self._reading is not None:
-            self._close_reader()
+            up = {'content': 'thread', 'thread': 'posts'}
+            if self._mode == 'narrow' and self._reader_pane in up:
+                self._set_reader_pane(up[self._reader_pane])
+            else:
+                self._close_reader()
             return
         self.screen.remove_class('-show-summary')
         self._series_list.focus()
@@ -419,8 +473,24 @@ class MaintainerApp(App[None]):
             for i in range(self._posts.option_count)
         ]
 
+    def thread_labels(self) -> list[str]:
+        return [
+            Content.from_markup(str(self._thread_list.get_option_at_index(i).prompt)).plain
+            for i in range(self._thread_list.option_count)
+        ]
+
     def content_text(self) -> str:
         return self._content.text
+
+    def _set_reader_pane(self, pane: str) -> None:
+        if self._mode == 'medium' and pane == 'posts':
+            pane = 'thread'  # The patch list is hidden; [ and ] change patches.
+        self._reader_pane = pane
+        for name in ('posts', 'thread', 'content'):
+            self.screen.set_class(name == pane, f'-rpane-{name}')
+        widget = {'posts': self._posts, 'thread': self._thread_list, 'content': self._content}
+        widget[pane].focus()
+        self.refresh_bindings()
 
     def action_open_reader(self) -> None:
         item = self._item
@@ -429,11 +499,11 @@ class MaintainerApp(App[None]):
         self._reading, self._thread, self._post_key = item, None, ''
         self.screen.add_class('-reading')
         self._posts.clear_options()
+        self._thread_list.clear_options()
         self._content.border_title = ''
         self._content.set_text('Loading thread…')
         self._set_status(f' b4-maintainer — Reading: {item.series.subject} v{item.series.revision}')
-        self._posts.focus()
-        self.refresh_bindings()
+        self._set_reader_pane('posts')
         self.run_worker(
             lambda: self._load_thread(item), thread=True, group='thread', exclusive=True
         )
@@ -464,18 +534,73 @@ class MaintainerApp(App[None]):
         if self._thread is None or self._reading is None:
             return
         self._post_key = key
-        self._content.border_title = escape(content_title(self._thread, key, self._content_mode))
-        self._content.set_blocks(post_blocks(self._thread, key, self._reading, self._content_mode))
+        replies = thread_replies(self._thread, key)
+        width = max(20, self._thread_list.scrollable_content_region.width or 42)
+        labels = [root_label(self._thread, key)] + reply_labels(replies)
+        self._thread_list.clear_options()
+        self._thread_list.add_options(
+            Option(escape(pad_display(label, width).rstrip())) for label in labels
+        )
+        self._thread_list.border_title = escape(
+            f'{post_label(self._thread, key, self._reading, self.symbols.absent)} thread'
+        )
+        target, self._pending_node = self._pending_node or 0, None
+        self._thread_list.highlighted = min(target, len(labels) - 1)
+
+    def _current_reply(self):
+        if self._thread is None or not self._node:
+            return None
+        replies = thread_replies(self._thread, self._post_key)
+        return replies[self._node - 1] if self._node <= len(replies) else None
+
+    def _show_node(self, index: int) -> None:
+        if self._thread is None or self._reading is None:
+            return
+        self._node = index
+        reply = self._current_reply()
+        total = self._reading.series.expected
+        title = content_title(self._thread, self._post_key, reply, total)
+        if reply is not None and has_long_quote(reply):
+            title += ' · [z] quotes'
+        self._content.border_title = escape(title)
+        if reply is None:
+            blocks = root_blocks(self._thread, self._post_key, self._reading)
+        else:
+            blocks = message_blocks(reply, self._expand_quotes)
+        self._content.set_blocks(blocks)
         self.refresh_bindings()
 
-    def action_show_mode(self, mode: ContentMode) -> None:
-        self._content_mode = mode
-        self._show_post(self._post_key)
+    def action_next_post(self, delta: int) -> None:
+        current = self._posts.highlighted or 0
+        self._posts.highlighted = max(0, min(current + delta, self._posts.option_count - 1))
+
+    def action_next_comment(self) -> None:
+        """Next comment in series order, crossing into later patches."""
+        if self._thread is None:
+            return
+        keys = post_keys(self._thread)
+        here = keys.index(self._post_key) if self._post_key in keys else 0
+        if self._node < len(thread_replies(self._thread, self._post_key)):
+            self._thread_list.highlighted = self._node + 1
+            return
+        for position in range(here + 1, len(keys)):
+            if thread_replies(self._thread, keys[position]):
+                self._pending_node = 1
+                self._posts.highlighted = position
+                return
+        self.notify('No more comments in this series.')
+
+    def action_toggle_quotes(self) -> None:
+        self._expand_quotes = not self._expand_quotes
+        self._show_node(self._node)
 
     def _close_reader(self) -> None:
         self.workers.cancel_group(self, 'thread')
         self._reading, self._thread, self._post_key = None, None, ''
+        self._node, self._pending_node = 0, None
         self.screen.remove_class('-reading')
+        for name in ('posts', 'thread', 'content'):
+            self.screen.remove_class(f'-rpane-{name}')
         self._series_list.focus()
         if self.index is not None:
             self._update_status()

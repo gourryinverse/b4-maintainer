@@ -134,8 +134,15 @@ def _revisions(lmbx: 'b4.LoreMailbox') -> dict[int, 'b4.LoreSeries']:
 
 
 def _message(lmsg: 'b4.LoreMessage') -> Message:
+    # b4 collects trailers from replies only, so postings carry no tags here.
     return Message(
-        lmsg.msgid, lmsg.fromname, lmsg.fromemail, lmsg.date, lmsg.full_subject, lmsg.body
+        lmsg.msgid,
+        lmsg.fromname,
+        lmsg.fromemail,
+        lmsg.date,
+        lmsg.full_subject,
+        lmsg.body,
+        _tags(lmsg.trailers),
     )
 
 

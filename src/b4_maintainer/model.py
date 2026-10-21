@@ -125,6 +125,7 @@ class Message:
     date: Optional[datetime.datetime]
     subject: str
     body: str
+    tags: frozenset[Tag] = frozenset()
 
 
 @dataclass(frozen=True)

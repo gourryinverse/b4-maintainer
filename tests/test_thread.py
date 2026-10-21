@@ -162,3 +162,14 @@ def test_cyclic_replies_are_kept_as_unattached(tmp_path):
         'cycle-a@example.org',
         'cycle-b@example.org',
     ]
+
+
+def test_replies_carry_the_tags_they_give(tmp_path):
+    mail = two_patch_series(
+        tmp_path,
+        followups=[Followup(1, 'Reviewed-by: Reviewer Two <reviewer2@example.org>')],
+    )
+    [series] = parse_mbox(mail.path)
+    [reply] = load_thread(series).patches[0].replies
+    assert reply.message.tags == frozenset({('reviewed', 'reviewer2@example.org')})
+    assert load_thread(series).patches[0].message.tags == frozenset()

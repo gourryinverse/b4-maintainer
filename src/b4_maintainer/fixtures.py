@@ -202,6 +202,7 @@ class Followup:
     parent: int = 0
     threaded: bool = True
     sender: tuple[str, str] = ('Reviewer One', 'reviewer1@example.org')
+    quote_lines: int = 0
 
 
 @dataclass
@@ -303,7 +304,9 @@ def write_series_mbox(
         parent = result.followups[fu.parent - 1] if fu.parent else result.msgids[fu.target]
         sender = email.utils.parseaddr(fu.trailer.split(':', 1)[1]) if fu.trailer else fu.sender
         text = '\n\n'.join(t for t in (fu.body, fu.trailer) if t)
-        body = f'> Synthetic quoted text.\n\n{text}\n'
+        quoted = ''.join(f'> quoted line {n}\n' for n in range(1, fu.quote_lines + 1))
+        quoted = quoted or '> Synthetic quoted text.\n'
+        body = f'{quoted}\n{text}\n'
         msgid, msg = message(
             100 + k, f'Re: {subject}', body, sender, parent if fu.threaded else None
         )
@@ -372,6 +375,8 @@ def build_demo_workspace(
         followups=[
             Followup(0, 'Acked-by: Reviewer One <reviewer1@example.org>'),
             Followup(3, 'Reviewed-by: Reviewer Two <reviewer2@example.org>'),
+            Followup(3, body='Comment after a long quote.', quote_lines=10),
+            Followup(3, body='Thanks, will fix.', parent=3, sender=CONTRIBUTOR),
         ],
         date=EPOCH + 9 * day,
     )

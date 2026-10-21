@@ -36,12 +36,16 @@ async def test_enter_opens_reader_on_cover_and_escape_returns(demo_root):
 
         assert app.reading is item
         assert app.visible_panes() == ()
+        assert app.reader_panes() == ('posts', 'thread', 'content')
         labels = app.post_labels()
         assert labels[0].startswith('0/5 cover')
         assert [label.split()[0] for label in labels[1:]] == ['1/5', '2/5', '3/5', '4/5', '5/5']
+        thread = app.thread_labels()
+        assert 'mm: fix foo leak' in thread[0]
+        assert thread[1].startswith('└─> Reviewer One') and thread[1].endswith(' A')
         text = app.content_text()
         assert 'Synthetic cover letter.' in text
-        assert 'Acked-by: Reviewer One' in text
+        assert 'Acked-by: Reviewer One' not in text
 
         await pilot.press('escape')
         await pilot.pause()
@@ -50,31 +54,114 @@ async def test_enter_opens_reader_on_cover_and_escape_returns(demo_root):
         assert series_list.highlighted_item is item
 
 
-async def test_patch_toggles_between_diff_and_comments(demo_root):
+async def select_post(pilot, index):
+    app = pilot.app
+    app.query_one('#posts').highlighted = index
+    await pilot.pause()
+
+
+async def test_thread_tree_shows_patch_or_one_comment(demo_root):
     app = MaintainerApp(FixtureSource(demo_root).load)
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        await pilot.press('down', 'down', 'down')
-        await pilot.pause()
+        await select_post(pilot, 3)
+        thread = app.thread_labels()
+        assert 'mm: fix foo leak (part 3)' in thread[0]
+        assert [label.split(' 10-')[0] for label in thread[1:]] == [
+            '├─> Reviewer Two',
+            '└─> Reviewer One',
+            '  └─> Contributor One',
+        ]
+        assert thread[1].endswith(' R')
         text = app.content_text()
         assert 'Synthetic change touching mm/foo3.c' in text
         assert 'diff --git a/mm/foo3.c b/mm/foo3.c' in text
         assert 'Reviewed-by: Reviewer Two' not in text
 
-        await pilot.press('c')
-        await pilot.pause()
-        text = app.content_text()
-        assert 'Reviewed-by: Reviewer Two' in text
-        assert 'diff --git' not in text
-
+        await pilot.press('tab')
+        assert app.focused is app.query_one('#thread')
         await pilot.press('down')
         await pilot.pause()
-        assert 'No comments.' in app.content_text()
+        text = app.content_text()
+        assert 'Reviewed-by: Reviewer Two <reviewer2@example.org>' in text
+        assert 'diff --git' not in text
 
-        await pilot.press('d')
+
+async def test_long_quotes_collapse_and_expand(demo_root):
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        await select_post(pilot, 3)
+        app.query_one('#thread').highlighted = 2
         await pilot.pause()
-        assert 'diff --git a/mm/foo4.c' in app.content_text()
+        text = app.content_text()
+        assert '> [8 quoted lines]' in text
+        assert '> quoted line 1\n' not in text + '\n'
+        assert '> quoted line 9' in text and '> quoted line 10' in text
+        assert 'Comment after a long quote.' in text
+        assert 'z' in footer_keys(app)
+
+        await pilot.press('z')
+        await pilot.pause()
+        assert '> quoted line 1\n' in app.content_text() + '\n'
+        assert 'quoted lines]' not in app.content_text()
+        await pilot.press('z')
+        await pilot.pause()
+        assert '> [8 quoted lines]' in app.content_text()
+
+
+async def test_bracket_and_n_keys_move_between_patches_and_comments(demo_root):
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        posts, thread = app.query_one('#posts'), app.query_one('#thread')
+        await pilot.press('right_square_bracket')
+        await pilot.pause()
+        assert posts.highlighted == 1
+        await pilot.press('left_square_bracket')
+        await pilot.pause()
+        assert posts.highlighted == 0
+
+        await pilot.press('n')
+        await pilot.pause()
+        assert (posts.highlighted, thread.highlighted) == (0, 1)
+        await pilot.press('n')
+        await pilot.pause()
+        assert (posts.highlighted, thread.highlighted) == (3, 1)
+        await pilot.press('n')
+        await pilot.pause()
+        assert (posts.highlighted, thread.highlighted) == (3, 2)
+        assert 'Comment after a long quote.' in app.content_text()
+
+
+async def test_reader_layout_follows_width(demo_root):
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(130, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        assert app.reader_panes() == ('thread', 'content')
+        await pilot.press('right_square_bracket')
+        await pilot.pause()
+        assert app.query_one('#posts').highlighted == 1
+
+        await pilot.resize_terminal(90, 40)
+        await pilot.pause()
+        assert app.reader_panes() == ('posts',)
+        await pilot.press('enter')
+        await pilot.pause()
+        assert app.reader_panes() == ('thread',)
+        await pilot.press('enter')
+        await pilot.pause()
+        assert app.reader_panes() == ('content',)
+        await pilot.press('escape')
+        await pilot.pause()
+        assert app.reader_panes() == ('thread',)
+        await pilot.press('escape', 'escape')
+        await pilot.pause()
+        assert app.reading is None
 
 
 async def test_reader_footer_shows_only_applicable_keys(demo_root):
@@ -83,17 +170,8 @@ async def test_reader_footer_shows_only_applicable_keys(demo_root):
         await loaded(pilot)
         await open_reader(pilot)
         keys = footer_keys(app)
-        assert {'escape', 'tab', 'grave_accent', 'Q'} <= keys
-        assert not {'d', 'c', 'v', 'p', 'enter'} & keys
-
-        await pilot.press('down')
-        await pilot.pause()
-        keys = footer_keys(app)
-        assert 'c' in keys and 'd' not in keys
-        await pilot.press('c')
-        await pilot.pause()
-        keys = footer_keys(app)
-        assert 'd' in keys and 'c' not in keys
+        assert {'escape', 'tab', 'right_square_bracket', 'n', 'grave_accent', 'Q'} <= keys
+        assert not {'d', 'c', 'v', 'p', 'enter', 'z'} & keys
 
 
 async def test_drawer_line_stays_visible_and_pinned_while_reading(demo_root):
@@ -159,6 +237,10 @@ async def test_unattached_replies_get_their_own_entry():
         assert app.post_labels()[-1] == 'Unattached (1)'
         await pilot.press('end')
         await pilot.pause()
+        assert 'could not be linked' in app.content_text()
+        assert app.thread_labels()[1].startswith('└─> Reviewer One')
+        await pilot.press('tab', 'down')
+        await pilot.pause()
         assert 'Lost reply.' in app.content_text()
 
 
@@ -206,12 +288,6 @@ async def test_titles_and_labels_render_brackets_literally(tmp_path):
         ]
         assert any(p.startswith('[mm] core') for p in prompts)
 
-        await open_reader(pilot)
-        await pilot.press('down')
-        await pilot.pause()
-        title = Content.from_markup(str(app.query_one('#content').border_title)).plain
-        assert '[c] comments' in title
-
 
 async def test_patch_label_and_content_include_carried_tags(demo_root):
     app = MaintainerApp(FixtureSource(demo_root).load)
@@ -225,3 +301,60 @@ async def test_patch_label_and_content_include_carried_tags(demo_root):
             'Trailers: A:0 R:1 T:0 (carried A:0 R:1 T:0 · replies A:0 R:0 T:0)'
             in app.content_text()
         )
+
+
+async def test_thread_labels_and_titles_render_brackets_literally():
+    from textual.content import Content
+
+    odd = Message('odd@example.org', 'Rev [x] One', 'rev@example.org', None, 'Re: x', 'Hi.')
+    _, app = single_item_app(lambda item, s: stub_thread_with_replies(item, (Reply(odd, 0),)))
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        assert '[x]' in app.thread_labels()[1]
+        await pilot.press('tab', 'down')
+        await pilot.pause()
+        title = Content.from_markup(str(app.query_one('#content').border_title)).plain
+        assert 'Rev [x] One' in title
+
+
+def stub_thread_with_replies(item, replies):
+    msg = Message(
+        'p1@example.org', 'Contributor One', 'contributor1@example.org', None, 'subject', 'Body.'
+    )
+    post = Post(1, msg, 'Body.', 'diff --git a/x b/x', replies)
+    return SeriesThread(item.identity, item.series.revision, None, (post,))
+
+
+def test_tree_art_from_depths():
+    from b4_maintainer.reader import tree_art
+
+    assert tree_art([0, 1, 0, 1, 2]) == ['├─>', '│ └─>', '└─>', '  └─>', '    └─>']
+    assert tree_art([0, 0, 0]) == ['├─>', '├─>', '└─>']
+    assert tree_art([]) == []
+
+
+def test_collapse_quotes_keeps_short_quotes_and_tail_of_long_ones():
+    from b4_maintainer.reader import collapse_quotes
+
+    def text(blocks):
+        return '\n'.join(b.text for b in blocks)
+
+    long_quote = '\n'.join(f'> line {n}' for n in range(1, 11)) + '\n\nReply.'
+    collapsed = text(collapse_quotes(long_quote, expand=False))
+    assert '> [8 quoted lines]' in collapsed
+    assert '> line 1\n' not in collapsed + '\n'
+    assert '> line 9\n> line 10' in collapsed and 'Reply.' in collapsed
+    assert text(collapse_quotes(long_quote, expand=True)) == long_quote
+
+    short = '> a\n> b\n> c\nReply.'
+    assert text(collapse_quotes(short, expand=False)) == short
+
+
+def test_mail_signature_separator_is_not_a_removed_line():
+    from rich.style import Style
+
+    from b4_maintainer.reader import diff_style
+
+    assert diff_style('-- ') == Style()
+    assert diff_style('-removed') != Style()
