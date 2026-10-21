@@ -175,12 +175,15 @@ def load_thread(series: Series) -> SeriesThread:
         )
 
     cover = lser.patches[0]
+    # Roots follow b4's tree, not In-Reply-To: b4 may break a reply cycle by
+    # making a message a root while its header still names a parent.
+    children = {c.lmsg.msgid for n in nodes.values() for c in n.children}
     roots = [
         n
         for n in nodes.values()
         if n.lmsg.msgid not in posts
         and n.lmsg.msgid not in reached
-        and n.lmsg.in_reply_to not in nodes
+        and n.lmsg.msgid not in children
     ]
     roots.sort(key=lambda n: n.lmsg.date)
     unattached: list[Reply] = []
