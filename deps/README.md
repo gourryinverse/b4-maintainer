@@ -11,7 +11,6 @@
 | deps/semcode | Semantic code search, call graphs, commit history, MCP queries | https://github.com/facebookexperimental/semcode.git |
 
 Default source: maintainer forks under https://github.com/gourryinverse/.
-Exception: kernel-style uses upstream until its fork contains the pinned commit.
 
 Initialize from the project root:
 

@@ -9,7 +9,7 @@
 	url = https://github.com/gourryinverse/review-prompts.git
 [submodule "deps/kernel-style"]
 	path = deps/kernel-style
-	url = https://github.com/rikvanriel/kernel-style.git
+	url = https://github.com/gourryinverse/kernel-style.git
 [submodule "deps/virtme-ng"]
 	path = deps/virtme-ng
 	url = https://github.com/gourryinverse/virtme-ng.git
