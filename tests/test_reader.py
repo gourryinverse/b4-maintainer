@@ -211,3 +211,17 @@ async def test_titles_and_labels_render_brackets_literally(tmp_path):
         await pilot.pause()
         title = Content.from_markup(str(app.query_one('#content').border_title)).plain
         assert '[c] comments' in title
+
+
+async def test_patch_label_and_content_include_carried_tags(demo_root):
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        assert app.post_labels()[2] == '2/5 ·R·'
+        await pilot.press('down', 'down')
+        await pilot.pause()
+        assert (
+            'Trailers: A:0 R:1 T:0 (carried A:0 R:1 T:0 · replies A:0 R:0 T:0)'
+            in app.content_text()
+        )

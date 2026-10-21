@@ -13,7 +13,17 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Sequence
 
-from .model import Authority, Coverage, Patch, Progress, Series, SeriesState, Trailers, WorkItem
+from .model import (
+    Authority,
+    Coverage,
+    Patch,
+    Progress,
+    Series,
+    SeriesState,
+    Tag,
+    Trailers,
+    WorkItem,
+)
 from .workspace import Snapshot, Workspace, build_items
 
 ME = 'maintainer@example.org'
@@ -82,6 +92,19 @@ def _msgid(*parts: object) -> str:
     return f'{digest}@example.org'
 
 
+def synthetic_tags(trailers: Trailers, source: str) -> frozenset[Tag]:
+    """Distinct example.org reviewers per kind; source keeps carried and replied apart."""
+    return frozenset(
+        (kind, f'{source}-{kind}{n}@example.org')
+        for kind, count in (
+            ('acked', trailers.acked),
+            ('reviewed', trailers.reviewed),
+            ('tested', trailers.tested),
+        )
+        for n in range(count)
+    )
+
+
 def make_series(
     subject: str,
     revision: int = 1,
@@ -92,6 +115,7 @@ def make_series(
     author_email: str = CONTRIBUTOR[1],
     complete: bool = True,
     trailers: Trailers = Trailers(),
+    carried: Trailers = Trailers(),
     sent: Optional[datetime.datetime] = None,
     expected: int = 1,
     preview: str = '',
@@ -108,7 +132,15 @@ def make_series(
         author_name='Synthetic Author',
         author_email=author_email,
         sent=sent or EPOCH,
-        patches=(Patch(1, msgid, subject, trailers),),
+        patches=(
+            Patch(
+                1,
+                msgid,
+                subject,
+                synthetic_tags(trailers, 'reply'),
+                synthetic_tags(carried, 'carried'),
+            ),
+        ),
         change_id=change_id,
         lists=tuple(lists),
         paths=tuple(paths),
@@ -135,12 +167,14 @@ def make_item(
     short: str = '',
     candidates: tuple[str, ...] = (),
     preview: str = '',
+    carried: Trailers = Trailers(),
 ) -> WorkItem:
     series = make_series(
         subject,
         revision,
         complete=complete,
         trailers=Trailers(acked, reviewed, tested),
+        carried=carried,
         preview=preview,
     )
     state = SeriesState(unread, fixes_pending, progress, draft, to_review, tuple(tree))
@@ -151,6 +185,7 @@ def make_item(
 class PatchSpec:
     path: str
     summary: str = ''
+    trailers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -185,7 +220,8 @@ def _patch_body(spec: PatchSpec, author: tuple[str, str], change_id: Optional[st
     footer = f'\nchange-id: {change_id}\n' if change_id else ''
     return (
         f'Synthetic change touching {spec.path}.\n\n'
-        f'Signed-off-by: {author[0]} <{author[1]}>\n'
+        + ''.join(f'{t}\n' for t in spec.trailers)
+        + f'Signed-off-by: {author[0]} <{author[1]}>\n'
         '---\n'
         f' {spec.path} | 2 +-\n'
         ' 1 file changed, 1 insertion(+), 1 deletion(-)\n\n'
@@ -325,7 +361,13 @@ def build_demo_workspace(
         subject='mm: fix foo leak',
         revision=3,
         cover_text=LONG_COVER,
-        patches=[PatchSpec(f'mm/foo{n}.c') for n in range(1, 6)],
+        patches=[
+            PatchSpec(
+                f'mm/foo{n}.c',
+                trailers=('Reviewed-by: Reviewer Three <reviewer3@example.org>',) if n == 2 else (),
+            )
+            for n in range(1, 6)
+        ],
         change_id='20260930-mm-foo-aaaaaaaaaaaa',
         followups=[
             Followup(0, 'Acked-by: Reviewer One <reviewer1@example.org>'),

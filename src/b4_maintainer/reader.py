@@ -52,6 +52,21 @@ def _trailers(item: WorkItem, counter: int) -> Trailers:
     return patch.trailers if patch else Trailers()
 
 
+def _counts(t: Trailers) -> str:
+    return f'A:{t.acked} R:{t.reviewed} T:{t.tested}'
+
+
+def trailer_line(item: WorkItem, counter: int) -> str:
+    """All evidence, split into tags carried in the commit and tags from replies."""
+    patch = next((p for p in item.series.patches if p.counter == counter), None)
+    if patch is None:
+        return f'Trailers: {_counts(_trailers(item, counter))}'
+    return (
+        f'Trailers: {_counts(patch.trailers)} '
+        f'(carried {_counts(patch.carried_trailers)} · replies {_counts(patch.reply_trailers)})'
+    )
+
+
 def _marks(t: Trailers, absent: str) -> str:
     return ''.join(
         c if n else absent for c, n in (('A', t.acked), ('R', t.reviewed), ('T', t.tested))
@@ -107,11 +122,10 @@ def post_blocks(thread: SeriesThread, key: str, item: WorkItem, mode: ContentMod
         return [Block(intro), Block('')] + reply_blocks(thread.unattached)
     post = find_post(thread, key)
     assert post is not None
-    t = _trailers(item, post.counter)
     blocks = [
         Block(post.message.subject, style=HEADER),
         Block(f'From: {_header(post.message)}'),
-        Block(f'Trailers: A:{t.acked} R:{t.reviewed} T:{t.tested}'),
+        Block(trailer_line(item, post.counter)),
         Block(''),
         Block(post.description, style=prose_style),
         Block(''),

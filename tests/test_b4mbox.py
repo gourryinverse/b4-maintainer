@@ -3,6 +3,7 @@ import pytest
 
 from b4_maintainer.adapters.b4mbox import parse_mbox
 from b4_maintainer.fixtures import Followup, PatchSpec, write_series_mbox
+from b4_maintainer.model import Trailers
 
 KSELFTEST = 'linux-kselftest.vger.kernel.org'
 LINUX_MM = 'linux-mm.kvack.org'
@@ -104,3 +105,32 @@ def test_preview_is_commit_message_without_cover(tmp_path):
     assert 'Synthetic change touching mm/example.c' in series.preview
     assert '1 file changed' in series.preview
     assert 'diff --git' not in series.preview
+
+
+def test_commit_trailers_are_carried_evidence_deduplicated_with_replies(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'g.mbx',
+        subject='mm: carried tags',
+        patches=[
+            PatchSpec(
+                'mm/a.c',
+                trailers=(
+                    'Acked-by: Reviewer One <reviewer1@example.org>',
+                    'Reviewed-by: Reviewer Two <reviewer2@example.org>',
+                ),
+            ),
+            PatchSpec('mm/b.c'),
+        ],
+        followups=[
+            Followup(1, 'Reviewed-by: Reviewer Two <REVIEWER2@example.org>'),
+            Followup(2, 'Tested-by: Tester One <tester1@example.org>'),
+        ],
+    )
+    [series] = parse_mbox(mail.path)
+    first, second = series.patches
+    assert first.carried_trailers == Trailers(acked=1, reviewed=1)
+    assert first.reply_trailers == Trailers(reviewed=1)
+    assert first.trailers == Trailers(acked=1, reviewed=1)
+    assert second.carried_trailers == Trailers()
+    assert second.trailers == Trailers(tested=1)
+    assert series.trailer_totals() == (1, 1, 1)

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Immutable work-item records shared by adapters, views, and the UI."""
 
+import collections
 import datetime
 import enum
 from dataclasses import dataclass, field
@@ -31,6 +32,8 @@ class Progress(enum.Enum):
 
 # (ref label, ref authority, coverage)
 RefEvidence = tuple[str, Authority, Coverage]
+# (trailer kind: acked/reviewed/tested, reviewer identity)
+Tag = tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,11 @@ class Trailers:
     acked: int = 0
     reviewed: int = 0
     tested: int = 0
+
+    @classmethod
+    def of(cls, tags: frozenset[Tag]) -> 'Trailers':
+        counts = collections.Counter(kind for kind, _ in tags)
+        return cls(counts['acked'], counts['reviewed'], counts['tested'])
 
     def __add__(self, other: 'Trailers') -> 'Trailers':
         return Trailers(
@@ -47,10 +55,26 @@ class Trailers:
 
 @dataclass(frozen=True)
 class Patch:
+    """A posted patch; tags carried in its commit message are kept apart from replies."""
+
     counter: int
     msgid: str
     subject: str
-    trailers: Trailers = Trailers()
+    replied: frozenset[Tag] = frozenset()
+    carried: frozenset[Tag] = frozenset()
+
+    @property
+    def trailers(self) -> Trailers:
+        """All evidence, deduplicated by reviewer across commit and replies."""
+        return Trailers.of(self.replied | self.carried)
+
+    @property
+    def reply_trailers(self) -> Trailers:
+        return Trailers.of(self.replied)
+
+    @property
+    def carried_trailers(self) -> Trailers:
+        return Trailers.of(self.carried)
 
 
 @dataclass(frozen=True)

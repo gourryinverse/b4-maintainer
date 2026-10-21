@@ -8,7 +8,7 @@ from typing import Iterable, Optional
 import b4
 from b4.review_tui._lite_app import ThreadNode, build_thread_tree
 
-from ..model import Message, Patch, Post, Reply, Series, SeriesThread, Trailers
+from ..model import Message, Patch, Post, Reply, Series, SeriesThread, Tag, Trailers
 
 TRAILER_KINDS = {'acked-by': 'acked', 'reviewed-by': 'reviewed', 'tested-by': 'tested'}
 
@@ -33,21 +33,24 @@ def _recipients(msgs: Iterable['b4.LoreMessage']) -> tuple[str, ...]:
     return tuple(found)
 
 
-def _trailers(lmsg: Optional['b4.LoreMessage']) -> Trailers:
-    if lmsg is None:
-        return Trailers()
-    seen: set[tuple[str, str]] = set()
-    counts = {'acked': 0, 'reviewed': 0, 'tested': 0}
-    for trailer in lmsg.followup_trailers:
+def _tags(trailers: Iterable['b4.LoreTrailer']) -> frozenset[Tag]:
+    tags = set()
+    for trailer in trailers:
         kind = TRAILER_KINDS.get(trailer.name.lower())
-        if kind is None:
-            continue
-        who = trailer.addr[1].lower() if trailer.addr else trailer.value.lower()
-        if (kind, who) in seen:
-            continue
-        seen.add((kind, who))
-        counts[kind] += 1
-    return Trailers(**counts)
+        if kind is not None:
+            who = trailer.addr[1].lower() if trailer.addr else trailer.value.lower()
+            tags.add((kind, who))
+    return frozenset(tags)
+
+
+def _replied(lmsg: Optional['b4.LoreMessage']) -> frozenset[Tag]:
+    return _tags(lmsg.followup_trailers) if lmsg is not None else frozenset()
+
+
+def _carried(lmsg: 'b4.LoreMessage') -> frozenset[Tag]:
+    """Tags in the patch's own commit message, usually from earlier revisions."""
+    _headers, _message, trailers, _basement, _signature = b4.LoreMessage.get_body_parts(lmsg.body)
+    return _tags(trailers)
 
 
 def _paths(patches: Iterable['b4.LoreMessage']) -> tuple[str, ...]:
@@ -88,8 +91,10 @@ def _series(lser: 'b4.LoreSeries', source: str) -> Series:
         author_name=lser.fromname,
         author_email=lser.fromemail,
         sent=present[0].date,
-        patches=tuple(Patch(p.counter, p.msgid, p.lsubject.subject, _trailers(p)) for p in patches),
-        cover_trailers=_trailers(cover),
+        patches=tuple(
+            Patch(p.counter, p.msgid, p.lsubject.subject, _replied(p), _carried(p)) for p in patches
+        ),
+        cover_trailers=Trailers.of(_replied(cover)),
         change_id=change_id,
         lists=_list_ids(present),
         recipients=_recipients(present),

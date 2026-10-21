@@ -71,3 +71,9 @@ def test_symbols_are_configurable():
 def test_project_column_when_requested():
     assert ' lnx  ' in render_row(make_item(project='linux', short='lnx'), project_width=5)
     assert ' ?    ' in render_row(make_item(candidates=('linux', 'qemu')), project_width=5)
+
+
+def test_carried_commit_tags_show_in_row():
+    from b4_maintainer.model import Trailers
+
+    assert ' C·R· ' in render_row(make_item(carried=Trailers(reviewed=1)))
