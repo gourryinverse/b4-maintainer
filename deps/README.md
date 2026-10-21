@@ -51,5 +51,6 @@ Configure remotes after initialization:
 
 ## Known gaps
 
-- Fixed on fork branch `b4-maintainer/offline-thread`, pending upstream:
-  `build_thread_tree()` keeps In-Reply-To cycles; `LiteThreadScreen` accepts a mailbox.
+- Carried on the fork's master, pending upstream: `build_thread_tree()` keeps
+  In-Reply-To cycles; `LiteThreadScreen` accepts a mailbox.
+- b4 `LoreMailbox.get_series()` hangs on a two-message reply cycle carrying trailers.
