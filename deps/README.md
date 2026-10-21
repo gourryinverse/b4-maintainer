@@ -52,5 +52,6 @@ Configure remotes after initialization:
 ## Known gaps
 
 - Carried on the fork's master, pending upstream: `build_thread_tree()` keeps
-  In-Reply-To cycles; `LiteThreadScreen` accepts a mailbox.
+  In-Reply-To cycles; `LiteThreadScreen` accepts a mailbox; per-repository
+  `b4.data-dir`/`b4.cache-dir`.
 - b4 `LoreMailbox.get_series()` hangs on a two-message reply cycle carrying trailers.
