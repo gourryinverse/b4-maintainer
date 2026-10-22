@@ -9,6 +9,7 @@
 | deps/virtme-ng | Kernel build/VM/test runner | https://github.com/arighi/virtme-ng.git |
 | deps/kres | Kernel analysis workflows, findings, validation, export | https://github.com/masoncl/kres.git |
 | deps/semcode | Semantic code search, call graphs, commit history, MCP queries | https://github.com/facebookexperimental/semcode.git |
+| deps/sashiko | AI review service: API schema reference, local review | https://github.com/sashiko-dev/sashiko.git |
 
 Default source: maintainer forks under https://github.com/gourryinverse/.
 
@@ -18,9 +19,12 @@ Initialize from the project root:
 
 - Initialization retrieves source; installation and execution are separate.
 - Recursive initialization includes b4's liblore, patatt, and ezgb submodules.
+- Sashiko's `third_party/linux` reference kernel is `update = none`; recursive
+  initialization skips it.
 - Runtime packaging uses one compatible liblore version.
 - Configure Semcode's repository, revision, and index per project/session.
 - Semcode builds, indexing, model downloads, and MCP launch are explicit actions.
+- Sashiko builds and `sashiko review` runs (LLM, cost) are explicit actions.
 - Upgrade pins explicitly and validate adapter compatibility.
 - Configure project workspaces, LLM providers, and credentials externally.
 - Maintain target repositories under projects/; see [project requirements](../docs/design/projects.md).
@@ -55,6 +59,8 @@ Configure remotes after initialization:
   In-Reply-To cycles; `LiteThreadScreen` accepts a mailbox; per-repository
   `b4.data-dir`/`b4.cache-dir`; reply flow (`review_tui._reply`: quote, preview, send)
   usable outside `LiteThreadScreen`.
+- Carried on the sashiko fork: `third_party/linux` is `update = none` so recursive
+  initialization does not clone the kernel. Drop it if upstream adopts it.
 - b4 `LoreMailbox.get_series()` hangs on a two-message reply cycle carrying trailers.
 - b4 `get_series()` runs `git patch-id` once per patch; parsing a list window is slow.
 - liblore has no linear-time thread splitter; the client keys threads by References root.

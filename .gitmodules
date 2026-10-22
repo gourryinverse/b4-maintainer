@@ -19,3 +19,6 @@
 [submodule "deps/semcode"]
 	path = deps/semcode
 	url = https://github.com/gourryinverse/semcode.git
+[submodule "deps/sashiko"]
+	path = deps/sashiko
+	url = https://github.com/gourryinverse/sashiko.git

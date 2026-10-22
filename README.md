@@ -27,12 +27,13 @@ in the background.
 - [Architecture](docs/design/architecture.md)
 - [Backlogs](docs/design/backlogs.md)
 - [Project workspaces](docs/design/projects.md)
+- [Sashiko feedback](docs/design/sashiko.md)
 - [Open decisions](docs/design/open.md)
 - [Contributor instructions](AGENTS.md)
 
 ## Dependencies
 
-Pinned sources: b4, liblore, review-prompts, kernel-style, virtme-ng, kres, semcode.
+Pinned sources: b4, liblore, review-prompts, kernel-style, virtme-ng, kres, semcode, sashiko.
 See [setup](deps/README.md).
 
 Development favors improvements in the owning dependencies, maintained through
