@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Pre-apply reader content: patch list, per-posting comment tree, and message blocks."""
+"""Pre-apply reader content: the posting tree with collapsible replies, and message blocks."""
 
+from dataclasses import dataclass
 from typing import Collection, Optional
 
 from rich.style import Style
@@ -140,6 +141,50 @@ def reply_labels(replies: tuple[Reply, ...], unread: Collection[str] = ()) -> li
         dot = '● ' if m.msgid in unread else ''
         labels.append(f'{art} {dot}{m.author_name}{date}{" " + marks if marks else ""}')
     return labels
+
+
+@dataclass(frozen=True)
+class TreeRow:
+    """One reader-tree row: a posting (node 0) or its nth reply."""
+
+    key: str
+    node: int
+    label: str
+
+
+def initially_expanded(thread: SeriesThread, unread: Collection[str]) -> set[str]:
+    """Postings whose replies include unread ones start expanded."""
+    return {
+        key
+        for key in post_keys(thread)
+        if any(r.message.msgid in unread for r in thread_replies(thread, key))
+    }
+
+
+def tree_rows(
+    thread: SeriesThread,
+    item: WorkItem,
+    expanded: Collection[str],
+    unread: Collection[str] = (),
+    absent: str = '·',
+) -> list[TreeRow]:
+    """Postings in series order, each followed by its replies when expanded.
+
+    ▸/▾ mark postings with replies; a collapsed one with unread replies ends in ●.
+    """
+    rows = []
+    for key in post_keys(thread):
+        replies = thread_replies(thread, key)
+        is_open = key in expanded
+        marker = ('▾ ' if is_open else '▸ ') if replies else '  '
+        label = marker + post_label(thread, key, item, absent)
+        if not is_open and any(r.message.msgid in unread for r in replies):
+            label += ' ●'
+        rows.append(TreeRow(key, 0, label))
+        if is_open:
+            for n, reply_label in enumerate(reply_labels(replies, unread), 1):
+                rows.append(TreeRow(key, n, '  ' + reply_label))
+    return rows
 
 
 def content_title(thread: SeriesThread, key: str, reply: Optional[Reply], total: int) -> str:

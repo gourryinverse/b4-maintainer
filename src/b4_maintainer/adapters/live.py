@@ -9,7 +9,8 @@ import dataclasses
 import datetime
 import pathlib
 import tomllib
-from typing import Callable, Iterable, Mapping, Optional, Sequence
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ..model import Coverage, Series, SeriesState, WorkItem
 from ..projectsetup import CONFIG_NAME, default_b4_command
@@ -22,7 +23,19 @@ from .maintainers import OwnerCache, author_roles
 from .treematch import RefCache
 
 
+@dataclass(frozen=True)
+class ReplyTarget:
+    lmsg: Any  # b4.LoreMessage
+    checkout: pathlib.Path
+    email_dryrun: bool
+    patatt_sign: bool
+
+
 class LiveSource:
+    # b4 review's --email-dry-run and --no-sign, for replies.
+    email_dryrun = False
+    no_sign = False
+
     def __init__(
         self,
         root: 'pathlib.Path | str',
@@ -194,6 +207,24 @@ class LiveSource:
             return
         info = self.cache.messages()
         self._mark_seen(checkout, {m: info[m].date if m in info else None for m in msgids})
+
+    def prepare_reply(self, item: WorkItem, msgid: str) -> ReplyTarget:
+        """Load the message to answer and its project's b4 configuration (blocking)."""
+        project = self.workspace().project(item.project)
+        if project is None:
+            raise RuntimeError('Assign a project before replying')
+        checkout = self.checkout(project)
+        lmsg = b4state.load_lore_message(item.sources, msgid)
+        b4state.activate(checkout)
+        sign = not self.no_sign and b4state.patatt_sign_default()
+        return ReplyTarget(lmsg, checkout, self.email_dryrun, sign)
+
+    def answered(self, item: WorkItem, msgid: str) -> str:
+        project = self.workspace().project(item.project)
+        if project is not None:
+            info = self.cache.messages().get(msgid)
+            b4state.mark_answered(self.checkout(project), msgid, info.date if info else None)
+        return f'Replied: {item.series.subject}'
 
     def mark_read(self, item: WorkItem) -> str:
         """Mark every cached message in the item's threads (all revisions) as seen."""

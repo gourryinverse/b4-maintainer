@@ -4,6 +4,7 @@
 from typing import Any, Callable, Iterable, Optional, Protocol
 
 from b4._textwidth import pad_display
+from b4.review_tui._reply import compose_followup_reply
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -27,15 +28,16 @@ from .adapters.b4mbox import load_thread
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
+    TreeRow,
     content_title,
+    find_post,
     has_long_quote,
+    initially_expanded,
     message_blocks,
     post_keys,
-    post_label,
-    reply_labels,
     root_blocks,
-    root_label,
     thread_replies,
+    tree_rows,
 )
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, row_segments
 from .search import compile_query, match_texts, texts
@@ -66,6 +68,10 @@ class SourceActions(Protocol):
     def mark_seen(self, msgids: Iterable[str]) -> None: ...
 
     def mark_read(self, item: WorkItem) -> str: ...
+
+    def prepare_reply(self, item: WorkItem, msgid: str) -> Any: ...
+
+    def answered(self, item: WorkItem, msgid: str) -> str: ...
 
 
 class SeriesList(ScrollView, can_focus=True):
@@ -218,10 +224,10 @@ class MaintainerApp(App[None]):
     CSS = """
     #status { height: 1; background: $primary-darken-2; }
     #main { height: 1fr; }
-    #views, #series, #summary, #posts, #thread, #content {
+    #views, #series, #summary, #tree, #content {
         border: none; border-top: solid $panel-lighten-2;
     }
-    #views:focus, #series:focus, #summary:focus, #posts:focus, #thread:focus, #content:focus {
+    #views:focus, #series:focus, #summary:focus, #tree:focus, #content:focus {
         border: none; border-top: solid $accent;
     }
     #summary, #summary:focus { border-left: solid $panel-lighten-2; }
@@ -232,14 +238,10 @@ class MaintainerApp(App[None]):
         scrollbar-gutter: stable;
     }
     #reader { height: 1fr; display: none; }
-    #posts { width: 18; }
-    #thread { width: 44; }
+    #tree { width: 56; }
     #content { width: 1fr; padding: 0 1; scrollbar-gutter: stable; }
-    Screen.-medium #posts { display: none; }
-    Screen.-narrow.-reading #posts, Screen.-narrow.-reading #thread,
-    Screen.-narrow.-reading #content { display: none; }
-    Screen.-narrow.-rpane-posts #posts { display: block; width: 1fr; }
-    Screen.-narrow.-rpane-thread #thread { display: block; width: 1fr; }
+    Screen.-narrow.-reading #tree, Screen.-narrow.-reading #content { display: none; }
+    Screen.-narrow.-rpane-tree #tree { display: block; width: 1fr; }
     Screen.-narrow.-rpane-content #content { display: block; width: 1fr; }
     Screen.-reading #main { display: none; }
     Screen.-reading #reader { display: block; }
@@ -264,6 +266,7 @@ class MaintainerApp(App[None]):
         Binding('left_square_bracket', 'next_post(-1)', 'prev', key_display='['),
         Binding('right_square_bracket', 'next_post(1)', 'next', key_display=']'),
         Binding('n', 'next_comment', 'next comment'),
+        Binding('minus', 'toggle_replies', 'replies', key_display='-'),
         Binding('z', 'toggle_quotes', 'quotes'),
         Binding('p', 'toggle_preview', 'preview'),
         Binding('slash', 'search', 'search', key_display='/'),
@@ -271,7 +274,9 @@ class MaintainerApp(App[None]):
         # One key; the enabled action (and footer label) follows the item's state.
         Binding('x', 'hide', 'hide'),
         Binding('x', 'unhide', 'unhide'),
+        # r refreshes while browsing and replies while reading.
         Binding('r', 'refresh', 'refresh'),
+        Binding('r', 'reply', 'reply'),
         Binding('R', 'mark_read', 'read all'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
         Binding('Q', 'quit', 'quit'),
@@ -316,9 +321,10 @@ class MaintainerApp(App[None]):
         self._thread: Optional[SeriesThread] = None
         self._post_key = ''
         self._node = 0
-        self._pending_node: Optional[int] = None
+        self._expanded: set[str] = set()
+        self._rows: list[TreeRow] = []
         self._expand_quotes = False
-        self._reader_pane = 'posts'
+        self._reader_pane = 'tree'
 
     def compose(self) -> ComposeResult:
         yield StatusLine(self._status, id='status')
@@ -327,8 +333,7 @@ class MaintainerApp(App[None]):
             yield SeriesList(self.symbols, id='series')
             yield TextPane(self._summary, id='summary')
         with Horizontal(id='reader'):
-            yield OptionList(id='posts')
-            yield OptionList(id='thread')
+            yield OptionList(id='tree')
             yield TextPane(id='content')
         yield Static('', id='drawer-panel', markup=False)
         yield Static('', id='drawer', markup=False)
@@ -342,11 +347,9 @@ class MaintainerApp(App[None]):
         self._views.border_title = 'Views'
         self._series_list.border_title = 'Series'
         self._summary_pane.border_title = 'Summary'
-        self._posts = self.query_one('#posts', OptionList)
-        self._thread_list = self.query_one('#thread', OptionList)
+        self._tree = self.query_one('#tree', OptionList)
         self._content = self.query_one('#content', TextPane)
-        self._posts.border_title = 'Patches'
-        self._thread_list.border_title = 'Thread'
+        self._tree.border_title = 'Thread'
         self._status_widget = self.query_one('#status', StatusLine)
         self._apply_layout(self.size.width)
         self._series_list.focus()
@@ -419,20 +422,14 @@ class MaintainerApp(App[None]):
         self._update_status()
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option_list.id == 'thread':
-            self._show_node(event.option_index)
-        elif not event.option_id:
-            return
-        elif event.option_list.id == 'posts':
-            self._show_post(event.option_id)
-        else:
+        if event.option_list.id == 'tree':
+            self._show_row(event.option_index)
+        elif event.option_id:
             self.select_view(event.option_id)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        # Enter descends: patch list -> thread -> content.
-        if event.option_list.id == 'posts':
-            self._set_reader_pane('thread')
-        elif event.option_list.id == 'thread':
+        # Enter descends from the tree to the content.
+        if event.option_list.id == 'tree':
             self._set_reader_pane('content')
 
     def on_series_list_highlighted(self, event: SeriesList.Highlighted) -> None:
@@ -460,7 +457,7 @@ class MaintainerApp(App[None]):
             self.screen.set_class(self._mode == name, f'-{name}')
         self._apply_preview_width()
         if self._reading is not None and self._mode != previous:
-            self._set_reader_pane('posts' if self._mode == 'narrow' else self._reader_pane)
+            self._set_reader_pane('tree' if self._mode == 'narrow' else self._reader_pane)
         self.refresh_bindings()
 
     def _apply_preview_width(self) -> None:
@@ -497,6 +494,8 @@ class MaintainerApp(App[None]):
             return not reading
         if action == 'refresh':
             return self._actions is not None and not reading
+        if action == 'reply':
+            return self._actions is not None and self._reply_msgid() is not None
         if action == 'mark_read':
             return self._actions is not None and (self._reading or self._item) is not None
         if action in ('hide', 'unhide'):
@@ -512,11 +511,13 @@ class MaintainerApp(App[None]):
                 and item is not None
                 and not item.state.to_review
             )
-        if action in ('next_post', 'next_comment', 'toggle_quotes'):
+        if action in ('next_post', 'next_comment', 'toggle_quotes', 'toggle_replies'):
             if not reading or self._thread is None:
                 return False
             if action == 'next_post':
-                return self._posts.option_count > 1
+                return len(post_keys(self._thread)) > 1
+            if action == 'toggle_replies':
+                return bool(self._post_key and thread_replies(self._thread, self._post_key))
             if action == 'next_comment':
                 return any(thread_replies(self._thread, k) for k in post_keys(self._thread))
             reply = self._current_reply()
@@ -536,9 +537,7 @@ class MaintainerApp(App[None]):
     def reader_panes(self) -> tuple[str, ...]:
         if self._reading is None:
             return ()
-        return tuple(
-            name for name in ('posts', 'thread', 'content') if self.query_one(f'#{name}').display
-        )
+        return tuple(name for name in ('tree', 'content') if self.query_one(f'#{name}').display)
 
     def visible_panes(self) -> tuple[str, ...]:
         if not self.query_one('#main').display:
@@ -603,9 +602,10 @@ class MaintainerApp(App[None]):
             self.refresh_bindings()
             return
         if self._reading is not None:
-            up = {'content': 'thread', 'thread': 'posts'}
-            if self._mode == 'narrow' and self._reader_pane in up:
-                self._set_reader_pane(up[self._reader_pane])
+            # From the content, Escape returns to the tree; from the tree, it closes.
+            in_content = self._reader_pane == 'content' or self.focused is self._content
+            if in_content:
+                self._set_reader_pane('tree')
             else:
                 self._close_reader()
             return
@@ -618,29 +618,24 @@ class MaintainerApp(App[None]):
     def reading(self) -> Optional[WorkItem]:
         return self._reading
 
-    def post_labels(self) -> list[str]:
+    def tree_labels(self) -> list[str]:
         return [
-            Content.from_markup(str(self._posts.get_option_at_index(i).prompt)).plain
-            for i in range(self._posts.option_count)
+            Content.from_markup(str(self._tree.get_option_at_index(i).prompt)).plain
+            for i in range(self._tree.option_count)
         ]
 
-    def thread_labels(self) -> list[str]:
-        return [
-            Content.from_markup(str(self._thread_list.get_option_at_index(i).prompt)).plain
-            for i in range(self._thread_list.option_count)
-        ]
+    def tree_position(self) -> tuple[str, int]:
+        """(posting key, node) of the highlighted tree row; node 0 is the posting."""
+        return self._post_key, self._node
 
     def content_text(self) -> str:
         return self._content.text
 
     def _set_reader_pane(self, pane: str) -> None:
-        if self._mode == 'medium' and pane == 'posts':
-            pane = 'thread'  # The patch list is hidden; [ and ] change patches.
         self._reader_pane = pane
-        for name in ('posts', 'thread', 'content'):
+        for name in ('tree', 'content'):
             self.screen.set_class(name == pane, f'-rpane-{name}')
-        widget = {'posts': self._posts, 'thread': self._thread_list, 'content': self._content}
-        widget[pane].focus()
+        (self._tree if pane == 'tree' else self._content).focus()
         self.refresh_bindings()
 
     def action_open_reader(self) -> None:
@@ -649,12 +644,12 @@ class MaintainerApp(App[None]):
             return
         self._reading, self._thread, self._post_key = item, None, ''
         self.screen.add_class('-reading')
-        self._posts.clear_options()
-        self._thread_list.clear_options()
+        self._tree.clear_options()
+        self._rows, self._expanded, self._node = [], set(), 0
         self._content.border_title = ''
         self._content.set_text('Loading thread…')
         self._set_status(f' b4-maintainer — Reading: {item.series.subject} v{item.series.revision}')
-        self._set_reader_pane('posts')
+        self._set_reader_pane('tree')
         self.run_worker(
             lambda: self._load_thread(item), thread=True, group='thread', exclusive=True
         )
@@ -675,44 +670,101 @@ class MaintainerApp(App[None]):
             self._content.set_text(f'Could not load thread: {error}')
             return
         self._thread = thread
-        self._posts.add_options(
-            Option(escape(post_label(thread, key, item, self.symbols.absent)), id=key)
-            for key in post_keys(thread)
-        )
-        self._posts.highlighted = 0
+        self._expanded = initially_expanded(thread, self._unread())
+        keys = post_keys(thread)
+        self._render_tree((keys[0], 0) if keys else ('', 0))
 
-    def _show_post(self, key: str) -> None:
-        if self._thread is None or self._reading is None:
+    def _tree_rows(self) -> list[TreeRow]:
+        assert self._thread is not None and self._reading is not None
+        return tree_rows(
+            self._thread, self._reading, self._expanded, self._unread(), self.symbols.absent
+        )
+
+    def _render_tree(self, target: tuple[str, int]) -> None:
+        """Rebuild the tree and highlight the row for *target* (or its posting)."""
+        self._rows = self._tree_rows()
+        width = max(20, self._tree.scrollable_content_region.width or 54)
+        self._tree.clear_options()
+        self._tree.add_options(
+            Option(escape(pad_display(row.label, width).rstrip())) for row in self._rows
+        )
+        positions = {(row.key, row.node): n for n, row in enumerate(self._rows)}
+        index = positions.get(target, positions.get((target[0], 0), 0))
+        if self._rows:
+            self._tree.highlighted = index
+            self._show_row(index)
+
+    def _refresh_tree_labels(self) -> None:
+        """Update labels in place (e.g. unread marks) without moving the cursor."""
+        width = max(20, self._tree.scrollable_content_region.width or 54)
+        for n, (old, new) in enumerate(zip(self._rows, self._tree_rows())):
+            if old.label != new.label:
+                self._tree.replace_option_prompt_at_index(
+                    n, escape(pad_display(new.label, width).rstrip())
+                )
+                self._rows[n] = new
+
+    def _reply_msgid(self) -> Optional[str]:
+        """Message ID of what the reader shows: the selected reply, or the posting itself."""
+        if self._reading is None or self._thread is None or not self._post_key:
+            return None
+        reply = self._current_reply()
+        if reply is not None:
+            return reply.message.msgid
+        post = find_post(self._thread, self._post_key)
+        return post.message.msgid if post is not None else None
+
+    def action_reply(self) -> None:
+        actions, item, msgid = self._actions, self._reading, self._reply_msgid()
+        if actions is None or item is None or msgid is None:
             return
-        self._post_key = key
-        replies = thread_replies(self._thread, key)
-        width = max(20, self._thread_list.scrollable_content_region.width or 42)
-        labels = [root_label(self._thread, key)] + reply_labels(replies, self._unread())
-        self._thread_list.clear_options()
-        self._thread_list.add_options(
-            Option(escape(pad_display(label, width).rstrip())) for label in labels
+
+        def work() -> None:
+            try:
+                target = actions.prepare_reply(item, msgid)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot reply: {exc}')
+                return
+            self.call_from_thread(self._compose_reply, item, msgid, target)
+
+        self.run_worker(work, thread=True, group='action', exclusive=True)
+
+    def _compose_reply(self, item: WorkItem, msgid: str, target: Any) -> None:
+        """Hand over to b4's reply flow: editor, preview, send."""
+        actions = self._actions
+        assert actions is not None
+
+        def sent(_msg: Any) -> None:
+            def work() -> None:
+                try:
+                    result = actions.answered(item, msgid)
+                except Exception as exc:
+                    result = f'Sent, but could not mark answered: {exc}'
+                self.call_from_thread(self._set_notice, result)
+
+            self.run_worker(work, thread=True, group='action')
+
+        compose_followup_reply(
+            self,
+            target.lmsg,
+            email_dryrun=target.email_dryrun,
+            patatt_sign=target.patatt_sign,
+            on_sent=sent,
+            topdir=str(target.checkout),
         )
-        self._thread_list.border_title = escape(
-            f'{post_label(self._thread, key, self._reading, self.symbols.absent)} thread'
-        )
-        target, self._pending_node = self._pending_node or 0, None
-        self._thread_list.highlighted = min(target, len(labels) - 1)
 
     def _unread(self) -> frozenset[str]:
         if self._reading is None:
             return frozenset()
         return self._reading.unread_msgids - self._seen_now
 
-    def _mark_seen(self, index: int, reply: Reply) -> None:
+    def _mark_seen(self, reply: Reply) -> None:
         msgid = reply.message.msgid
         actions = self._actions
         if actions is None or self._thread is None or msgid not in self._unread():
             return
         self._seen_now.add(msgid)
-        label = reply_labels(thread_replies(self._thread, self._post_key), self._unread())
-        width = max(20, self._thread_list.scrollable_content_region.width or 42)
-        prompt = escape(pad_display(label[index - 1], width).rstrip())
-        self._thread_list.replace_option_prompt_at_index(index, prompt)
+        self._refresh_tree_labels()
 
         def work() -> None:
             try:
@@ -728,10 +780,16 @@ class MaintainerApp(App[None]):
         replies = thread_replies(self._thread, self._post_key)
         return replies[self._node - 1] if self._node <= len(replies) else None
 
-    def _show_node(self, index: int) -> None:
+    def _show_row(self, index: int) -> None:
+        if self._thread is None or self._reading is None or index >= len(self._rows):
+            return
+        row = self._rows[index]
+        self._post_key, self._node = row.key, row.node
+        self._show_current()
+
+    def _show_current(self) -> None:
         if self._thread is None or self._reading is None:
             return
-        self._node = index
         reply = self._current_reply()
         total = self._reading.series.expected
         title = content_title(self._thread, self._post_key, reply, total)
@@ -742,40 +800,64 @@ class MaintainerApp(App[None]):
             blocks = root_blocks(self._thread, self._post_key, self._reading)
         else:
             blocks = message_blocks(reply, self._expand_quotes)
-            self._mark_seen(index, reply)
+            self._mark_seen(reply)
         self._content.set_blocks(blocks)
         self.refresh_bindings()
 
     def action_next_post(self, delta: int) -> None:
-        current = self._posts.highlighted or 0
-        self._posts.highlighted = max(0, min(current + delta, self._posts.option_count - 1))
+        if self._thread is None:
+            return
+        keys = post_keys(self._thread)
+        here = keys.index(self._post_key) if self._post_key in keys else 0
+        target = keys[max(0, min(here + delta, len(keys) - 1))]
+        self._select((target, 0))
 
     def action_next_comment(self) -> None:
-        """Next comment in series order, crossing into later patches."""
+        """Next comment in series order, expanding its posting and crossing into later ones."""
         if self._thread is None:
             return
         keys = post_keys(self._thread)
         here = keys.index(self._post_key) if self._post_key in keys else 0
         if self._node < len(thread_replies(self._thread, self._post_key)):
-            self._thread_list.highlighted = self._node + 1
+            self._select((self._post_key, self._node + 1))
             return
-        for position in range(here + 1, len(keys)):
-            if thread_replies(self._thread, keys[position]):
-                self._pending_node = 1
-                self._posts.highlighted = position
+        for key in keys[here + 1 :]:
+            if thread_replies(self._thread, key):
+                self._select((key, 1))
                 return
         self.notify('No more comments in this series.')
 
+    def action_toggle_replies(self) -> None:
+        """Expand or collapse the replies of the posting under the cursor."""
+        key = self._post_key
+        if key in self._expanded:
+            self._expanded.discard(key)
+            self._render_tree((key, 0))
+        else:
+            self._expanded.add(key)
+            self._render_tree((key, self._node))
+
+    def _select(self, target: tuple[str, int]) -> None:
+        """Highlight a posting or reply, expanding its posting when a reply is hidden."""
+        key, node = target
+        if node and key not in self._expanded:
+            self._expanded.add(key)
+            self._render_tree(target)
+            return
+        positions = {(row.key, row.node): n for n, row in enumerate(self._rows)}
+        if target in positions:
+            self._tree.highlighted = positions[target]
+
     def action_toggle_quotes(self) -> None:
         self._expand_quotes = not self._expand_quotes
-        self._show_node(self._node)
+        self._show_current()
 
     def _close_reader(self) -> None:
         self.workers.cancel_group(self, 'thread')
         self._reading, self._thread, self._post_key = None, None, ''
-        self._node, self._pending_node = 0, None
+        self._node, self._rows, self._expanded = 0, [], set()
         self.screen.remove_class('-reading')
-        for name in ('posts', 'thread', 'content'):
+        for name in ('tree', 'content'):
             self.screen.remove_class(f'-rpane-{name}')
         self._series_list.focus()
         if self.index is not None:
@@ -848,8 +930,7 @@ class MaintainerApp(App[None]):
         if self._reading is not None and self._thread is not None:
             # Clear the reader's marks now; counts refresh with the reload below.
             self._seen_now |= item.unread_msgids
-            self._pending_node = self._node
-            self._show_post(self._post_key)
+            self._refresh_tree_labels()
 
         def work() -> None:
             try:

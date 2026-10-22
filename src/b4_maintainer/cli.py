@@ -34,13 +34,20 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
         metavar='DIR',
         help='write a synthetic demo workspace to DIR and open it',
     )
+    parser.add_argument(
+        '--email-dry-run',
+        action='store_true',
+        help='replies are logged by b4, not sent (as b4 review --email-dry-run)',
+    )
+    parser.add_argument(
+        '--no-sign', action='store_true', help='do not patatt-sign replies (as b4 review --no-sign)'
+    )
     args = parser.parse_args(argv)
     if args.demo:
         return MaintainerApp(FixtureSource(build_demo_workspace(args.demo)).load)
     root = args.workspace or pathlib.Path('.')
     if (root / CONFIG_NAME).is_file():
-        source = LiveSource(root)
-        return MaintainerApp(source.load, actions=source)
+        return _live_app(LiveSource(root), args)
     if (root / 'workspace.json').is_file():
         return MaintainerApp(FixtureSource(root).load)
     name = str(args.workspace or '')
@@ -49,11 +56,17 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
         source = LiveSource('.')
         projects = [p.id for p in source.workspace().projects]
         if name in projects:
-            app = MaintainerApp(source.load, actions=source)
+            app = _live_app(source, args)
             app.current_view = f'project:{name}'
             return app
         parser.error(f'{name}: not a workspace directory or project ({", ".join(projects)})')
     parser.error(f'{root}: no {CONFIG_NAME} (live workspace) or workspace.json (fixture)')
+
+
+def _live_app(source: LiveSource, args: argparse.Namespace) -> MaintainerApp:
+    source.email_dryrun = args.email_dry_run
+    source.no_sign = args.no_sign
+    return MaintainerApp(source.load, actions=source)
 
 
 def parse_ref(value: str) -> Ref:

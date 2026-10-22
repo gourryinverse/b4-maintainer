@@ -36,13 +36,11 @@ async def test_enter_opens_reader_on_cover_and_escape_returns(demo_root):
 
         assert app.reading is item
         assert app.visible_panes() == ()
-        assert app.reader_panes() == ('posts', 'thread', 'content')
-        labels = app.post_labels()
-        assert labels[0].startswith('0/5 cover')
-        assert [label.split()[0] for label in labels[1:]] == ['1/5', '2/5', '3/5', '4/5', '5/5']
-        thread = app.thread_labels()
-        assert 'mm: fix foo leak' in thread[0]
-        assert thread[1].startswith('└─> Reviewer One') and thread[1].endswith(' A')
+        assert app.reader_panes() == ('tree', 'content')
+        labels = app.tree_labels()
+        assert labels[0].startswith('▸ 0/5 cover (1)')
+        assert [label.split()[0] for label in labels[1:]] == ['1/5', '2/5', '▸', '4/5', '5/5']
+        assert labels[3].startswith('▸ 3/5') and labels[3].endswith('(3)')
         text = app.content_text()
         assert 'Synthetic cover letter.' in text
         assert 'Acked-by: Reviewer One' not in text
@@ -54,38 +52,46 @@ async def test_enter_opens_reader_on_cover_and_escape_returns(demo_root):
         assert series_list.highlighted_item is item
 
 
-async def select_post(pilot, index):
-    app = pilot.app
-    app.query_one('#posts').highlighted = index
+async def select_row(pilot, index):
+    pilot.app.query_one('#tree').highlighted = index
     await pilot.pause()
 
 
-async def test_thread_tree_shows_patch_or_one_comment(demo_root):
+async def test_minus_expands_and_collapses_a_patchs_replies(demo_root):
     app = MaintainerApp(FixtureSource(demo_root).load)
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        await select_post(pilot, 3)
-        thread = app.thread_labels()
-        assert 'mm: fix foo leak (part 3)' in thread[0]
-        assert [label.split(' 10-')[0] for label in thread[1:]] == [
-            '├─> Reviewer Two',
-            '└─> Reviewer One',
-            '  └─> Contributor One',
-        ]
-        assert thread[1].endswith(' R')
+        await select_row(pilot, 3)
         text = app.content_text()
         assert 'Synthetic change touching mm/foo3.c' in text
         assert 'diff --git a/mm/foo3.c b/mm/foo3.c' in text
-        assert 'Reviewed-by: Reviewer Two' not in text
+        assert 'minus' in footer_keys(app)
 
-        await pilot.press('tab')
-        assert app.focused is app.query_one('#thread')
+        await pilot.press('minus')
+        await pilot.pause()
+        labels = app.tree_labels()
+        assert labels[3].startswith('▾ 3/5')
+        assert [label.split(' 10-')[0] for label in labels[4:7]] == [
+            '  ├─> Reviewer Two',
+            '  └─> Reviewer One',
+            '    └─> Contributor One',
+        ]
+        assert labels[4].endswith(' R')
+        assert app.tree_position() == ('3', 0)
+
         await pilot.press('down')
         await pilot.pause()
+        assert app.tree_position() == ('3', 1)
         text = app.content_text()
         assert 'Reviewed-by: Reviewer Two <reviewer2@example.org>' in text
         assert 'diff --git' not in text
+
+        # On a reply, - collapses its patch and returns to the patch row.
+        await pilot.press('minus')
+        await pilot.pause()
+        assert len(app.tree_labels()) == len(labels) - 3
+        assert app.tree_position() == ('3', 0)
 
 
 async def test_long_quotes_collapse_and_expand(demo_root):
@@ -93,9 +99,10 @@ async def test_long_quotes_collapse_and_expand(demo_root):
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        await select_post(pilot, 3)
-        app.query_one('#thread').highlighted = 2
+        await select_row(pilot, 3)
+        await pilot.press('minus')
         await pilot.pause()
+        await select_row(pilot, 5)
         text = app.content_text()
         assert '> [8 quoted lines]' in text
         assert '> quoted line 1\n' not in text + '\n'
@@ -117,24 +124,30 @@ async def test_bracket_and_n_keys_move_between_patches_and_comments(demo_root):
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        posts, thread = app.query_one('#posts'), app.query_one('#thread')
         await pilot.press('right_square_bracket')
         await pilot.pause()
-        assert posts.highlighted == 1
+        assert app.tree_position() == ('1', 0)
         await pilot.press('left_square_bracket')
         await pilot.pause()
-        assert posts.highlighted == 0
+        assert app.tree_position() == ('0', 0)
 
+        # n walks replies in series order, expanding each patch it enters.
         await pilot.press('n')
         await pilot.pause()
-        assert (posts.highlighted, thread.highlighted) == (0, 1)
+        assert app.tree_position() == ('0', 1)
+        assert app.tree_labels()[0].startswith('▾ 0/5')
         await pilot.press('n')
         await pilot.pause()
-        assert (posts.highlighted, thread.highlighted) == (3, 1)
+        assert app.tree_position() == ('3', 1)
         await pilot.press('n')
         await pilot.pause()
-        assert (posts.highlighted, thread.highlighted) == (3, 2)
+        assert app.tree_position() == ('3', 2)
         assert 'Comment after a long quote.' in app.content_text()
+
+        # ] from a reply goes to the next patch row.
+        await pilot.press('right_square_bracket')
+        await pilot.pause()
+        assert app.tree_position() == ('4', 0)
 
 
 async def test_reader_layout_follows_width(demo_root):
@@ -142,24 +155,18 @@ async def test_reader_layout_follows_width(demo_root):
     async with app.run_test(size=(130, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        assert app.reader_panes() == ('thread', 'content')
-        await pilot.press('right_square_bracket')
-        await pilot.pause()
-        assert app.query_one('#posts').highlighted == 1
+        assert app.reader_panes() == ('tree', 'content')
 
         await pilot.resize_terminal(90, 40)
         await pilot.pause()
-        assert app.reader_panes() == ('posts',)
-        await pilot.press('enter')
-        await pilot.pause()
-        assert app.reader_panes() == ('thread',)
+        assert app.reader_panes() == ('tree',)
         await pilot.press('enter')
         await pilot.pause()
         assert app.reader_panes() == ('content',)
         await pilot.press('escape')
         await pilot.pause()
-        assert app.reader_panes() == ('thread',)
-        await pilot.press('escape', 'escape')
+        assert app.reader_panes() == ('tree',)
+        await pilot.press('escape')
         await pilot.pause()
         assert app.reading is None
 
@@ -170,8 +177,10 @@ async def test_reader_footer_shows_only_applicable_keys(demo_root):
         await loaded(pilot)
         await open_reader(pilot)
         keys = footer_keys(app)
-        assert {'escape', 'tab', 'right_square_bracket', 'n', 'grave_accent', 'Q'} <= keys
-        assert not {'d', 'c', 'v', 'p', 'enter', 'z'} & keys
+        assert {'escape', 'tab', 'right_square_bracket', 'n', 'minus', 'grave_accent', 'Q'} <= keys
+        assert not {'d', 'c', 'v', 'p', 'z'} & keys
+        await select_row(pilot, 1)
+        assert 'minus' not in footer_keys(app)  # Patch 1/5 has no replies.
 
 
 async def test_drawer_line_stays_visible_and_pinned_while_reading(demo_root):
@@ -234,13 +243,13 @@ async def test_unattached_replies_get_their_own_entry():
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        assert app.post_labels()[-1] == 'Unattached (1)'
+        assert app.tree_labels()[-1] == '▸ Unattached (1)'
         await pilot.press('end')
         await pilot.pause()
         assert 'could not be linked' in app.content_text()
-        assert app.thread_labels()[1].startswith('└─> Reviewer One')
-        await pilot.press('tab', 'down')
+        await pilot.press('minus', 'down')
         await pilot.pause()
+        assert app.tree_labels()[-1].startswith('  └─> Reviewer One')
         assert 'Lost reply.' in app.content_text()
 
 
@@ -294,7 +303,7 @@ async def test_patch_label_and_content_include_carried_tags(demo_root):
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        assert app.post_labels()[2] == '2/5 ·R·'
+        assert app.tree_labels()[2] == '  2/5 ·R·'
         await pilot.press('down', 'down')
         await pilot.pause()
         assert (
@@ -303,7 +312,7 @@ async def test_patch_label_and_content_include_carried_tags(demo_root):
         )
 
 
-async def test_thread_labels_and_titles_render_brackets_literally():
+async def test_tree_labels_and_titles_render_brackets_literally():
     from textual.content import Content
 
     odd = Message('odd@example.org', 'Rev [x] One', 'rev@example.org', None, 'Re: x', 'Hi.')
@@ -311,9 +320,9 @@ async def test_thread_labels_and_titles_render_brackets_literally():
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        assert '[x]' in app.thread_labels()[1]
-        await pilot.press('tab', 'down')
+        await pilot.press('minus', 'down')
         await pilot.pause()
+        assert '[x]' in app.tree_labels()[1]
         title = Content.from_markup(str(app.query_one('#content').border_title)).plain
         assert 'Rev [x] One' in title
 
@@ -416,16 +425,16 @@ async def test_showing_an_unread_reply_marks_it_seen():
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        app._posts.highlighted = 0
-        await pilot.pause()
-        assert '●' in app.thread_labels()[1] and '●' not in app.thread_labels()[2]
-        app._thread_list.highlighted = 1
-        await pilot.pause()
+        # The patch with an unread reply starts expanded.
+        labels = app.tree_labels()
+        assert labels[0].startswith('▾ 1/1')
+        assert '●' in labels[1] and '●' not in labels[2]
+        await select_row(pilot, 1)
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert actions.marked == ['r1@example.org']
-        assert '●' not in app.thread_labels()[1]
-        await pilot.press('escape', 'escape', 'escape')
+        assert '●' not in app.tree_labels()[1]
+        await pilot.press('escape')
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app.reading is None
@@ -445,12 +454,49 @@ async def test_shift_r_in_reader_clears_unread_marks():
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        app._posts.highlighted = 0
+        await pilot.press('minus')  # Collapse: the patch row carries the unread mark.
         await pilot.pause()
-        assert '●' in app.thread_labels()[1]
+        assert app.tree_labels()[0].endswith(' ●')
         await pilot.press('R')
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert actions.marked == ['r1@example.org']
-        assert not any('●' in label for label in app.thread_labels())
+        assert not any('●' in label for label in app.tree_labels())
         assert app.reading is not None
+
+
+def _tree_thread(item):
+    replies = (
+        Reply(_reply('r1@example.org', 'One'), 0),
+        Reply(_reply('r2@example.org', 'Two'), 1),
+    )
+    msg = Message('p@example.org', 'C', 'c@example.org', None, 'subject', 'Body.')
+    quiet = Message('q@example.org', 'C', 'c@example.org', None, 'subject', 'Body.')
+    posts = (Post(1, msg, 'Body.', 'diff', replies), Post(2, quiet, 'Body.', 'diff', ()))
+    return SeriesThread(item.identity, 1, None, posts)
+
+
+def test_tree_rows_nest_replies_under_expanded_posts():
+    from b4_maintainer.reader import tree_rows
+
+    item = make_item(subject='mm: tree')
+    thread = _tree_thread(item)
+    collapsed = tree_rows(thread, item, expanded=set())
+    assert [(r.key, r.node) for r in collapsed] == [('1', 0), ('2', 0)]
+    assert collapsed[0].label.startswith('▸ 1/1') and collapsed[1].label.startswith('  2/1')
+    rows = tree_rows(thread, item, expanded={'1'})
+    assert [(r.key, r.node) for r in rows] == [('1', 0), ('1', 1), ('1', 2), ('2', 0)]
+    assert rows[0].label.startswith('▾ 1/1')
+    assert rows[1].label.startswith('  └─> One') and rows[2].label.startswith('    └─> Two')
+
+
+def test_collapsed_posts_flag_unread_and_start_expanded():
+    from b4_maintainer.reader import initially_expanded, tree_rows
+
+    item = make_item(subject='mm: tree')
+    thread = _tree_thread(item)
+    assert initially_expanded(thread, {'r2@example.org'}) == {'1'}
+    assert initially_expanded(thread, set()) == set()
+    rows = tree_rows(thread, item, expanded=set(), unread={'r2@example.org'})
+    assert rows[0].label.endswith(' ●')
+    assert not tree_rows(thread, item, expanded=set())[0].label.endswith(' ●')

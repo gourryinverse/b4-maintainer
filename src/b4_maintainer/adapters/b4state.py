@@ -34,6 +34,42 @@ def b4_repo(checkout: pathlib.Path) -> Generator[None, None, None]:
             b4.MAIN_CONFIG, b4.USER_CONFIG, b4.SENDEMAIL_CONFIG = saved
 
 
+def activate(checkout: pathlib.Path) -> None:
+    """Load a checkout's b4 configuration and leave it loaded.
+
+    b4's interactive flows (the reply preview, sending) read the global
+    configuration while the UI runs, after any worker call has returned.
+    b4_repo() restores to whatever was loaded, so this stays in effect.
+    """
+    with _LOCK:
+        b4.setup_config(argparse.Namespace(config=None), topdir=str(checkout))
+
+
+def patatt_sign_default() -> bool:
+    """Sign replies with patatt unless b4.review-no-patatt-sign says not to, as b4 review does."""
+    value = str(b4.get_main_config().get('review-no-patatt-sign', '') or '')
+    return value.lower() not in {'yes', 'true', 'y'}
+
+
+def load_lore_message(sources: Sequence[str], msgid: str) -> 'b4.LoreMessage':
+    """The message with this ID from the item's cached threads, as b4 parses it."""
+    for source in sources:
+        for msg in b4.get_msgs_from_mailbox_or_maildir(source):
+            if b4.LoreMessage.get_clean_msgid(msg) == msgid:
+                return b4.LoreMessage(msg)
+    raise LookupError(f'message {msgid} is not in the local cache')
+
+
+def mark_answered(checkout: pathlib.Path, msgid: str, date: Optional[str]) -> None:
+    """Set b4's Answered flag, as b4's own reply flow does after sending."""
+    with b4_repo(checkout):
+        conn = messages.get_db()
+        try:
+            messages.set_flag(conn, msgid, 'Answered', date)
+        finally:
+            conn.close()
+
+
 @dataclass(frozen=True)
 class Tracked:
     change_id: str

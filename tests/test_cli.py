@@ -66,3 +66,12 @@ def test_unknown_project_name_lists_known_projects(tmp_path, capsys, monkeypatch
     with pytest.raises(SystemExit):
         build_app(['qemu'])
     assert 'linux' in capsys.readouterr().err
+
+
+def test_mail_flags_mirror_b4_review(tmp_path, monkeypatch):
+    (tmp_path / 'workspace.toml').write_text('')
+    monkeypatch.chdir(tmp_path)
+    app = build_app(['--email-dry-run', '--no-sign'])
+    assert app._actions.email_dryrun and app._actions.no_sign
+    plain = build_app([])
+    assert not plain._actions.email_dryrun and not plain._actions.no_sign

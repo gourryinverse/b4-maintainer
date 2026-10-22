@@ -95,9 +95,10 @@ async def test_ten_thousand_series_meet_interface_targets():
         async def type_key(key):
             await pilot.press(key)
 
-        typed = [lambda k=k: type_key(k) for k in 'synthetic change 1'] + [
-            lambda: type_key('backspace') for _ in range(6)
-        ]
+        # About as many samples as the selection checks, so one GC pause is not the p95.
+        query = 'synthetic change 1'
+        keystrokes = [*query, *['backspace'] * len(query), *query, *['backspace'] * 6]
+        typed = [lambda k=k: type_key(k) for k in keystrokes]
         wall, cpu = await sample(typed)
         assert p95(cpu) <= TARGET, f'search keystroke cpu p95 {p95(cpu):.3f}s'
         assert p95(wall) - press_floor <= TARGET, f'search keystroke wall p95 {p95(wall):.3f}s'

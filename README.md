@@ -44,15 +44,15 @@ Mail configuration and delivery use b4's existing integrations.
 ## Development
 
     git submodule update --init --recursive
-    python3 -m venv .venv
+    /usr/bin/python3 -m venv .venv  # a real interpreter, not a managed python3 symlink
     .venv/bin/pip install -e deps/liblore -e 'deps/b4[tui]' -e . pytest pytest-asyncio ruff
     .venv/bin/python -m pytest
     .venv/bin/b4-maintainer --demo .local/demo
 
 - `b4-maintainer` in a workspace with `workspace.toml` opens it live: `r` fetches profile
   lists and your own mail from lore, `t` tracks the selected series through b4 (To Review),
-  `x` hides it, `R` marks it read, `/` filters by regex; Responses lists unread replies to your
-  mail (b4's Seen flag).
+  `x` hides it, `R` marks it read, `/` filters by regex, `r` in the reader replies through b4
+  (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
