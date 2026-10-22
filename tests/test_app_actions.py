@@ -226,3 +226,54 @@ async def test_dollar_tracks_then_untracks_after_confirmation(demo_root):
         assert not series_list.highlighted_item.state.to_review
         assert 'Archived' in app.status_text()
         assert target.identity not in {i.identity for i in app.index.items('review')}
+
+
+class WatchActions:
+    def __init__(self):
+        import dataclasses as dc
+
+        from b4_maintainer.fixtures import make_item, workspace_config
+        from b4_maintainer.workspace import Workspace
+
+        talk = make_item(subject='Path forward?')
+        series = dc.replace(talk.series, identity='thread:root@example.org', discussion=True)
+        self.item = dc.replace(talk, series=series)
+        self.ws = Workspace.from_config(workspace_config())
+        self.watched = False
+        self.calls = 0
+
+    def load(self):
+        return Snapshot(self.ws, (dataclasses.replace(self.item, watched=self.watched),))
+
+    def refresh(self, progress):
+        return ''
+
+    def toggle_watched(self, item):
+        self.calls += 1
+        self.watched = not item.watched
+        return ('Watching: ' if self.watched else 'No longer watching: ') + item.series.subject
+
+
+async def test_dollar_watches_and_unwatches_discussions_without_asking():
+    actions = WatchActions()
+    app = MaintainerApp(actions.load, actions=actions)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        app.select_view('discussions')
+        await pilot.pause()
+        bindings = {k: b.binding.description for k, b in app.screen.active_bindings.items()}
+        assert bindings['dollar_sign'] == 'watch'
+        await pilot.press('dollar_sign')
+        series_list = await settle(pilot)
+        assert actions.calls == 1 and series_list.highlighted_item.watched
+        assert 'Watching' in app.status_text()
+        bindings = {k: b.binding.description for k, b in app.screen.active_bindings.items()}
+        assert bindings['dollar_sign'] == 'unwatch'
+        await pilot.press('dollar_sign')
+        await pilot.pause()
+        assert app.quit_prompt() is None  # Nothing in b4 to archive: no prompt.
+        series_list = await settle(pilot)
+        assert actions.calls == 2 and not series_list.highlighted_item.watched
+        await pilot.press('t')  # t tracks series only.
+        await settle(pilot)
+        assert actions.calls == 2

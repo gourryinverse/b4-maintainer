@@ -18,9 +18,9 @@ from ..projectsetup import CONFIG_NAME, default_b4_command
 from ..workspace import Project, Snapshot, Workspace, build_items
 from . import b4state, sashiko
 from .b4mbox import parse_mbox
-from .clientstate import HiddenStore
+from .clientstate import HiddenStore, WatchedStore
 from .drafts import DraftStore
-from .lorelist import MailCache, Search
+from .lorelist import MailCache, MessageInfo, Search
 from .maintainers import OwnerCache, author_roles
 from .sashiko import SashikoCache
 from .treematch import RefCache
@@ -58,10 +58,12 @@ class LiveSource:
         sashiko_url: Callable[[pathlib.Path], Optional[str]] = b4state.sashiko_url,
         sashiko_get: sashiko.Get = sashiko.http_get,
         sashiko_patchset: sashiko.GetPatchset = sashiko.b4_patchset,
+        thread_for: Callable[[pathlib.Path], Callable[[str], Any]] = b4state.lore_thread,
     ) -> None:
         self.root = pathlib.Path(root).resolve()
         self.cache = MailCache(self.root / 'var' / 'mail')
         self.hidden = HiddenStore(self.root / 'state' / 'client' / 'hidden.json')
+        self.watched = WatchedStore(self.root / 'state' / 'client' / 'watched.json')
         self.sashiko = SashikoCache(self.root / 'var' / 'sashiko')
         self.drafts = DraftStore(self.root / 'var' / 'drafts')
         self._tracked_series = tracked_series
@@ -76,6 +78,7 @@ class LiveSource:
         self._sashiko_url = sashiko_url
         self._sashiko_get = sashiko_get
         self._sashiko_patchset = sashiko_patchset
+        self._thread_for = thread_for
 
     def workspace(self) -> Workspace:
         return Workspace.from_config(tomllib.loads((self.root / CONFIG_NAME).read_text()))
@@ -105,6 +108,8 @@ class LiveSource:
     def load(self) -> Snapshot:
         ws = self._with_identity(self.workspace())
         series = self.cache.series(parse_mbox)
+        covered = {pathlib.Path(s.source).name for s in series if s.source}
+        series += self.cache.discussions(covered)
         states: dict[str, SeriesState] = {}
         assigned: dict[str, str] = {}
         extra: list[Series] = []
@@ -121,6 +126,10 @@ class LiveSource:
                 states[match.identity] = SeriesState(to_review=True)
                 assigned[match.identity] = project.id
         items = self._ownership(ws, build_items(series + extra, states, ws, assigned))
+        watched = self.watched.load()
+        items = tuple(
+            dataclasses.replace(i, watched=True) if i.identity in watched else i for i in items
+        )
         items = self._responses(ws, items)
         items = self._tree_evidence(ws, items)
         items = self._sashiko_reviews(items)
@@ -261,15 +270,49 @@ class LiveSource:
         return next((self.checkout(p) for p in ws.projects if self._enrolled(p)), None)
 
     def _responses(self, ws: Workspace, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
-        """Mark unread direct replies to the maintainer's own mail, per item."""
+        """Mark unread responses to the maintainer, per item.
+
+        In patch series: replies anywhere below the maintainer's messages. In
+        discussions they posted in: messages addressed to them after their first post.
+        In watched discussions: every message from others.
+        """
         checkout = self._flags_checkout(ws)
         me = set(ws.me)
         if checkout is None or not me:
             return items
         info = self.cache.messages()
         mine = {m for m, e in info.items() if e.sender in me}
+        first_post: dict[str, str] = {}
+        for m in mine:
+            key, date = info[m].key, info[m].date or ''
+            first_post[key] = min(first_post.get(key, date), date)
+        talk = {pathlib.Path(src).name for i in items if i.series.discussion for src in i.sources}
+        followed = {pathlib.Path(src).name for i in items if i.watched for src in i.sources}
         others = me | set(ws.bots)
-        replies = {m: e for m, e in info.items() if e.parent in mine and e.sender not in others}
+
+        def below_mine(msgid: str) -> bool:
+            seen, parent = set(), info[msgid].parent
+            while parent and parent not in seen:
+                if parent in mine:
+                    return True
+                seen.add(parent)
+                parent = info[parent].parent if parent in info else None
+            return False
+
+        def responds(msgid: str, entry: MessageInfo) -> bool:
+            if entry.sender in others:
+                return False
+            if self.cache.thread_name(entry.key) in followed:
+                return True
+            if entry.key not in first_post:
+                return False
+            if self.cache.thread_name(entry.key) not in talk:
+                return below_mine(msgid)
+            if (entry.date or '') <= first_post[entry.key]:
+                return False
+            return entry.parent in mine or bool(me & self.cache.recipients(msgid, entry.key))
+
+        replies = {m: e for m, e in info.items() if responds(m, e)}
         if not replies:
             return items
         unread = set(replies) - self._seen(checkout, list(replies))
@@ -337,6 +380,7 @@ class LiveSource:
 
     def refresh(self, progress: Callable[[str], None] = lambda _: None) -> str:
         ws = self.workspace()
+        self.cache.keep = self.watched.msgids()  # Watched threads outlive the window.
         lists = self.browse_lists(ws)
         if not lists:
             return f'Nothing to browse: add a [[profiles]] entry with lists to {CONFIG_NAME}'
@@ -346,6 +390,7 @@ class LiveSource:
             search = self._search_for(self.checkout(project))
             added += self.cache.refresh(lst, ws.window_days, search, now=self._now())
         added += self._fetch_my_mail(self._with_identity(ws), progress)
+        added += self._fetch_watched(ws, progress)
         progress('Parsing new threads…')
         self.cache.series(parse_mbox)  # So the reload that follows reads summaries only.
         checked = self._check_owners(ws, progress)
@@ -353,17 +398,30 @@ class LiveSource:
         reviews = self._fetch_sashiko(ws, progress)
         return f'Refreshed {len(lists)} list(s): {added} new message(s){checked}{scanned}{reviews}'
 
+    def _fetch_watched(self, ws: Workspace, progress: Callable[[str], None]) -> int:
+        """Whole threads of watched discussions, so replies that drop the maintainer arrive."""
+        roots = self.watched.msgids()
+        checkout = self._flags_checkout(ws)
+        if not roots or checkout is None:
+            return 0
+        fetch = self._thread_for(checkout)
+        added = 0
+        for n, msgid in enumerate(sorted(roots), 1):
+            progress(f'Fetching watched discussions ({n}/{len(roots)})…')
+            added += self.cache.refresh_thread(msgid, fetch, ws.window_days, now=self._now())
+        return added
+
     def _fetch_my_mail(self, ws: Workspace, progress: Callable[[str], None]) -> int:
-        """The maintainer's own mail on any list, whole threads, for Responses."""
+        """Mail from or addressed to the maintainer on any list, whole threads."""
         checkout = self._flags_checkout(ws)
         if checkout is None:
             return 0
         added = 0
         for addr in ws.me:
-            progress(f'Fetching mail from {addr}…')
+            progress(f'Fetching mail from and to {addr}…')
             added += self.cache.refresh_query(
-                f'from-{addr}',
-                lambda since, a=addr: f'f:{a} AND rt:{since:%Y-%m-%d}..',
+                f'mine-{addr}',
+                lambda since, a=addr: f'(f:{a} OR tc:{a}) AND rt:{since:%Y-%m-%d}..',
                 ws.window_days,
                 self._search_for(checkout),
                 now=self._now(),
@@ -388,6 +446,16 @@ class LiveSource:
             if cache.errors:
                 notes.append(f'{cache.errors} get_maintainer failure(s)')
         return ''.join(f'; {n}' for n in notes)
+
+    def toggle_watched(self, item: WorkItem) -> str:
+        """Follow or stop following a discussion; series are tracked through b4 instead."""
+        if not item.series.discussion:
+            raise RuntimeError('Only discussions are watched; track series with $')
+        if item.watched:
+            self.watched.unwatch(item)
+            return f'No longer watching: {item.series.subject}'
+        self.watched.watch(item, now=self._now())
+        return f'Watching: {item.series.subject}'
 
     def toggle_hidden(self, item: WorkItem) -> str:
         if item.hidden:

@@ -148,6 +148,8 @@ def post_label(thread: SeriesThread, key: str, item: WorkItem, absent: str = '·
     assert post is not None
     total = item.series.expected
     replies = f' ({len(post.replies)})' if post.replies else ''
+    if thread.discussion:
+        return f'discussion{replies}'
     if post.counter == 0:
         return f'0/{total} cover{replies}'
     found = len(_new_findings(sashiko_patch(item.sashiko, post)))
@@ -272,6 +274,8 @@ def content_title(thread: SeriesThread, key: str, reply: Optional[Reply], total:
         return 'Unattached replies'
     post = find_post(thread, key)
     assert post is not None
+    if thread.discussion:
+        return 'Discussion'
     return 'Cover letter' if post.counter == 0 else f'Patch {post.counter}/{total}'
 
 
@@ -411,10 +415,10 @@ def root_blocks(thread: SeriesThread, key: str, item: WorkItem) -> list[Block]:
     blocks = [
         Block(post.message.subject, style=HEADER),
         Block(f'From: {_header(post.message)}'),
-        Block(trailer_line(item, post.counter)),
-        Block(''),
-        Block(post.description, style=prose_style),
     ]
+    if not thread.discussion:
+        blocks.append(Block(trailer_line(item, post.counter)))
+    blocks += [Block(''), Block(post.description, style=prose_style)]
     if post.counter == 0:
         return blocks
     summary, diff = _sashiko_blocks(item, post)

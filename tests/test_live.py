@@ -51,6 +51,7 @@ class Fakes:
         self.tracked: list[Tracked] = []
         self.searches: list[tuple[str, str]] = []
         self.answers: dict[str, list] = {}
+        self.mine: list = []
         self.track_calls: list[tuple[str, str]] = []
         self.archive_calls: list[tuple[str, str, str, int]] = []
         self.archive_result = (True, '/archive.tar.gz')
@@ -61,6 +62,8 @@ class Fakes:
     def search_for(self, checkout):
         def search(query):
             self.searches.append((checkout.name, query))
+            if 'tc:' in query:
+                return list(self.mine)  # Mail from or addressed to the maintainer.
             return next((v for k, v in self.answers.items() if f'l:{k} ' in query), [])
 
         return search
@@ -341,7 +344,7 @@ def test_refresh_fetches_my_own_mail(tmp_path):
     source, fakes, _ = responses_source(tmp_path)
     source.refresh()
     queries = [q for _, q in fakes.searches]
-    assert any(q.startswith('f:me@example.org AND rt:') for q in queries)
+    assert any(q.startswith('(f:me@example.org OR tc:me@example.org) AND rt:') for q in queries)
 
 
 def test_unread_replies_to_my_mail_make_responses(tmp_path):

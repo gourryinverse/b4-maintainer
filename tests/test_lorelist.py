@@ -187,3 +187,32 @@ def test_refresh_with_any_query(tmp_path):
     assert added == 3
     assert search.queries == ['f:me@example.org AND rt:2026-10-07..']
     assert 'from-me' in cache.fetched_lists()
+
+
+def test_kept_threads_outlive_the_window(tmp_path):
+    cache = MailCache(tmp_path / 'mail')
+    old = thread(tmp_path, 'a', 'mm: watched', 30)
+    root = b4.LoreMessage.get_clean_msgid(old[0])
+    cache.keep = frozenset({root})
+    cache.refresh_query('x', lambda since: 'q', 14, FakeSearch(old), now=NOW)
+    assert len(cache.sources()) == 1
+    cache.keep = frozenset()
+    cache.refresh_query('x', lambda since: 'q', 14, FakeSearch([]), now=NOW)
+    assert cache.sources() == []
+
+
+def test_refresh_thread_adds_new_messages_to_the_thread(tmp_path):
+    cache = MailCache(tmp_path / 'mail')
+    msgs = thread(tmp_path, 'a', 'mm: watched', 2)
+    root = b4.LoreMessage.get_clean_msgid(msgs[0])
+    cache.refresh_query('x', lambda since: 'q', 14, FakeSearch(msgs[:2]), now=NOW)
+    asked = []
+
+    def fetch(msgid):
+        asked.append(msgid)
+        return msgs
+
+    assert cache.refresh_thread(root, fetch, 14, now=NOW) == len(msgs) - 2
+    assert asked == [root]
+    assert len(cache.sources()) == 1
+    assert cache.refresh_thread(root, lambda m: None, 14, now=NOW) == 0  # Lookup failed.

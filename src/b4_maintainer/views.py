@@ -22,8 +22,12 @@ class ViewIndex:
         everything = tuple(items)
         items = tuple(i for i in everything if not i.hidden)
         hidden = tuple(i for i in everything if i.hidden)
-        # Review queues drop series whose review is over: merged or otherwise landed.
-        active = tuple(i for i in items if not (i.state.mainline_complete or i.landed))
+        # Review queues drop series whose review is over (merged or otherwise landed)
+        # and discussions, which are conversations rather than review work.
+        talk = tuple(i for i in items if i.series.discussion)
+        active = tuple(
+            i for i in items if not (i.state.mainline_complete or i.landed or i.series.discussion)
+        )
         me = set(ws.me)
 
         specs: list[tuple[View, Callable[[WorkItem], bool], tuple[WorkItem, ...]]] = []
@@ -72,6 +76,10 @@ class ViewIndex:
             (View('review', 'To Review', 'builtin'), lambda i: i.state.to_review, active),
             (View('cached', 'Cached', 'builtin'), _always, items),
         ]
+        if talk:
+            specs.append((View('discussions', 'Discussions', 'builtin'), _always, talk))
+        if any(i.watched for i in talk):
+            specs.append((View('watching', 'Watching', 'builtin'), lambda i: i.watched, talk))
         if any(i.state.draft for i in items):
             specs.append((View('drafts', 'Drafts', 'builtin'), lambda i: i.state.draft, items))
         if hidden:

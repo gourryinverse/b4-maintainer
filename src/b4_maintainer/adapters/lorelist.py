@@ -14,6 +14,7 @@ In-Reply-To only. Remove when liblore offers a thread splitter.
 
 import datetime
 import email.message
+import email.parser
 import email.utils
 import hashlib
 import json
@@ -21,7 +22,7 @@ import os
 import pathlib
 import re
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, Collection, Optional, Sequence
 
 import b4
 
@@ -90,6 +91,8 @@ class MailCache:
         self._summaries = self.root / 'series'
         self._lists = self.root / 'lists'
         self._index_path = self.root / 'index.json'
+        # Message-ids whose threads stay cached past the window (watched discussions).
+        self.keep: frozenset[str] = frozenset()
 
     def sources(self) -> list[pathlib.Path]:
         if not self._threads.is_dir():
@@ -124,6 +127,69 @@ class MailCache:
 
     def messages(self) -> dict[str, MessageInfo]:
         return {m: MessageInfo(*entry) for m, entry in self._load_index().items()}
+
+    def headers(self, msgid: str, key: str) -> Optional[email.message.Message]:
+        """One cached message's headers, without parsing its body."""
+        path = self._thread_dir(key) / 'cur' / hashlib.sha1(msgid.encode()).hexdigest()
+        try:
+            with path.open('rb') as fh:
+                return email.parser.BytesHeaderParser(policy=b4.emlpolicy).parse(fh)
+        except OSError:
+            return None
+
+    def recipients(self, msgid: str, key: str) -> set[str]:
+        """Addresses in a cached message's To and Cc, lower-cased."""
+        msg = self.headers(msgid, key)
+        if msg is None:
+            return set()
+        values = [str(v) for h in ('To', 'Cc') for v in msg.get_all(h, [])]
+        return {addr.lower() for _, addr in email.utils.getaddresses(values) if '@' in addr}
+
+    def discussions(self, covered: Collection[str]) -> list[Series]:
+        """Threads no series covers, by thread name, as discussions led by their first message.
+
+        Threads whose first message is a patch (say, a cover letter whose patches
+        were not fetched) are left out: they are incomplete series, not talk.
+        """
+        threads: dict[str, dict[str, MessageInfo]] = {}
+        for msgid, entry in self.messages().items():
+            threads.setdefault(entry.key, {})[msgid] = entry
+        found = []
+        for key, msgs in threads.items():
+            tdir = self._thread_dir(key)
+            if tdir.name in covered or not tdir.is_dir():
+                continue
+            roots = [m for m, e in msgs.items() if not e.parent or e.parent not in msgs]
+            root = min(roots or msgs, key=lambda m: msgs[m].date or '')
+            head = self.headers(root, key)
+            if head is None:
+                continue
+            subject = b4.LoreSubject(str(head.get('Subject', '')))
+            if subject.patch:
+                continue
+            name, addr = email.utils.parseaddr(str(head.get('From', '')))
+            lists = [email.utils.parseaddr(str(v))[1] for v in head.get_all('List-Id', [])]
+            date = msgs[root].date
+            found.append(
+                Series(
+                    identity=f'thread:{root}',
+                    subject=subject.subject or '(no subject)',
+                    revision=0,
+                    expected=0,
+                    complete=True,
+                    has_cover=True,
+                    author_name=name or addr,
+                    author_email=addr.lower(),
+                    sent=datetime.datetime.fromisoformat(date) if date else None,
+                    patches=(),
+                    lists=tuple(lst.lower() for lst in lists if lst),
+                    recipients=tuple(sorted(self.recipients(root, key))),
+                    msgids=tuple(sorted(msgs)),
+                    source=str(tdir),
+                    discussion=True,
+                )
+            )
+        return found
 
     def series(self, parse: Callable[[pathlib.Path], list[Series]]) -> list[Series]:
         """Every cached thread's series; threads whose files changed are reparsed."""
@@ -184,24 +250,7 @@ class MailCache:
 
         msgs = search(make_query(since.date()))
         index = self._load_index()
-        epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
-        dated = [(_date(m), m) for m in msgs or ()]
-        added = 0
-        # Oldest first, so parents are indexed before their replies.
-        for date, msg in sorted(dated, key=lambda dm: dm[0] or epoch):
-            msgid = b4.LoreMessage.get_clean_msgid(msg)
-            if not msgid or msgid in index:
-                continue
-            key = self._thread_key(msg, msgid, index)
-            tdir = self._thread_dir(key)
-            for sub in ('cur', 'new', 'tmp'):
-                (tdir / sub).mkdir(parents=True, exist_ok=True)
-            name = hashlib.sha1(msgid.encode()).hexdigest()
-            _write(tdir / 'cur' / name, tdir / 'tmp' / name, msg.as_bytes(policy=b4.emlpolicy))
-            # UTC, so the stored dates compare correctly as strings.
-            utc = date.astimezone(datetime.timezone.utc).isoformat() if date else None
-            index[msgid] = [key, utc, _sender(msg), _parent(msg, msgid)]
-            added += 1
+        added = self._add(msgs or (), index)
         self._prune(start, index)
         _write(self._index_path, self.root / '.index.json.tmp', json.dumps(index).encode())
         if msgs is not None:
@@ -219,18 +268,60 @@ class MailCache:
         root = refs[0] if refs else parents[0] if parents else msgid
         return index[root][0] if root in index else root
 
+    def refresh_thread(
+        self,
+        msgid: str,
+        fetch: Callable[[str], Optional[Sequence[email.message.EmailMessage]]],
+        window_days: int,
+        now: Optional[datetime.datetime] = None,
+    ) -> int:
+        """Fetch one whole thread by a message-id in it; return how many messages were added."""
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        msgs = fetch(msgid)
+        if not msgs:
+            return 0
+        self._threads.mkdir(parents=True, exist_ok=True)
+        index = self._load_index()
+        added = self._add(msgs, index)
+        self._prune(now - datetime.timedelta(days=window_days), index)
+        _write(self._index_path, self.root / '.index.json.tmp', json.dumps(index).encode())
+        return added
+
+    def _add(self, msgs: Sequence[email.message.EmailMessage], index: Index) -> int:
+        epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+        dated = [(_date(m), m) for m in msgs]
+        added = 0
+        # Oldest first, so parents are indexed before their replies.
+        for date, msg in sorted(dated, key=lambda dm: dm[0] or epoch):
+            msgid = b4.LoreMessage.get_clean_msgid(msg)
+            if not msgid or msgid in index:
+                continue
+            key = self._thread_key(msg, msgid, index)
+            tdir = self._thread_dir(key)
+            for sub in ('cur', 'new', 'tmp'):
+                (tdir / sub).mkdir(parents=True, exist_ok=True)
+            name = hashlib.sha1(msgid.encode()).hexdigest()
+            _write(tdir / 'cur' / name, tdir / 'tmp' / name, msg.as_bytes(policy=b4.emlpolicy))
+            # UTC, so the stored dates compare correctly as strings.
+            utc = date.astimezone(datetime.timezone.utc).isoformat() if date else None
+            index[msgid] = [key, utc, _sender(msg), _parent(msg, msgid)]
+            added += 1
+        return added
+
     def _prune(self, start: datetime.datetime, index: Index) -> None:
         """Drop whole threads whose newest message is older than the window.
 
-        Undated messages count as recent, so their threads are kept.
+        Undated messages count as recent, so their threads are kept, as are
+        threads holding a message-id in *keep*.
         """
         newest: dict[str, str] = {}
         for key, date, *_ in index.values():
             latest = date or '9999'
             if latest > newest.get(key, ''):
                 newest[key] = latest
+        kept = {index[m][0] for m in self.keep if m in index}
         cutoff = start.astimezone(datetime.timezone.utc).isoformat()
-        stale = {key for key, latest in newest.items() if latest < cutoff}
+        stale = {key for key, latest in newest.items() if latest < cutoff and key not in kept}
         for key in stale:
             tdir = self._thread_dir(key)
             if tdir.is_dir():

@@ -100,6 +100,8 @@ class Series:
     preview_label: str = ''
     preview: str = ''
     source: str = ''
+    # A conversation without patches: the first message stands in for a cover letter.
+    discussion: bool = False
 
     def list_candidates(self) -> tuple[str, ...]:
         """List IDs plus recipients in lore's name.domain list-ID form.
@@ -154,6 +156,8 @@ class SeriesThread:
     cover: Optional[Post]
     patches: tuple[Post, ...]
     unattached: tuple[Reply, ...] = ()
+    # A conversation: the cover is its first message.
+    discussion: bool = False
 
 
 SEVERITIES = ('critical', 'high', 'medium', 'low')
@@ -247,6 +251,8 @@ class WorkItem:
     landed: bool = False
     # Sashiko's review of this posting, from the last refresh; None if unknown.
     sashiko: Optional[SashikoReview] = None
+    # A discussion the maintainer follows ($); b4 tracks series only.
+    watched: bool = False
 
     @property
     def identity(self) -> str:

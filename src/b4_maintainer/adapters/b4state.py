@@ -13,7 +13,8 @@ import pathlib
 import subprocess
 import threading
 from dataclasses import dataclass
-from typing import Generator, Mapping, Optional, Sequence
+from email.message import EmailMessage
+from typing import Callable, Generator, Mapping, Optional, Sequence
 
 import b4
 from b4.review import messages, tracking
@@ -176,6 +177,16 @@ def archive(
         from b4.review import archive_series
 
         return archive_series(str(checkout), identifier, change_id, revision)
+
+
+def lore_thread(checkout: pathlib.Path) -> Callable[[str], Optional[list[EmailMessage]]]:
+    """b4's whole-thread lookup by message-id, with this checkout's configuration."""
+
+    def fetch(msgid: str) -> Optional[list[EmailMessage]]:
+        with b4_repo(checkout):
+            return b4.get_pi_thread_by_msgid(msgid, nocache=True, quiet=True)
+
+    return fetch
 
 
 def lore_search(checkout: pathlib.Path) -> Search:

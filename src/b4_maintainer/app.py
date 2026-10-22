@@ -94,6 +94,8 @@ class SourceActions(Protocol):
 
     def untrack(self, item: WorkItem) -> str: ...
 
+    def toggle_watched(self, item: WorkItem) -> str: ...
+
     def toggle_hidden(self, item: WorkItem) -> str: ...
 
     def mark_seen(self, msgids: Iterable[str]) -> None: ...
@@ -347,6 +349,9 @@ class MaintainerApp(App[None]):
         # $ tracks, or untracks (archives in b4) after confirmation; t also tracks.
         Binding('dollar_sign', 'track', 'track', key_display='$'),
         Binding('dollar_sign', 'untrack', 'untrack', key_display='$'),
+        # On discussions $ follows the conversation instead (client state, no prompt).
+        Binding('dollar_sign', 'watch', 'watch', key_display='$'),
+        Binding('dollar_sign', 'unwatch', 'unwatch', key_display='$'),
         Binding('t', 'track', 'track', show=False),
         # One key; the enabled action (and footer label) follows the item's state.
         Binding('x', 'hide', 'hide'),
@@ -606,14 +611,14 @@ class MaintainerApp(App[None]):
             if self._actions is None or reading or item is None:
                 return False
             return item.hidden == (action == 'unhide')
-        if action in ('track', 'untrack'):
+        if action in ('track', 'untrack', 'watch', 'unwatch'):
             item = self._item
-            return (
-                self._actions is not None
-                and not reading
-                and item is not None
-                and item.state.to_review == (action == 'untrack')
-            )
+            if self._actions is None or reading or item is None:
+                return False
+            if item.series.discussion != (action in ('watch', 'unwatch')):
+                return False
+            on = item.watched if item.series.discussion else item.state.to_review
+            return on == (action in ('untrack', 'unwatch'))
         if action == 'next_finding':
             return (
                 reading
@@ -1360,6 +1365,26 @@ class MaintainerApp(App[None]):
             self.call_from_thread(self._action_done, result, reload)
 
         self._set_notice(f'Tracking {item.series.subject}…')
+        self.run_worker(work, thread=True, group='action', exclusive=True)
+
+    def action_watch(self) -> None:
+        self._toggle_watched()
+
+    def action_unwatch(self) -> None:
+        self._toggle_watched()
+
+    def _toggle_watched(self) -> None:
+        actions, item = self._actions, self._item
+        if actions is None or item is None:
+            return
+
+        def work() -> None:
+            try:
+                result, reload = actions.toggle_watched(item), True
+            except Exception as exc:
+                result, reload = f'Watch failed: {exc}', False
+            self.call_from_thread(self._action_done, result, reload)
+
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
     def action_untrack(self) -> None:

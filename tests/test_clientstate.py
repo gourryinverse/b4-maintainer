@@ -55,3 +55,27 @@ def test_missing_file_hides_nothing(tmp_path):
         .load()
         .matches(item(make_series('mm: x', msgid='x@example.org')))
     )
+
+
+def test_watched_discussions_persist_as_sorted_text(tmp_path):
+    import dataclasses
+
+    from b4_maintainer.adapters.clientstate import WatchedStore
+
+    path = tmp_path / 'state' / 'client' / 'watched.json'
+    store = WatchedStore(path)
+    talk = item(
+        dataclasses.replace(
+            make_series('Path forward?', msgid='root@example.org'),
+            identity='thread:root@example.org',
+            discussion=True,
+        )
+    )
+    assert store.load() == frozenset()
+    store.watch(talk, now=NOW)
+    assert WatchedStore(path).load() == {'thread:root@example.org'}
+    [entry] = json.loads(path.read_text())
+    assert entry['msgid'] == 'root@example.org' and entry['subject'] == 'Path forward?'
+    assert path.read_text().endswith('\n')
+    store.unwatch(talk)
+    assert store.load() == frozenset()

@@ -155,6 +155,8 @@ def load_thread(series: Series) -> SeriesThread:
     """
     if not series.source:
         raise ValueError('no mail source for this series')
+    if series.discussion:
+        return _discussion(series)
     lmbx = _mailbox(series.source)
     revisions = _revisions(lmbx)
     lser = revisions[series.revision]
@@ -208,4 +210,50 @@ def load_thread(series: Series) -> SeriesThread:
         cover=post(0, cover) if cover is not None else None,
         patches=tuple(post(p.counter, p) for p in lser.patches[1:] if p is not None),
         unattached=tuple(unattached),
+    )
+
+
+def _discussion(series: Series) -> SeriesThread:
+    """A conversation without patches: its first message, with every reply beneath it."""
+    lmbx = _mailbox(series.source)
+    nodes = {node.lmsg.msgid: node for node in build_thread_tree(lmbx)}
+    first = series.identity.removeprefix('thread:')
+
+    def replies(children: list[ThreadNode], depth: int, seen: set[str]) -> list[Reply]:
+        found = []
+        for child in children:
+            if child.lmsg.msgid in seen:
+                continue
+            seen.add(child.lmsg.msgid)
+            found.append(Reply(_message(child.lmsg), depth))
+            found.extend(replies(child.children, depth + 1, seen))
+        return found
+
+    root = nodes.get(first)
+    if root is None:
+        raise ValueError(f'first message {first} is not in the cached thread')
+    reached = {first}
+    cover = Post(
+        0,
+        _message(root.lmsg),
+        root.lmsg.body.strip('\n'),
+        '',
+        tuple(replies(root.children, 0, reached)),
+    )
+    children = {c.lmsg.msgid for n in nodes.values() for c in n.children}
+    others = sorted(
+        (n for n in nodes.values() if n.lmsg.msgid not in reached | children),
+        key=lambda n: n.lmsg.date,
+    )
+    unattached: list[Reply] = []
+    for node in others:
+        unattached.append(Reply(_message(node.lmsg), 0))
+        unattached.extend(replies(node.children, 1, set(reached)))
+    return SeriesThread(
+        identity=series.identity,
+        revision=series.revision,
+        cover=cover,
+        patches=(),
+        unattached=tuple(unattached),
+        discussion=True,
     )

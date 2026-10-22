@@ -36,6 +36,7 @@ class Symbols:
     sashiko_findings: str = '!'
     sashiko_embargoed: str = '⊘'
     sashiko_failed: str = '✗'
+    discussion: str = 'disc'
 
 
 DEFAULT_SYMBOLS = Symbols()
@@ -97,6 +98,8 @@ def _progress(item: WorkItem, sym: Symbols) -> str:
 
 
 def cart_field(item: WorkItem, sym: Symbols) -> str:
+    if item.series.discussion:
+        return pad_display(sym.discussion, CART_WIDTH)
     acked, reviewed, tested = item.series.trailer_totals()
     return ''.join(
         (
@@ -158,12 +161,13 @@ def row_segments(
             pad_display(sym.unread if state.unread else '', 1),
             pad_display(sym.fixes if state.fixes_pending else '', 1),
             pad_display(_progress(item, sym), 1),
-            pad_display(sym.tracked if state.to_review else '', 1),
+            pad_display(sym.tracked if state.to_review or item.watched else '', 1),
         )
     )
     head = ' '.join((flags, cart_field(item, sym), tree_field(state.tree, sym))) + ' '
     mark, severity = sashiko_field(item.sashiko, sym)
-    tail = [pad_display(f'v{item.series.revision}', VERSION_WIDTH)]
+    version = '' if item.series.discussion else f'v{item.series.revision}'
+    tail = [pad_display(version, VERSION_WIDTH)]
     if project_width:
         label = item.project_short or (sym.unassigned if item.candidates else '')
         tail.append(pad_display(label, project_width))

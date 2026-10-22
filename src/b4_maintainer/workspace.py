@@ -193,9 +193,12 @@ def _families(series: Iterable[Series]) -> dict[str, str]:
     Several change-ids for one family are ambiguous; those postings stay apart.
     """
     groups: dict[str, list[Series]] = {}
-    for s in series:
-        groups.setdefault(family_key(s), []).append(s)
     canonical: dict[str, str] = {}
+    for s in series:
+        if s.discussion:
+            canonical[s.identity] = s.identity  # Conversations have no revisions.
+        else:
+            groups.setdefault(family_key(s), []).append(s)
     for group in groups.values():
         with_id = {s.identity for s in group if s.change_id}
         loose = [s for s in group if not s.change_id]
