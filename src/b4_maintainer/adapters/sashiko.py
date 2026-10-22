@@ -12,7 +12,7 @@ import hashlib
 import json
 import os
 import pathlib
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Collection, Iterable, Mapping, Optional
 
 from ..model import Finding, SashikoPatch, SashikoReview
 
@@ -148,11 +148,21 @@ class SashikoCache:
                 found[msgid] = (data['url'], entry)
         return found
 
-    def update_details(self, wanted: Iterable[str], get_patchset: GetPatchset) -> tuple[int, int]:
-        """Fetch changed details for wanted series and any with findings: (fetched, failed)."""
+    def update_details(
+        self,
+        wanted: Iterable[str],
+        get_patchset: GetPatchset,
+        present: Optional[Collection[str]] = None,
+    ) -> tuple[int, int]:
+        """Fetch changed details for wanted series and any with findings: (fetched, failed).
+
+        *present* limits fetches to series in the mail cache; rows reach further back.
+        """
         wanted = set(wanted)
         fetched = failed = 0
         for msgid, (url, entry) in self._rows().items():
+            if present is not None and msgid not in present:
+                continue
             if entry['status'] not in DETAILED or not (any(entry['counts']) or msgid in wanted):
                 continue
             path = self._detail_path(msgid)

@@ -214,3 +214,15 @@ def test_revived_older_series_still_get_their_review(tmp_path):
     source.refresh()
     [item] = [i for i in source.load().items if i.series.subject == 'mm: posted long ago']
     assert item.sashiko is not None and item.sashiko.status == 'Reviewed'
+
+
+def test_details_skip_series_not_in_the_mail_cache(tmp_path):
+    rows = [
+        row(1, 'here@example.org', counts=(0, 0, 1, 0), date=NOW),
+        row(2, 'gone@example.org', counts=(0, 0, 1, 0), date=NOW),
+    ]
+    cache, fake, _ = cache_with(tmp_path, rows)
+    fake.details['here@example.org'] = detail(1, 'here@example.org', [('h1@example.org', [])])
+    present = {'here@example.org', 'h1@example.org'}
+    assert cache.update_details(set(), fake.patchset, present=present) == (1, 0)
+    assert fake.detail_requests == ['here@example.org']

@@ -29,9 +29,11 @@ from .adapters.b4mbox import load_thread
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
+    SASHIKO_PREFIX,
     TreeRow,
     content_title,
     find_post,
+    finding_anchors,
     has_long_quote,
     initially_expanded,
     message_blocks,
@@ -39,6 +41,7 @@ from .reader import (
     root_blocks,
     thread_replies,
     tree_rows,
+    with_sashiko,
 )
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
@@ -314,6 +317,7 @@ class MaintainerApp(App[None]):
         Binding('left_square_bracket', 'next_post(-1)', 'prev', key_display='['),
         Binding('right_square_bracket', 'next_post(1)', 'next', key_display=']'),
         Binding('n', 'next_comment', 'next comment'),
+        Binding('exclamation_mark', 'next_finding', 'next finding', key_display='!'),
         Binding('minus', 'toggle_replies', 'replies', key_display='-'),
         Binding('z', 'toggle_quotes', 'quotes'),
         Binding('p', 'toggle_preview', 'preview'),
@@ -372,6 +376,8 @@ class MaintainerApp(App[None]):
         self._node = 0
         self._expanded: set[str] = set()
         self._rows: list[TreeRow] = []
+        self._finding = -1
+        self._shown: Optional[tuple[str, int]] = None
         self._expand_quotes = False
         self._reader_pane = 'tree'
 
@@ -568,6 +574,12 @@ class MaintainerApp(App[None]):
                 and item is not None
                 and not item.state.to_review
             )
+        if action == 'next_finding':
+            return (
+                reading
+                and self._thread is not None
+                and bool(finding_anchors(self._thread, self._reading))
+            )
         if action in ('next_post', 'next_comment', 'toggle_quotes', 'toggle_replies'):
             if not reading or self._thread is None:
                 return False
@@ -695,6 +707,9 @@ class MaintainerApp(App[None]):
     def content_text(self) -> str:
         return self._content.text
 
+    def content_lines(self) -> list[str]:
+        return self._content.lines
+
     def _set_reader_pane(self, pane: str) -> None:
         self._reader_pane = pane
         for name in ('tree', 'content', 'draft'):
@@ -710,6 +725,8 @@ class MaintainerApp(App[None]):
         self.screen.add_class('-reading')
         self._tree.clear_options()
         self._rows, self._expanded, self._node = [], set(), 0
+        self._finding = -1
+        self._shown = None
         self._content.border_title = ''
         self._content.set_text('Loading thread…')
         self._set_status(f' b4-maintainer — Reading: {item.series.subject} v{item.series.revision}')
@@ -720,7 +737,8 @@ class MaintainerApp(App[None]):
 
     def _load_thread(self, item: WorkItem) -> None:
         try:
-            thread, error = self._thread_loader(item.series), None
+            thread = with_sashiko(self._thread_loader(item.series), item.sashiko, self._bots())
+            error = None
         except Exception as exc:  # Shown to the maintainer; mail is untrusted input.
             thread, error = None, f'{type(exc).__name__}: {exc}'
         self.call_from_thread(self._apply_thread, item, thread, error)
@@ -733,15 +751,23 @@ class MaintainerApp(App[None]):
         if thread is None:
             self._content.set_text(f'Could not load thread: {error}')
             return
-        self._thread = thread
+        self._thread, self._shown = thread, None
         self._expanded = initially_expanded(thread, self._unread())
         keys = post_keys(thread)
         self._render_tree((keys[0], 0) if keys else ('', 0))
 
+    def _bots(self) -> tuple[str, ...]:
+        return self.snapshot.workspace.bots if self.snapshot else ()
+
     def _tree_rows(self) -> list[TreeRow]:
         assert self._thread is not None and self._reading is not None
         return tree_rows(
-            self._thread, self._reading, self._expanded, self._unread(), self.symbols.absent
+            self._thread,
+            self._reading,
+            self._expanded,
+            self._unread(),
+            self.symbols.absent,
+            self._bots(),
         )
 
     def _render_tree(self, target: tuple[str, int]) -> None:
@@ -782,6 +808,15 @@ class MaintainerApp(App[None]):
         actions, item, msgid = self._actions, self._reading, self._reply_msgid()
         if actions is None or item is None or msgid is None:
             return
+        quote = None
+        if msgid.startswith(SASHIKO_PREFIX):
+            # Not on the list: answer the patch, quoting Sashiko's review.
+            reply = self._current_reply()
+            assert reply is not None
+            source = item.sashiko.url if item.sashiko and item.sashiko.url else 'sashiko.dev'
+            quoted = '\n'.join(f'> {line}'.rstrip() for line in reply.message.body.splitlines())
+            quote = f'Sashiko ({source}) reported:\n{quoted}\n\n'
+            msgid = msgid.removeprefix(SASHIKO_PREFIX)
 
         def work() -> None:
             try:
@@ -789,15 +824,17 @@ class MaintainerApp(App[None]):
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot reply: {exc}')
                 return
-            self.call_from_thread(self._compose_reply, item, msgid, target)
+            self.call_from_thread(self._compose_reply, item, msgid, target, quote)
 
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
-    def _compose_reply(self, item: WorkItem, msgid: str, target: Any) -> None:
+    def _compose_reply(
+        self, item: WorkItem, msgid: str, target: Any, quote: Optional[str] = None
+    ) -> None:
         """Open a draft beside the thread, starting from b4's quote of the message."""
         if self._reading is not item:
             return  # The reader closed while the message loaded.
-        quote = reply_quote(target.lmsg)
+        quote = reply_quote(target.lmsg) if quote is None else quote
         self._draft = Draft(item, msgid, target, quote)
         self._draft_area.load_text(quote)
         self._draft_area.move_cursor(self._draft_area.document.end)
@@ -904,11 +941,13 @@ class MaintainerApp(App[None]):
             return
         row = self._rows[index]
         self._post_key, self._node = row.key, row.node
-        self._show_current()
+        if self._shown != (row.key, row.node):
+            self._show_current()
 
     def _show_current(self) -> None:
         if self._thread is None or self._reading is None:
             return
+        self._shown = (self._post_key, self._node)
         reply = self._current_reply()
         total = self._reading.series.expected
         title = content_title(self._thread, self._post_key, reply, total)
@@ -945,6 +984,21 @@ class MaintainerApp(App[None]):
                 self._select((key, 1))
                 return
         self.notify('No more comments in this series.')
+
+    def action_next_finding(self) -> None:
+        """Next Sashiko finding in series order: its patch, scrolled to its mark."""
+        if self._thread is None or self._reading is None:
+            return
+        anchors = finding_anchors(self._thread, self._reading)
+        if self._finding + 1 >= len(anchors):
+            self._set_notice('No more findings in this series.')
+            return
+        self._finding += 1
+        key, anchor = anchors[self._finding]
+        if (self._post_key, self._node) != (key, 0):
+            self._select((key, 0))
+            self._show_row(next(n for n, r in enumerate(self._rows) if (r.key, r.node) == (key, 0)))
+        self._content.scroll_to_anchor(anchor)
 
     def action_toggle_replies(self) -> None:
         """Expand or collapse the replies of the posting under the cursor."""

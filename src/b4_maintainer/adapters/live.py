@@ -188,7 +188,10 @@ class LiveSource:
         wanted = {m for i in items if i.state.to_review or i.responsible for m in i.series.msgids}
         progress('Fetching Sashiko reviews…')
         sashiko.clear_b4_cache()
-        fetched, failed = self.sashiko.update_details(wanted, self._sashiko_patchset)
+        present = {m for i in items for m in i.series.msgids}
+        fetched, failed = self.sashiko.update_details(
+            wanted, self._sashiko_patchset, present=present
+        )
         reviewed = sum(1 for i in items if i.sashiko is not None)
         notes.insert(0, f'Sashiko: {reviewed} series, {fetched} review(s) fetched')
         if failed:

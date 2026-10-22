@@ -1,18 +1,41 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Pre-apply reader content: the posting tree with collapsible replies, and message blocks."""
 
+import dataclasses
+import re
 from dataclasses import dataclass
 from typing import Collection, Optional
 
 from rich.style import Style
 
-from .model import Message, Post, Reply, SeriesThread, Tag, Trailers, WorkItem
+from .model import (
+    Finding,
+    Message,
+    Post,
+    Reply,
+    SashikoPatch,
+    SashikoReview,
+    SeriesThread,
+    Tag,
+    Trailers,
+    WorkItem,
+)
 from .widgets import Block
 
 UNATTACHED = 'unattached'
+# Message IDs of Sashiko reviews built from its API rather than read from mail.
+SASHIKO_PREFIX = 'sashiko:'
 
 HEADER = Style(bold=True)
 QUOTE = Style(dim=True)
+SEVERITY_STYLES = {
+    'critical': Style(color='red', bold=True),
+    'high': Style(color='red'),
+    'medium': Style(color='yellow'),
+    'low': Style(dim=True),
+}
+MARKED = Style(underline=True)
+_HUNK = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@')
 
 
 def diff_style(line: str) -> Style:
@@ -75,6 +98,49 @@ def _marks(t: Trailers, absent: str) -> str:
     )
 
 
+def sashiko_patch(review: Optional[SashikoReview], post: Post) -> Optional[SashikoPatch]:
+    """Sashiko's review of one posted patch, matched by message ID, else by part."""
+    if review is None or post.counter == 0:
+        return None
+    found = next((p for p in review.patches if p.msgid == post.message.msgid), None)
+    return found or next((p for p in review.patches if p.part == post.counter), None)
+
+
+def is_sashiko(message: Message, bots: Collection[str]) -> bool:
+    return message.msgid.startswith(SASHIKO_PREFIX) or message.author_email.lower() in bots
+
+
+def with_sashiko(
+    thread: SeriesThread, review: Optional[SashikoReview], bots: Collection[str]
+) -> SeriesThread:
+    """Add Sashiko's API review as a reply to each patch whose Sashiko mail is not cached."""
+    if review is None or not review.patches:
+        return thread
+    posts = []
+    for post in thread.patches:
+        found = sashiko_patch(review, post)
+        if found is None or not found.inline_review:
+            posts.append(post)
+            continue
+        if any(is_sashiko(r.message, bots) for r in post.replies):
+            posts.append(post)  # Its mail is here: never both.
+            continue
+        message = Message(
+            SASHIKO_PREFIX + post.message.msgid,
+            'Sashiko',
+            '',
+            None,
+            f'Sashiko review: {post.message.subject}',
+            found.inline_review,
+        )
+        posts.append(dataclasses.replace(post, replies=post.replies + (Reply(message, 0),)))
+    return dataclasses.replace(thread, patches=tuple(posts))
+
+
+def _new_findings(found: Optional[SashikoPatch]) -> list[Finding]:
+    return [f for f in found.findings if not f.preexisting] if found else []
+
+
 def post_label(thread: SeriesThread, key: str, item: WorkItem, absent: str = '·') -> str:
     if key == UNATTACHED:
         return f'Unattached ({len(thread.unattached)})'
@@ -84,7 +150,10 @@ def post_label(thread: SeriesThread, key: str, item: WorkItem, absent: str = '·
     replies = f' ({len(post.replies)})' if post.replies else ''
     if post.counter == 0:
         return f'0/{total} cover{replies}'
-    return f'{post.counter}/{total} {_marks(_trailers(item, post.counter), absent)}{replies}'
+    found = len(_new_findings(sashiko_patch(item.sashiko, post)))
+    badge = f' {found}!' if found else ''
+    marks = _marks(_trailers(item, post.counter), absent)
+    return f'{post.counter}/{total} {marks}{replies}{badge}'
 
 
 def thread_replies(thread: SeriesThread, key: str) -> tuple[Reply, ...]:
@@ -131,15 +200,22 @@ def root_label(thread: SeriesThread, key: str) -> str:
     return post.message.subject
 
 
-def reply_labels(replies: tuple[Reply, ...], unread: Collection[str] = ()) -> list[str]:
-    """Tree labels; unread replies (to the maintainer's mail) are marked ●."""
+def reply_labels(
+    replies: tuple[Reply, ...], unread: Collection[str] = (), bots: Collection[str] = ()
+) -> list[str]:
+    """Tree labels; unread replies (to the maintainer's mail) are marked ●, Sashiko's ◆."""
     labels = []
     for art, reply in zip(tree_art([r.depth for r in replies]), replies):
         m = reply.message
         date = f' {m.date:%m-%d}' if m.date else ''
         marks = _tag_marks(m.tags)
         dot = '● ' if m.msgid in unread else ''
-        labels.append(f'{art} {dot}{m.author_name}{date}{" " + marks if marks else ""}')
+        name = m.author_name
+        if m.msgid.startswith(SASHIKO_PREFIX):
+            name = '◆ Sashiko (not on list)'
+        elif is_sashiko(m, bots):
+            name = '◆ Sashiko'
+        labels.append(f'{art} {dot}{name}{date}{" " + marks if marks else ""}')
     return labels
 
 
@@ -167,6 +243,7 @@ def tree_rows(
     expanded: Collection[str],
     unread: Collection[str] = (),
     absent: str = '·',
+    bots: Collection[str] = (),
 ) -> list[TreeRow]:
     """Postings in series order, each followed by its replies when expanded.
 
@@ -182,7 +259,7 @@ def tree_rows(
             label += ' ●'
         rows.append(TreeRow(key, 0, label))
         if is_open:
-            for n, reply_label in enumerate(reply_labels(replies, unread), 1):
+            for n, reply_label in enumerate(reply_labels(replies, unread, bots), 1):
                 rows.append(TreeRow(key, n, '  ' + reply_label))
     return rows
 
@@ -248,6 +325,83 @@ def message_blocks(reply: Reply, expand: bool) -> list[Block]:
     return blocks + collapse_quotes(m.body.strip('\n'), expand)
 
 
+def finding_anchor(counter: int, n: int) -> str:
+    return f'finding-{counter}-{n}'
+
+
+def finding_anchors(thread: SeriesThread, item: WorkItem) -> list[tuple[str, str]]:
+    """(posting key, anchor) for every Sashiko finding, in series order."""
+    return [
+        (str(post.counter), finding_anchor(post.counter, n))
+        for post in thread.patches
+        if (found := sashiko_patch(item.sashiko, post)) is not None
+        for n in range(1, len(found.findings) + 1)
+    ]
+
+
+def diff_marks(diff: str, findings: tuple[Finding, ...]) -> dict[int, list[int]]:
+    """Diff line index -> findings (by index) located at that post-patch file line."""
+    wanted: dict[tuple[str, int], list[int]] = {}
+    for n, finding in enumerate(findings):
+        for location in finding.locations:
+            wanted.setdefault(location, []).append(n)
+    marks: dict[int, list[int]] = {}
+    path, line, left = '', 0, 0
+    for index, text in enumerate(diff.split('\n')):
+        hunk = _HUNK.match(text)
+        if hunk:
+            line, left = int(hunk.group(1)), int(hunk.group(2) or 1)
+        elif text.startswith('+++ '):
+            path, left = (text[6:] if text.startswith('+++ b/') else ''), 0
+        elif left and not text.startswith(('-', '\\')):
+            for n in wanted.get((path, line), []):
+                marks.setdefault(index, []).append(n)
+            line, left = line + 1, left - 1
+    return marks
+
+
+def _severity(finding: Finding) -> str:
+    return finding.severity + (' (pre-existing)' if finding.preexisting else '')
+
+
+def _sashiko_blocks(item: WorkItem, post: Post) -> tuple[list[Block], list[Block]]:
+    """(summary blocks before the diff, the diff with findings marked under their lines)."""
+    found = sashiko_patch(item.sashiko, post)
+    diff = post.diff or 'No diff.'
+    if found is None or item.sashiko is None:
+        return [], [Block(diff, wrap=False, style=diff_style)]
+    marks = diff_marks(diff, found.findings)
+    marked = {n for ns in marks.values() for n in ns}
+    new = len(_new_findings(found))
+    old = len(found.findings) - new
+    head = f'Sashiko: {new} finding{"" if new == 1 else "s"}'
+    head += f', {old} pre-existing' if old else ''
+    head += f' · {item.sashiko.url}' if item.sashiko.url else ''
+    summary = [Block(''), Block(head, style=HEADER)]
+    for n, f in enumerate(found.findings):
+        where = ', '.join(f'{p}:{line}' for p, line in f.locations[:1]) or '-'
+        anchor = '' if n in marked else finding_anchor(post.counter, n + 1)
+        style = SEVERITY_STYLES.get(f.severity)
+        summary.append(Block(f'{_severity(f)}  {where}  {f.problem}', style=style, anchor=anchor))
+    lines = diff.split('\n')
+    blocks: list[Block] = []
+    start, anchored = 0, set()
+    for index in sorted(marks):
+        if index > start:
+            blocks.append(Block('\n'.join(lines[start:index]), wrap=False, style=diff_style))
+        blocks.append(Block(lines[index], wrap=False, style=lambda t: diff_style(t) + MARKED))
+        for n in marks[index]:
+            f = found.findings[n]
+            anchor = '' if n in anchored else finding_anchor(post.counter, n + 1)
+            anchored.add(n)
+            style = SEVERITY_STYLES.get(f.severity)
+            blocks.append(Block(f'▲ {_severity(f)}: {f.problem}', style=style, anchor=anchor))
+        start = index + 1
+    if start < len(lines):
+        blocks.append(Block('\n'.join(lines[start:]), wrap=False, style=diff_style))
+    return summary, blocks
+
+
 def root_blocks(thread: SeriesThread, key: str, item: WorkItem) -> list[Block]:
     if key == UNATTACHED:
         intro = 'These messages could not be linked to a posting by their thread headers.'
@@ -263,6 +417,5 @@ def root_blocks(thread: SeriesThread, key: str, item: WorkItem) -> list[Block]:
     ]
     if post.counter == 0:
         return blocks
-    blocks += [Block(''), Block('── Diff ──', style=HEADER)]
-    blocks.append(Block(post.diff or 'No diff.', wrap=False, style=diff_style))
-    return blocks
+    summary, diff = _sashiko_blocks(item, post)
+    return blocks + summary + [Block(''), Block('── Diff ──', style=HEADER)] + diff

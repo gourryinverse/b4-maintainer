@@ -35,6 +35,8 @@ class Block:
     wrap: bool = True
     style: LineStyle = None
     indent: int = 0
+    # A name scroll_to_anchor() can find, e.g. a finding's mark.
+    anchor: str = ''
 
 
 class TextPane(ScrollView, can_focus=True):
@@ -50,17 +52,39 @@ class TextPane(ScrollView, can_focus=True):
         super().__init__(**kwargs)
         self._blocks = [Block(text)]
         self._lines: list[tuple[str, Style]] = []
+        self._anchors: dict[str, int] = {}
+        self._pending_anchor: tuple[str, int] = ('', 0)
         self._width = 0
 
     @property
     def text(self) -> str:
         return '\n'.join(b.text for b in self._blocks)
 
+    @property
+    def lines(self) -> list[str]:
+        """Rendered lines, after wrapping."""
+        return [text for text, _ in self._lines]
+
+    def scroll_to_anchor(self, anchor: str, context: int = 3) -> None:
+        """Scroll an anchored block to the top, with *context* lines above it."""
+        self._pending_anchor = (anchor, context)
+        self._apply_anchor()
+
+    def _apply_anchor(self) -> None:
+        anchor, context = self._pending_anchor
+        if anchor in self._anchors:
+            y = max(0, self._anchors[anchor] - context)
+            self.scroll_to(0, y, animate=False, immediate=True)
+            self._pending_anchor = ('', 0)
+
     def set_text(self, text: str) -> None:
         self.set_blocks([Block(text)])
 
     def set_blocks(self, blocks: list[Block]) -> None:
-        self._blocks = [Block(printable(b.text), b.wrap, b.style, b.indent) for b in blocks]
+        self._blocks = [
+            Block(printable(b.text), b.wrap, b.style, b.indent, b.anchor) for b in blocks
+        ]
+        self._pending_anchor = ('', 0)
         self._width = 0
         self._wrap()
         self.scroll_to(0, 0, animate=False, immediate=True)
@@ -72,8 +96,11 @@ class TextPane(ScrollView, can_focus=True):
             return
         self._width = width
         lines: list[tuple[str, Style]] = []
+        self._anchors = {}
         widest = width
         for block in self._blocks:
+            if block.anchor:
+                self._anchors.setdefault(block.anchor, len(lines))
             prefix = ' ' * block.indent
             for raw in block.text.split('\n'):
                 style = _style(block.style, raw)
@@ -90,6 +117,7 @@ class TextPane(ScrollView, can_focus=True):
                 lines.extend((prefix + w, style) for w in wrapped or [''])
         self._lines = lines
         self.virtual_size = Size(widest, len(lines))
+        self._apply_anchor()
 
     def on_resize(self, event: events.Resize) -> None:
         self._wrap()
