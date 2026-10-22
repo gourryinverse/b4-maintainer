@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run this checkout's b4-maintainer (from .venv) on this workspace, from any directory and
+# whether or not a virtual environment is active.
+set -euo pipefail
+root=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+bin=$root/.venv/bin/b4-maintainer
+if [[ ! -x $bin ]]; then
+    echo "b4-maintainer: not set up yet; run $root/setup.sh" >&2
+    exit 1
+fi
+cd "$root"
+# The site file's environment (e.g. proxies) applies to this run only.
+SITE_CONF=''
+if [[ -f setup.conf ]]; then
+    # shellcheck source=setup.conf.example
+    . ./setup.conf
+fi
+site=${SITE_CONF:-setup.site.conf}
+if [[ -f $site ]]; then
+    # shellcheck disable=SC1090
+    . "$site"
+fi
+exec "$bin" "$@"

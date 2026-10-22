@@ -22,3 +22,5 @@ htmlcov/
 *.egg-info/
 build/
 tmp/
+/setup.conf
+/setup.site.conf

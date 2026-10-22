@@ -1,0 +1,18 @@
+# b4-maintainer setup: ./setup.sh copies this to setup.conf (ignored by Git); edit that.
+
+# Private state repository, cloned as state/: the synced workspace (projects, tracked
+# series, flags). Empty: start without synced state.
+STATE_REPO=''
+
+# Python 3.11+ interpreter for .venv. Empty: the newest python3.1x found on PATH.
+PYTHON=''
+
+# Also install the development tools (pytest, ruff): yes or no.
+DEV_TOOLS=no
+
+# Optional site file for this environment, kept out of the public repository (e.g. one an
+# organisation distributes internally). Default: setup.site.conf here, when present.
+# Sourced by setup.sh and ./b4-maintainer; it may export environment (proxies), set PYTHON
+# (a default) or PIP_ARGS (extra pip arguments), or define site_install, called as
+# `site_install PACKAGE-ARGS...` with $VENV set, in place of pip. Without one: plain pip.
+SITE_CONF=''
