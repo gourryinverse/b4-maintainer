@@ -213,3 +213,42 @@ def test_items_remember_every_postings_thread():
     v2 = __import__('dataclasses').replace(v2, source='/cache/threads/bbb')
     [item] = build_items([v1, v2], {}, Workspace.from_config(workspace_config()))
     assert set(item.sources) == {'/cache/threads/aaa', '/cache/threads/bbb'}
+
+
+def test_refs_end_review_by_default_only_for_mainline():
+    config = workspace_config()
+    config['projects'][0]['refs'] = [
+        {'label': 'm', 'name': 'master', 'authority': 'mainline'},
+        {'label': 'n', 'name': 'next/master', 'authority': 'acceptance', 'ends_review': True},
+        {'label': 's', 'name': 'mm/mm-stable', 'authority': 'acceptance'},
+    ]
+    refs = Workspace.from_config(config).projects[0].refs
+    assert [r.ends_review for r in refs] == [True, True, False]
+
+
+def test_landed_series_leave_every_queue_but_cached_and_responses():
+    import dataclasses
+
+    ws = Workspace.from_config(
+        workspace_config(profiles=[{'id': 'mm', 'project': 'linux', 'lists': LINUX_LISTS}])
+    )
+    keep, landed = build_items(
+        [
+            make_series('mm: in review', msgid='k@example.org', lists=LINUX_LISTS),
+            make_series('mm: merged', msgid='m@example.org', lists=LINUX_LISTS),
+        ],
+        {},
+        ws,
+    )
+    landed = dataclasses.replace(
+        landed,
+        landed=True,
+        responsible=True,
+        state=SeriesState(to_review=True),
+        unread_msgids=frozenset({'reply@example.org'}),
+    )
+    idx = ViewIndex(ws, [keep, landed])
+    for view in ('all', 'project:linux', 'profile:mm', 'responsibilities', 'review'):
+        assert landed not in idx.items(view), view
+    assert landed in idx.items('cached')
+    assert landed in idx.items('responses')

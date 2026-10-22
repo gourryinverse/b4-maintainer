@@ -20,6 +20,26 @@ class Ref:
     authority: Authority
     # Sidebar view label; series in this ref leave profile views for it.
     view: str = ''
+    # A series fully in this ref has left review: it drops out of every queue.
+    ends_review: bool = False
+
+
+def make_ref(
+    label: str, name: str, authority: Authority, view: str = '', ends_review: Optional[bool] = None
+) -> Ref:
+    """Mainline ends review unless configured otherwise; other refs only when configured."""
+    ends = authority == Authority.MAINLINE if ends_review is None else ends_review
+    return Ref(label, name, authority, view, ends)
+
+
+def _ref(r: Mapping[str, Any]) -> Ref:
+    return make_ref(
+        r['label'],
+        r['name'],
+        Authority[r['authority'].upper()],
+        r.get('view', ''),
+        r.get('ends_review'),
+    )
 
 
 @dataclass(frozen=True)
@@ -80,10 +100,7 @@ class Workspace:
                 label=p.get('label', p['id']),
                 short=p.get('short', p['id'][:4]),
                 lists=tuple(list_id(lst) for lst in p.get('lists', [])),
-                refs=tuple(
-                    Ref(r['label'], r['name'], Authority[r['authority'].upper()], r.get('view', ''))
-                    for r in p.get('refs', [])
-                ),
+                refs=tuple(_ref(r) for r in p.get('refs', [])),
                 path=p.get('path', f'projects/{p["id"]}'),
                 maintainers=p.get('maintainers', 'MAINTAINERS'),
                 get_maintainer=(

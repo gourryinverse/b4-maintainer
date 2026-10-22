@@ -420,3 +420,62 @@ def test_staged_series_move_from_profile_to_ref_views(tmp_path):
         ('u', 'full'),
         ('a', 'full'),
     ]
+
+
+NEXT_CONFIG = """\
+[[projects]]
+id = "demo"
+path = "projects/demo"
+lists = ["linux-mm@kvack.org"]
+refs = [
+  { label = "m", name = "master", authority = "mainline" },
+  { label = "n", name = "next", authority = "acceptance", ends_review = true },
+]
+
+[[profiles]]
+id = "mm"
+label = "MM"
+project = "demo"
+lists = ["linux-mm@kvack.org"]
+"""
+
+
+def test_series_fully_in_linux_next_leave_the_queues(tmp_path):
+    from gitutil import git
+
+    root = tmp_path / 'ws'
+    checkout = make_checkout(root / 'projects' / 'demo')
+    (root / 'workspace.toml').write_text(NEXT_CONFIG)
+    fakes = Fakes()
+    source = LiveSource(
+        root,
+        tracked_series=fakes.tracked_series,
+        search_for=fakes.search_for,
+        track=fakes.track,
+        b4_command=['b4'],
+        now=lambda: NOW,
+        identity=lambda c: None,
+    )
+    whole, msgs_w = mail(tmp_path, 'w', 'mm: whole series in next')
+    half, msgs_h = mail(tmp_path, 'h', 'mm: half in next')
+    _, msgs_o = mail(tmp_path, 'o', 'mm: still under review')
+    fakes.answers[MM] = msgs_w + msgs_h + msgs_o
+    ident = ['-c', 'user.name=A', '-c', 'user.email=a@example.org']
+    git('checkout', '-q', '-b', 'next', cwd=checkout)
+    for sent, counters in ((whole, (1, 2)), (half, (1,))):
+        for n in counters:
+            link = f'Link: https://lore.kernel.org/{sent.msgids[n]}'
+            git(
+                *ident, 'commit', '-q', '--allow-empty', '-m', f'picked {n}\n\n{link}', cwd=checkout
+            )
+    git('checkout', '-q', 'master', cwd=checkout)
+
+    source.refresh()
+    snapshot = source.load()
+    index = ViewIndex(snapshot.workspace, snapshot.items)
+    assert sorted(i.series.subject for i in index.items('profile:mm')) == [
+        'mm: half in next',
+        'mm: still under review',
+    ]
+    assert 'mm: whole series in next' not in [i.series.subject for i in index.items('all')]
+    assert 'mm: whole series in next' in [i.series.subject for i in index.items('cached')]

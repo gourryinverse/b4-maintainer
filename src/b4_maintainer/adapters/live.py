@@ -155,8 +155,11 @@ class LiveSource:
                 stage = next(
                     (r.name for r, (_, _, c) in zip(project.refs, tree) if r.view and c in held), ''
                 )
+                landed = any(
+                    r.ends_review and c == Coverage.FULL for r, (_, _, c) in zip(project.refs, tree)
+                )
                 state = dataclasses.replace(item.state, tree=tree)
-                item = dataclasses.replace(item, state=state, stage=stage)
+                item = dataclasses.replace(item, state=state, stage=stage, landed=landed)
             result.append(item)
         return tuple(result)
 

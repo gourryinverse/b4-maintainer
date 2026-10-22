@@ -195,6 +195,8 @@ class WorkItem:
     sources: tuple[str, ...] = ()
     # Most advanced ref with a sidebar view that holds this series, by config order.
     stage: str = ''
+    # Fully in a ref that ends review (mainline, linux-next): out of every queue.
+    landed: bool = False
 
     @property
     def identity(self) -> str:

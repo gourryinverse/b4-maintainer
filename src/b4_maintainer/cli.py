@@ -12,7 +12,7 @@ from .app import MaintainerApp
 from .fixtures import build_demo_workspace
 from .model import Authority
 from .projectsetup import CONFIG_NAME, SetupError, add_project
-from .workspace import Project, Ref, list_id
+from .workspace import Project, Ref, list_id, make_ref
 
 
 def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
@@ -81,7 +81,7 @@ def parse_ref(value: str) -> Ref:
         raise argparse.ArgumentTypeError(
             f'{value!r}: authority must be one of {authorities}'
         ) from None
-    return Ref(parts[0], parts[1], authority)
+    return make_ref(parts[0], parts[1], authority)
 
 
 def project_main(argv: Sequence[str]) -> int:

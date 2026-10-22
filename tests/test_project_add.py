@@ -122,3 +122,24 @@ def test_invalid_existing_config_is_refused(ws, capsys):
     assert 'workspace.toml' in capsys.readouterr().err
     assert (ws / 'workspace.toml').read_text() == 'projects = [ { id = "x" } ]\n'
     assert git_config(ws / 'projects' / 'demo', 'b4.data-dir') is None
+
+
+def test_project_toml_round_trips_views_and_review_ends():
+    from b4_maintainer.projectsetup import project_toml
+    from b4_maintainer.workspace import Project, make_ref
+
+    project = Project(
+        id='demo',
+        label='demo',
+        short='demo',
+        lists=('demo.lists.example.org',),
+        refs=(
+            make_ref('m', 'master', Authority.MAINLINE),
+            make_ref('n', 'next', Authority.ACCEPTANCE, ends_review=True),
+            make_ref('u', 'unstable', Authority.PRELIMINARY, view='Unstable'),
+            make_ref('x', 'odd', Authority.MAINLINE, ends_review=False),
+        ),
+        path='projects/demo',
+    )
+    loaded = Workspace.from_config(tomllib.loads(project_toml(project))).project('demo')
+    assert loaded == project

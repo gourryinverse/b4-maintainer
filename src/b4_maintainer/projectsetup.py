@@ -17,7 +17,7 @@ from typing import Optional, Sequence
 
 from b4.review.tracking import get_repo_identifier
 
-from .workspace import Project, Workspace
+from .workspace import Project, Workspace, make_ref
 
 CONFIG_NAME = 'workspace.toml'
 B4_DATA = ('var', 'b4', 'data')
@@ -49,11 +49,14 @@ def project_toml(project: Project) -> str:
     lines.append('lists = [' + ', '.join(s(lst) for lst in project.lists) + ']')
     if project.refs:
         lines.append('refs = [')
-        lines.extend(
-            f'  {{ label = {s(r.label)}, name = {s(r.name)}, '
-            f'authority = {s(r.authority.name.lower())} }},'
-            for r in project.refs
-        )
+        for r in project.refs:
+            extra = f', view = {s(r.view)}' if r.view else ''
+            if r.ends_review != make_ref(r.label, r.name, r.authority).ends_review:
+                extra += f', ends_review = {str(r.ends_review).lower()}'
+            lines.append(
+                f'  {{ label = {s(r.label)}, name = {s(r.name)}, '
+                f'authority = {s(r.authority.name.lower())}{extra} }},'
+            )
         lines.append(']')
     return '\n'.join(lines) + '\n'
 

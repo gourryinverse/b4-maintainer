@@ -22,7 +22,8 @@ class ViewIndex:
         everything = tuple(items)
         items = tuple(i for i in everything if not i.hidden)
         hidden = tuple(i for i in everything if i.hidden)
-        active = tuple(i for i in items if not i.state.mainline_complete)
+        # Review queues drop series whose review is over: merged or otherwise landed.
+        active = tuple(i for i in items if not (i.state.mainline_complete or i.landed))
         me = set(ws.me)
 
         specs: list[tuple[View, Callable[[WorkItem], bool], tuple[WorkItem, ...]]] = []
