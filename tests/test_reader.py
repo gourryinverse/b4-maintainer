@@ -72,12 +72,12 @@ async def test_minus_expands_and_collapses_a_patchs_replies(demo_root):
         await pilot.pause()
         labels = app.tree_labels()
         assert labels[3].startswith('▾ 3/5')
-        assert [label.split(' 10-')[0] for label in labels[4:7]] == [
+        # Branches without unread replies start folded.
+        assert [label.split(' 10-')[0] for label in labels[4:6]] == [
             '  ├─> Reviewer Two',
             '  └─> Reviewer One',
-            '    └─> Contributor One',
         ]
-        assert labels[4].endswith(' R')
+        assert labels[4].endswith(' R') and labels[5].endswith(' (+1)')
         assert app.tree_position() == ('3', 0)
 
         await pilot.press('down')
@@ -90,7 +90,7 @@ async def test_minus_expands_and_collapses_a_patchs_replies(demo_root):
         # On a reply, - collapses its patch and returns to the patch row.
         await pilot.press('minus')
         await pilot.pause()
-        assert len(app.tree_labels()) == len(labels) - 3
+        assert len(app.tree_labels()) == len(labels) - 2
         assert app.tree_position() == ('3', 0)
 
 
@@ -500,3 +500,102 @@ def test_collapsed_posts_flag_unread_and_start_expanded():
     rows = tree_rows(thread, item, expanded=set(), unread={'r2@example.org'})
     assert rows[0].label.endswith(' ●')
     assert not tree_rows(thread, item, expanded=set())[0].label.endswith(' ●')
+
+
+def _branchy(item):
+    """1 - 1a - 1aa, 1ab; 1b - 1ba, 1bb."""
+    replies = tuple(
+        Reply(_reply(f'{name}@example.org', name), depth)
+        for name, depth in (('1a', 0), ('1aa', 1), ('1ab', 1), ('1b', 0), ('1ba', 1), ('1bb', 1))
+    )
+    return stub_thread_with_replies(item, replies)
+
+
+def names(labels):
+    return [
+        label.split('> ')[1].removeprefix('● ').split()[0] if '> ' in label else label.split()[1]
+        for label in labels
+    ]
+
+
+def test_tree_rows_hide_collapsed_branches():
+    from b4_maintainer.reader import tree_rows
+
+    item = make_item(subject='mm: branches')
+    thread = _branchy(item)
+    rows = tree_rows(thread, item, {'1'}, collapsed={'1a@example.org'})
+    assert [(r.key, r.node) for r in rows] == [('1', 0), ('1', 1), ('1', 4), ('1', 5), ('1', 6)]
+    assert rows[1].label.endswith(' (+2)')
+    unread = tree_rows(thread, item, {'1'}, {'1ab@example.org'}, collapsed={'1a@example.org'})
+    assert unread[1].label.endswith(' (+2) ●')
+
+
+async def test_minus_on_a_reply_collapses_only_its_branch():
+    item = make_item(subject='mm: branches')
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), (item,))
+    app = MaintainerApp(lambda: snapshot, thread_loader=lambda s: _branchy(item))
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        await pilot.press('minus', 'down')  # Expand the patch; onto 1a.
+        await pilot.pause()
+        assert app.tree_position() == ('1', 1)
+        # Nothing is unread, so both branches start folded.
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b']
+
+        await pilot.press('minus')  # Unfold 1a only.
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1', '1a', '1aa', '1ab', '1b']
+        assert app.tree_position() == ('1', 1)
+        await pilot.press('minus')  # Fold it again.
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b']
+
+        await select_row(pilot, 2)  # 1b
+        await pilot.press('minus')
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b', '1ba', '1bb']
+
+        # On a leaf, - folds its parent's branch and moves there.
+        await select_row(pilot, 3)
+        assert app.tree_position() == ('1', 5)
+        await pilot.press('minus')
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b']
+        assert app.tree_position() == ('1', 4)
+
+        # n unfolds a folded branch it lands in.
+        await pilot.press('n')
+        await pilot.pause()
+        assert app.tree_position() == ('1', 5)
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b', '1ba', '1bb']
+
+        # On the patch row, - still collapses everything.
+        await select_row(pilot, 0)
+        await pilot.press('minus')
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1']
+
+
+def test_only_branches_with_unread_replies_start_open():
+    from b4_maintainer.reader import initially_collapsed
+
+    item = make_item(subject='mm: branches')
+    thread = _branchy(item)
+    assert initially_collapsed(thread, {'1ba@example.org'}) == {'1a@example.org'}
+    assert initially_collapsed(thread, set()) == {'1a@example.org', '1b@example.org'}
+
+
+async def test_opening_unfolds_only_unread_branches():
+    import dataclasses
+
+    item = dataclasses.replace(
+        make_item(subject='mm: branches'), unread_msgids=frozenset({'1ba@example.org'})
+    )
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), (item,))
+    app = MaintainerApp(lambda: snapshot, thread_loader=lambda s: _branchy(item))
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b', '1ba', '1bb']
+        assert app.tree_labels()[1].endswith(' (+2)')

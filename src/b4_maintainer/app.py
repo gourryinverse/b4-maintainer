@@ -34,12 +34,15 @@ from .reader import (
     SASHIKO_PREFIX,
     SEVERITY_STYLES,
     TreeRow,
+    branch,
     content_title,
     find_post,
     finding_anchors,
     has_long_quote,
+    initially_collapsed,
     initially_expanded,
     message_blocks,
+    parent_node,
     post_keys,
     root_blocks,
     thread_replies,
@@ -414,6 +417,8 @@ class MaintainerApp(App[None]):
         self._post_key = ''
         self._node = 0
         self._expanded: set[str] = set()
+        # Replies (by message-id) whose branches are folded away in the tree.
+        self._collapsed: set[str] = set()
         self._rows: list[TreeRow] = []
         self._finding = -1
         self._shown: Optional[tuple[str, int]] = None
@@ -782,6 +787,7 @@ class MaintainerApp(App[None]):
         self.screen.add_class('-reading')
         self._tree.clear_options()
         self._rows, self._expanded, self._node = [], set(), 0
+        self._collapsed = set()
         self._finding = -1
         self._shown = None
         self._content.border_title = ''
@@ -817,6 +823,7 @@ class MaintainerApp(App[None]):
             return
         self._thread, self._shown = thread, None
         self._expanded = initially_expanded(thread, self._unread())
+        self._collapsed = initially_collapsed(thread, self._unread())
         keys = post_keys(thread)
         draft = self._draft
         if draft is not None and draft.pane and draft.item.identity == item.identity:
@@ -850,6 +857,7 @@ class MaintainerApp(App[None]):
             self._unread(),
             self.symbols.absent,
             self._bots(),
+            self._collapsed,
         )
 
     def _render_tree(self, target: tuple[str, int]) -> None:
@@ -1250,8 +1258,27 @@ class MaintainerApp(App[None]):
         self._content.scroll_to_anchor(anchor)
 
     def action_toggle_replies(self) -> None:
-        """Expand or collapse the replies of the posting under the cursor."""
-        key = self._post_key
+        """Fold the branch under the cursor: a posting's replies, or one reply's.
+
+        On a reply without replies of its own, fold its parent's branch instead.
+        """
+        key, node = self._post_key, self._node
+        if node and self._thread is not None:
+            replies = thread_replies(self._thread, key)
+            msgid = replies[node - 1].message.msgid
+            if msgid in self._collapsed:
+                self._collapsed.discard(msgid)
+                self._render_tree((key, node))
+                return
+            if branch(replies, node):
+                self._collapsed.add(msgid)
+                self._render_tree((key, node))
+                return
+            parent = parent_node(replies, node)
+            if parent:
+                self._collapsed.add(replies[parent - 1].message.msgid)
+                self._render_tree((key, parent))
+                return
         if key in self._expanded:
             self._expanded.discard(key)
             self._render_tree((key, 0))
@@ -1262,13 +1289,28 @@ class MaintainerApp(App[None]):
     def _select(self, target: tuple[str, int]) -> None:
         """Highlight a posting or reply, expanding its posting when a reply is hidden."""
         key, node = target
-        if node and key not in self._expanded:
+        hidden = self._unfold_ancestors(key, node) if node and self._thread else False
+        if node and (key not in self._expanded or hidden):
             self._expanded.add(key)
             self._render_tree(target)
             return
         positions = {(row.key, row.node): n for n, row in enumerate(self._rows)}
         if target in positions:
             self._tree.highlighted = positions[target]
+
+    def _unfold_ancestors(self, key: str, node: int) -> bool:
+        """Unfold every collapsed reply above *node*; return whether any was folded."""
+        assert self._thread is not None
+        replies = thread_replies(self._thread, key)
+        unfolded = False
+        parent = parent_node(replies, node)
+        while parent:
+            msgid = replies[parent - 1].message.msgid
+            if msgid in self._collapsed:
+                self._collapsed.discard(msgid)
+                unfolded = True
+            parent = parent_node(replies, parent)
+        return unfolded
 
     def action_toggle_quotes(self) -> None:
         self._expand_quotes = not self._expand_quotes
@@ -1278,6 +1320,7 @@ class MaintainerApp(App[None]):
         self.workers.cancel_group(self, 'thread')
         self._reading, self._thread, self._post_key = None, None, ''
         self._node, self._rows, self._expanded = 0, [], set()
+        self._collapsed = set()
         self.screen.remove_class('-reading')
         for name in ('tree', 'content', 'draft'):
             self.screen.remove_class(f'-rpane-{name}')

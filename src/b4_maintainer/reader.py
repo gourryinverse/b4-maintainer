@@ -239,6 +239,18 @@ def initially_expanded(thread: SeriesThread, unread: Collection[str]) -> set[str
     }
 
 
+def initially_collapsed(thread: SeriesThread, unread: Collection[str]) -> set[str]:
+    """Replies whose branches hold no unread replies start folded (by message-id)."""
+    folded = set()
+    for key in post_keys(thread):
+        replies = thread_replies(thread, key)
+        for n, reply in enumerate(replies, 1):
+            below = branch(replies, n)
+            if below and not any(r.message.msgid in unread for r in below):
+                folded.add(reply.message.msgid)
+    return folded
+
+
 def tree_rows(
     thread: SeriesThread,
     item: WorkItem,
@@ -246,10 +258,12 @@ def tree_rows(
     unread: Collection[str] = (),
     absent: str = '·',
     bots: Collection[str] = (),
+    collapsed: Collection[str] = (),
 ) -> list[TreeRow]:
     """Postings in series order, each followed by its replies when expanded.
 
     ▸/▾ mark postings with replies; a collapsed one with unread replies ends in ●.
+    Replies in *collapsed* (by message-id) hide their branch and end in (+N).
     """
     rows = []
     for key in post_keys(thread):
@@ -261,9 +275,38 @@ def tree_rows(
             label += ' ●'
         rows.append(TreeRow(key, 0, label))
         if is_open:
-            for n, reply_label in enumerate(reply_labels(replies, unread, bots), 1):
-                rows.append(TreeRow(key, n, '  ' + reply_label))
+            labels = reply_labels(replies, unread, bots)
+            n = 0
+            while n < len(replies):
+                label, below = labels[n], branch(replies, n + 1)
+                if replies[n].message.msgid in collapsed and below:
+                    label += f' (+{len(below)})'
+                    if any(r.message.msgid in unread for r in below):
+                        label += ' ●'
+                    rows.append(TreeRow(key, n + 1, '  ' + label))
+                    n += 1 + len(below)
+                    continue
+                rows.append(TreeRow(key, n + 1, '  ' + label))
+                n += 1
     return rows
+
+
+def branch(replies: tuple[Reply, ...], node: int) -> tuple[Reply, ...]:
+    """Replies beneath the *node*th reply (1-based): the deeper ones that follow it."""
+    depth = replies[node - 1].depth
+    end = node
+    while end < len(replies) and replies[end].depth > depth:
+        end += 1
+    return replies[node:end]
+
+
+def parent_node(replies: tuple[Reply, ...], node: int) -> int:
+    """The reply (1-based) that the *node*th reply answers, or 0 for its posting."""
+    depth = replies[node - 1].depth
+    for n in range(node - 1, 0, -1):
+        if replies[n - 1].depth < depth:
+            return n
+    return 0
 
 
 def content_title(thread: SeriesThread, key: str, reply: Optional[Reply], total: int) -> str:
