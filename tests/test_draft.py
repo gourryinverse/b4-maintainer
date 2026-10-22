@@ -195,3 +195,88 @@ async def test_narrow_terminal_cycles_panes_while_drafting(demo_root):
         assert app.reader_panes() == ('content',)
         await pilot.press('shift+tab', 'shift+tab')
         assert app.reader_panes() == ('draft',)
+
+
+def make_saved(demo_root, tmp_path):
+    from b4_maintainer.adapters.drafts import DraftStore
+
+    actions = DraftActions(demo_root)
+    store = DraftStore(tmp_path / 'drafts')
+    return MaintainerApp(actions.load, actions=actions, drafts=store), actions, store
+
+
+async def test_typing_saves_the_draft(demo_root, tmp_path):
+    app, _, store = make_saved(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        draft = await start_draft(pilot)
+        msgid = app.draft_msgid()
+        await pilot.pause(0.8)
+        assert store.get(msgid) is None  # The untouched quote is not a draft.
+        draft.insert('Half a thought.')
+        await pilot.pause(0.8)
+        saved = store.get(msgid)
+        assert saved is not None and 'Half a thought.' in saved.text
+
+
+async def test_closing_the_reader_keeps_the_draft_and_reopening_restores_it(demo_root, tmp_path):
+    app, _, store = make_saved(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        draft = await start_draft(pilot)
+        position, msgid = app.tree_position(), app.draft_msgid()
+        draft.insert('Keep me.')
+        await pilot.press('escape', 'escape')  # draft -> tree -> close, no prompt
+        await settle(pilot)
+        assert app.reading is None
+        assert app.quit_prompt() is None
+        assert 'Draft saved' in app.status_text()
+        assert store.msgids() == {msgid}
+
+        await pilot.press('enter')
+        await settle(pilot)
+        assert app.reader_panes() == ('tree', 'content', 'draft')
+        assert app.tree_position() == position
+        assert 'Keep me.' in app.query_one('#draft').text
+
+
+async def test_a_new_session_restores_saved_drafts(demo_root, tmp_path):
+    app, _, store = make_saved(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        draft = await start_draft(pilot)
+        draft.insert('Across restarts.')
+    assert len(store.msgids()) == 1  # Saved on exit too.
+
+    again, _, _ = make_saved(demo_root, tmp_path)
+    async with again.run_test(size=(180, 40)) as pilot:
+        await reading(pilot)
+        assert 'Across restarts.' in again.query_one('#draft').text
+
+
+async def test_send_and_discard_delete_the_saved_draft(demo_root, tmp_path):
+    app, _, store = make_saved(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        draft = await start_draft(pilot)
+        draft.insert('Throw away.')
+        await pilot.pause(0.8)
+        assert store.msgids()
+        await pilot.press('ctrl+g')
+        await pilot.pause()
+        await pilot.press('y')
+        await pilot.pause()
+        assert store.msgids() == set()
+
+        draft = app.query_one('#draft')
+        await pilot.press('r')
+        await settle(pilot)
+        draft.insert('Reviewed-by: Example Maintainer <maintainer@example.org>\n')
+        await pilot.pause(0.8)
+        assert store.msgids()
+        await pilot.press('ctrl+s')
+        await pilot.pause()
+        with (
+            mock.patch.object(app, 'suspend', contextlib.nullcontext),
+            mock.patch('b4.get_smtp', return_value=(None, 'maintainer@example.org')),
+            mock.patch('b4.send_mail', side_effect=lambda s, m, **k: 1),
+        ):
+            await pilot.press('ctrl+y')
+            await settle(pilot)
+        assert store.msgids() == set()

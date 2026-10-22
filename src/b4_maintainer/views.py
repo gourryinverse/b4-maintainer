@@ -72,6 +72,8 @@ class ViewIndex:
             (View('review', 'To Review', 'builtin'), lambda i: i.state.to_review, active),
             (View('cached', 'Cached', 'builtin'), _always, items),
         ]
+        if any(i.state.draft for i in items):
+            specs.append((View('drafts', 'Drafts', 'builtin'), lambda i: i.state.draft, items))
         if hidden:
             specs.append((View('hidden', 'Hidden', 'builtin'), _always, hidden))
 

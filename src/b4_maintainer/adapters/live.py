@@ -19,6 +19,7 @@ from ..workspace import Project, Snapshot, Workspace, build_items
 from . import b4state, sashiko
 from .b4mbox import parse_mbox
 from .clientstate import HiddenStore
+from .drafts import DraftStore
 from .lorelist import MailCache, Search
 from .maintainers import OwnerCache, author_roles
 from .sashiko import SashikoCache
@@ -62,6 +63,7 @@ class LiveSource:
         self.cache = MailCache(self.root / 'var' / 'mail')
         self.hidden = HiddenStore(self.root / 'state' / 'client' / 'hidden.json')
         self.sashiko = SashikoCache(self.root / 'var' / 'sashiko')
+        self.drafts = DraftStore(self.root / 'var' / 'drafts')
         self._tracked_series = tracked_series
         self._search_for = search_for
         self._track = track
@@ -122,6 +124,7 @@ class LiveSource:
         items = self._responses(ws, items)
         items = self._tree_evidence(ws, items)
         items = self._sashiko_reviews(items)
+        items = self._drafted(items)
         hidden = self.hidden.load()
         items = tuple(
             dataclasses.replace(i, hidden=True) if hidden.matches(i) else i for i in items
@@ -148,6 +151,21 @@ class LiveSource:
                 role = role or roles.get(item.series.author_email.lower(), '')
             if responsible or role:
                 item = dataclasses.replace(item, responsible=responsible, author_role=role)
+            result.append(item)
+        return tuple(result)
+
+    def _drafted(self, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
+        """Mark items with a saved reply draft to any message in their threads."""
+        drafted = self.drafts.msgids()
+        if not drafted:
+            return items
+        info = self.cache.messages()
+        threads = {self.cache.thread_name(info[m].key) for m in drafted if m in info}
+        result = []
+        for item in items:
+            names = {pathlib.Path(src).name for src in item.sources}
+            if names & threads:
+                item = dataclasses.replace(item, state=dataclasses.replace(item.state, draft=True))
             result.append(item)
         return tuple(result)
 

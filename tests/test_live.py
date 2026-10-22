@@ -522,3 +522,17 @@ def test_series_fully_in_linux_next_leave_the_queues(tmp_path):
     ]
     assert 'mm: whole series in next' not in [i.series.subject for i in index.items('all')]
     assert 'mm: whole series in next' in [i.series.subject for i in index.items('cached')]
+
+
+def test_series_with_saved_drafts_are_marked_and_listed(live, tmp_path):
+    source, fakes, _ = live
+    sent, msgs = mail(tmp_path, 'a', 'mm: drafting')
+    fakes.answers[MM] = msgs + mail(tmp_path, 'b', 'mm: quiet')[1]
+    source.refresh()
+    index = ViewIndex(*_snap(source))
+    assert 'drafts' not in {v.id for v in index.views}
+
+    source.drafts.save(sent.msgids[1], 'quote', 'quote and my reply')
+    index = ViewIndex(*_snap(source))
+    assert [i.series.subject for i in index.items('drafts')] == ['mm: drafting']
+    assert index.items('drafts')[0].state.draft

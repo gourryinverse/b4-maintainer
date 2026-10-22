@@ -28,6 +28,7 @@ in the background.
 - [Backlogs](docs/design/backlogs.md)
 - [Project workspaces](docs/design/projects.md)
 - [Sashiko feedback](docs/design/sashiko.md)
+- [External editor drafts](docs/design/editor.md)
 - [Open decisions](docs/design/open.md)
 - [Contributor instructions](AGENTS.md)
 

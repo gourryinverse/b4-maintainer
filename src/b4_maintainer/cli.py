@@ -66,7 +66,7 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
 def _live_app(source: LiveSource, args: argparse.Namespace) -> MaintainerApp:
     source.email_dryrun = args.email_dry_run
     source.no_sign = args.no_sign
-    return MaintainerApp(source.load, actions=source)
+    return MaintainerApp(source.load, actions=source, drafts=source.drafts)
 
 
 def parse_ref(value: str) -> Ref:

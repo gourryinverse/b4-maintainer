@@ -26,6 +26,7 @@ from textual.widgets import Footer, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .adapters.b4mbox import load_thread
+from .adapters.drafts import DraftStore, SavedDraft
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
@@ -348,10 +349,15 @@ class MaintainerApp(App[None]):
         symbols: Symbols = DEFAULT_SYMBOLS,
         thread_loader: Callable[[Series], SeriesThread] = load_thread,
         actions: Optional[SourceActions] = None,
+        drafts: Optional[DraftStore] = None,
     ) -> None:
         super().__init__()
         self._loader = loader
         self._actions = actions
+        # Without a store, drafts live only while the reader is open.
+        self._drafts = drafts
+        self._save_timer: Any = None
+        self._drafts_changed = False
         self._notice = ''
         self._query = compile_query('')
         self._matches: Optional[frozenset[str]] = None
@@ -690,6 +696,11 @@ class MaintainerApp(App[None]):
             )
             if in_pane:
                 self._set_reader_pane('tree')
+            elif self._draft is not None and self._drafts is not None:
+                subject = self._reading.series.subject
+                self._close_draft(keep=True)
+                self._close_reader()
+                self._set_notice(f'Draft saved: {subject}')
             elif self._draft is not None:
                 self._confirm_discard(then=self._close_reader)
             else:
@@ -720,6 +731,10 @@ class MaintainerApp(App[None]):
     def content_lines(self) -> list[str]:
         return self._content.lines
 
+    def draft_msgid(self) -> Optional[str]:
+        """Message ID the open draft answers, if a draft is open."""
+        return self._draft.msgid if self._draft else None
+
     def _set_reader_pane(self, pane: str) -> None:
         self._reader_pane = pane
         for name in ('tree', 'content', 'draft'):
@@ -746,15 +761,22 @@ class MaintainerApp(App[None]):
         )
 
     def _load_thread(self, item: WorkItem) -> None:
+        restore = None
         try:
             thread = with_sashiko(self._thread_loader(item.series), item.sashiko, self._bots())
             error = None
+            if self._drafts is not None:
+                restore = _drafted_in(thread, self._drafts.msgids())
         except Exception as exc:  # Shown to the maintainer; mail is untrusted input.
             thread, error = None, f'{type(exc).__name__}: {exc}'
-        self.call_from_thread(self._apply_thread, item, thread, error)
+        self.call_from_thread(self._apply_thread, item, thread, error, restore)
 
     def _apply_thread(
-        self, item: WorkItem, thread: Optional[SeriesThread], error: Optional[str]
+        self,
+        item: WorkItem,
+        thread: Optional[SeriesThread],
+        error: Optional[str],
+        restore: Optional[tuple[str, int, str]] = None,
     ) -> None:
         if self._reading is not item:
             return  # Closed or reopened on another series while loading.
@@ -764,6 +786,14 @@ class MaintainerApp(App[None]):
         self._thread, self._shown = thread, None
         self._expanded = initially_expanded(thread, self._unread())
         keys = post_keys(thread)
+        if restore is not None and self._actions is not None and self._draft is None:
+            # A saved draft: back to the message it answers, with the draft open.
+            key, node, msgid = restore
+            if node:
+                self._expanded.add(key)
+            self._render_tree((key, node))
+            self._begin_reply(item, msgid, None)
+            return
         self._render_tree((keys[0], 0) if keys else ('', 0))
 
     def _bots(self) -> tuple[str, ...]:
@@ -827,26 +857,41 @@ class MaintainerApp(App[None]):
             quoted = '\n'.join(f'> {line}'.rstrip() for line in reply.message.body.splitlines())
             quote = f'Sashiko ({source}) reported:\n{quoted}\n\n'
             msgid = msgid.removeprefix(SASHIKO_PREFIX)
+        self._begin_reply(item, msgid, quote)
+
+    def _begin_reply(self, item: WorkItem, msgid: str, quote: Optional[str]) -> None:
+        """Load the message to answer (and any saved draft) off the UI thread."""
+        actions, drafts = self._actions, self._drafts
+        if actions is None:
+            return
 
         def work() -> None:
             try:
                 target = actions.prepare_reply(item, msgid)
+                saved = drafts.get(msgid) if drafts is not None else None
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot reply: {exc}')
                 return
-            self.call_from_thread(self._compose_reply, item, msgid, target, quote)
+            self.call_from_thread(self._compose_reply, item, msgid, target, quote, saved)
 
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
     def _compose_reply(
-        self, item: WorkItem, msgid: str, target: Any, quote: Optional[str] = None
+        self,
+        item: WorkItem,
+        msgid: str,
+        target: Any,
+        quote: Optional[str] = None,
+        saved: Optional[SavedDraft] = None,
     ) -> None:
-        """Open a draft beside the thread, starting from b4's quote of the message."""
+        """Open a draft beside the thread: a saved one, else b4's quote of the message."""
         if self._reading is not item:
             return  # The reader closed while the message loaded.
         quote = reply_quote(target.lmsg) if quote is None else quote
+        if saved is not None:
+            quote = saved.quote
         self._draft = Draft(item, msgid, target, quote)
-        self._draft_area.load_text(quote)
+        self._draft_area.load_text(saved.text if saved is not None else quote)
         self._draft_area.move_cursor(self._draft_area.document.end)
         author = target.lmsg.fromname or target.lmsg.fromemail
         self._draft_area.border_title = escape(f'Draft → {author} · ctrl+s send · ctrl+g discard')
@@ -875,7 +920,7 @@ class MaintainerApp(App[None]):
 
     def _draft_sent(self, draft: Draft) -> None:
         actions = self._actions
-        self._close_draft()
+        self._close_draft(keep=False)
         if actions is None:
             return
 
@@ -894,13 +939,45 @@ class MaintainerApp(App[None]):
     def _confirm_discard(self, then: Optional[Callable[[], None]]) -> None:
         def answered(confirmed: Optional[bool]) -> None:
             if confirmed:
-                self._close_draft()
+                self._close_draft(keep=False)
                 if then is not None:
                     then()
 
         self.push_screen(Confirm('Discard draft? [y|N]'), answered)
 
-    def _close_draft(self) -> None:
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Save the draft shortly after typing pauses."""
+        if event.text_area is self._draft_area and self._draft and self._drafts is not None:
+            if self._save_timer is not None:
+                self._save_timer.stop()
+            self._save_timer = self.set_timer(0.5, self._save_draft)
+
+    def _save_draft(self) -> None:
+        """Write the open draft; an untouched quote is no draft (one small file)."""
+        if self._save_timer is not None:
+            self._save_timer.stop()
+            self._save_timer = None
+        draft, drafts = self._draft, self._drafts
+        if draft is None or drafts is None:
+            return
+        text = self._draft_area.text
+        if text == draft.quote:
+            drafts.delete(draft.msgid)
+        else:
+            drafts.save(draft.msgid, draft.quote, text)
+        self._drafts_changed = True
+
+    def _close_draft(self, keep: bool) -> None:
+        """Close the draft pane, keeping the saved draft or deleting it."""
+        if self._draft is not None and self._drafts is not None:
+            if keep:
+                self._save_draft()
+            else:
+                if self._save_timer is not None:
+                    self._save_timer.stop()
+                    self._save_timer = None
+                self._drafts.delete(self._draft.msgid)
+                self._drafts_changed = True
         self._draft = None
         self._draft_area.load_text('')
         self.screen.remove_class('-drafting')
@@ -1046,8 +1123,8 @@ class MaintainerApp(App[None]):
         if self.index is not None:
             self._update_status()
         self.refresh_bindings()
-        if self._seen_now:
-            self._seen_now = set()
+        if self._seen_now or self._drafts_changed:
+            self._seen_now, self._drafts_changed = set(), False
             self.run_worker(self._load, thread=True, name='load', exclusive=True)
 
     async def action_quit(self) -> None:
@@ -1057,7 +1134,11 @@ class MaintainerApp(App[None]):
 
     def _quit_confirmed(self, confirmed: Optional[bool]) -> None:
         if confirmed:
+            self._save_draft()
             self.exit()
+
+    def on_unmount(self) -> None:
+        self._save_draft()  # However the app ends, an open draft is kept.
 
     def quit_prompt(self) -> Optional[str]:
         return self.screen.prompt if isinstance(self.screen, Confirm) else None
@@ -1304,3 +1385,17 @@ class MaintainerApp(App[None]):
             f'◆ Session {s.id} · {s.backend} · {s.state}\n'
             'Fixture session: no conversation, approvals, or artifacts recorded.'
         )
+
+
+def _drafted_in(thread: SeriesThread, drafted: set[str]) -> Optional[tuple[str, int, str]]:
+    """(posting key, node, message-id) of the first message in the thread with a saved draft."""
+    if not drafted:
+        return None
+    for key in post_keys(thread):
+        post = find_post(thread, key)
+        if post is not None and post.message.msgid in drafted:
+            return key, 0, post.message.msgid
+        for node, reply in enumerate(thread_replies(thread, key), 1):
+            if reply.message.msgid in drafted:
+                return key, node, reply.message.msgid
+    return None
