@@ -494,6 +494,12 @@ class MaintainerApp(App[None]):
         self.select_view(view, force=True)
         if previous is not None:
             self._series_list.select_identity(previous.identity, fallback=position)
+        if self._reading is not None:
+            # The open thread stays as it is; its item takes the reloaded state ($, unread).
+            fresh = snapshot.item_by_identity(self._reading.identity)
+            if fresh is not None:
+                self._reading = fresh
+            self._sync_bindings()
 
     def _view_items(self, view_id: str) -> tuple[WorkItem, ...]:
         assert self.index is not None
@@ -639,8 +645,8 @@ class MaintainerApp(App[None]):
                 return False
             return item.hidden == (action == 'unhide')
         if action in ('track', 'untrack', 'watch', 'unwatch'):
-            item = self._item
-            if self._actions is None or reading or item is None:
+            item = self._reading or self._item  # The open thread while reading.
+            if self._actions is None or item is None:
                 return False
             if item.series.discussion != (action in ('watch', 'unwatch')):
                 return False
@@ -838,7 +844,7 @@ class MaintainerApp(App[None]):
         error: Optional[str],
         restore: Optional[tuple[str, int, str]] = None,
     ) -> None:
-        if self._reading is not item:
+        if not self._still_reading(item):
             return  # Closed or reopened on another series while loading.
         if thread is None:
             self._content.set_text(f'Could not load thread: {error}')
@@ -1058,7 +1064,7 @@ class MaintainerApp(App[None]):
         saved: Optional[SavedDraft] = None,
     ) -> None:
         """Open a draft beside the thread: a saved one, else b4's quote of the message."""
-        if self._reading is not item:
+        if not self._still_reading(item):
             return  # The reader closed while the message loaded.
         quote = reply_quote(target.lmsg) if quote is None else quote
         if saved is not None:
@@ -1187,6 +1193,10 @@ class MaintainerApp(App[None]):
             self.screen.focus_next()
         else:
             self.screen.focus_previous()
+
+    def _still_reading(self, item: WorkItem) -> bool:
+        # By identity: a reload replaces the open item with its fresh state.
+        return self._reading is not None and self._reading.identity == item.identity
 
     def _unread(self) -> frozenset[str]:
         if self._reading is None:
@@ -1470,7 +1480,7 @@ class MaintainerApp(App[None]):
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
     def action_track(self) -> None:
-        actions, item = self._actions, self._item
+        actions, item = self._actions, self._reading or self._item
         if actions is None or item is None:
             return
 
@@ -1491,7 +1501,7 @@ class MaintainerApp(App[None]):
         self._toggle_watched()
 
     def _toggle_watched(self) -> None:
-        actions, item = self._actions, self._item
+        actions, item = self._actions, self._reading or self._item
         if actions is None or item is None:
             return
 
@@ -1506,7 +1516,7 @@ class MaintainerApp(App[None]):
 
     def action_untrack(self) -> None:
         """Archive the series in b4 review after confirmation; b4 keeps the archive."""
-        actions, item = self._actions, self._item
+        actions, item = self._actions, self._reading or self._item
         if actions is None or item is None:
             return
 

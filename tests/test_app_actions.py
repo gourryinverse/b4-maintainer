@@ -314,3 +314,57 @@ async def test_dollar_label_follows_the_selection_between_discussions():
         item = app.query_one(SeriesList).highlighted_item
         assert label() == ('unwatch' if item.watched else 'watch')
         assert refresh.called, 'the footer kept the previous $ label'
+
+
+async def test_dollar_works_while_reading_and_keeps_the_reader():
+    actions = WatchActions()
+
+    def thread_for(series):
+        from b4_maintainer.model import Message, Post, SeriesThread
+
+        msg = Message('root@example.org', 'Starter', 's@example.org', None, 'Path forward?', 'Hi.')
+        return SeriesThread(series.identity, 0, Post(0, msg, 'Hi.', '', ()), (), discussion=True)
+
+    app = MaintainerApp(actions.load, actions=actions, thread_loader=thread_for)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        app.select_view('discussions')
+        await pilot.press('enter')
+        await settle(pilot)
+        assert app.reading is not None
+
+        def label():
+            return {k: b.binding.description for k, b in app.screen.active_bindings.items()}.get(
+                'dollar_sign'
+            )
+
+        assert label() == 'watch'
+        await pilot.press('dollar_sign')
+        await settle(pilot)
+        assert actions.calls == 1 and app.reading is not None and app.reading.watched
+        assert app.tree_labels() and label() == 'unwatch'
+        await pilot.press('dollar_sign')
+        await settle(pilot)
+        assert actions.calls == 2 and not app.reading.watched
+
+
+async def test_dollar_tracks_the_series_being_read(demo_root):
+    app, live = make(demo_root)
+    async with app.run_test(size=(180, 40)) as pilot:
+        series_list = await settle(pilot)
+        app.select_view('profile:mm')
+        target = next(i for i in app.index.items('profile:mm') if not i.state.to_review)
+        series_list.select_identity(target.identity)
+        await pilot.press('enter')
+        await settle(pilot)
+        await pilot.press('dollar_sign')
+        await settle(pilot)
+        assert live.track_calls == [target.identity]
+        assert app.reading is not None and app.reading.state.to_review
+        assert app.tree_labels()
+        await pilot.press('dollar_sign')  # Untracking asks first, in the reader too.
+        await pilot.pause()
+        await pilot.press('y')
+        await settle(pilot)
+        assert live.untrack_calls == [target.identity]
+        assert app.reading is not None and app.tree_labels()
