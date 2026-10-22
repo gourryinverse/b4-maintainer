@@ -53,7 +53,7 @@ def test_load_lore_message_and_answered_flag(ws, tmp_path):
         conn.close()
 
 
-async def test_r_in_reader_replies_through_b4_preview_and_send(ws, tmp_path):
+async def test_draft_replies_through_b4_preview_and_send(ws, tmp_path):
     source, sent, checkout = workspace(ws, tmp_path)
     source.email_dryrun = True
     app = MaintainerApp(source.load, actions=source)
@@ -75,17 +75,21 @@ async def test_r_in_reader_replies_through_b4_preview_and_send(ws, tmp_path):
         await pilot.pause()
         bindings = {k: b.binding.description for k, b in app.screen.active_bindings.items()}
         assert bindings['r'] == 'reply'
+        await pilot.press('r')
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        draft = app.query_one('#draft')
+        assert app.focused is draft
+        draft.insert('Looks good.\n')
+        await pilot.press('ctrl+s')
+        await pilot.pause()
+        assert type(app.screen).__name__ == 'FollowupReplyPreviewScreen'
         with (
             # Headless test apps cannot drop to the terminal; b4's own tests stub this too.
             mock.patch.object(app, 'suspend', contextlib.nullcontext),
-            mock.patch('b4.review_tui._reply.suspend_and_edit', return_value=b'Looks good.\n'),
             mock.patch('b4.get_smtp', return_value=(None, 'maintainer@example.org')),
             mock.patch('b4.send_mail', side_effect=fake_send),
         ):
-            await pilot.press('r')
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            assert type(app.screen).__name__ == 'FollowupReplyPreviewScreen'
             await pilot.press('ctrl+y')
             await app.workers.wait_for_complete()
             await pilot.pause()

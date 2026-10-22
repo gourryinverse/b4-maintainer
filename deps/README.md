@@ -53,8 +53,8 @@ Configure remotes after initialization:
 
 - Carried on the fork's master, pending upstream: `build_thread_tree()` keeps
   In-Reply-To cycles; `LiteThreadScreen` accepts a mailbox; per-repository
-  `b4.data-dir`/`b4.cache-dir`; reply flow (`review_tui._reply`) usable outside
-  `LiteThreadScreen`.
+  `b4.data-dir`/`b4.cache-dir`; reply flow (`review_tui._reply`: quote, preview, send)
+  usable outside `LiteThreadScreen`.
 - b4 `LoreMailbox.get_series()` hangs on a two-message reply cycle carrying trailers.
 - b4 `get_series()` runs `git patch-id` once per patch; parsing a list window is slow.
 - liblore has no linear-time thread splitter; the client keys threads by References root.

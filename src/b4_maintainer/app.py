@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Browse screen (Views | Series | Summary) and pre-apply reader, with a session drawer."""
 
+from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional, Protocol
 
 from b4._textwidth import pad_display
-from b4.review_tui._reply import compose_followup_reply
+from b4.review_tui._reply import preview_and_send, reply_quote
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -21,7 +22,7 @@ from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Footer, Input, OptionList, Static
+from textual.widgets import Footer, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .adapters.b4mbox import load_thread
@@ -198,20 +199,23 @@ class StatusLine(Widget):
         return Text(self._text)
 
 
-class ConfirmQuit(ModalScreen[bool]):
-    """Quit? [y|N]: only y confirms; any other key cancels."""
+class Confirm(ModalScreen[bool]):
+    """A [y|N] question: only y confirms; any other key cancels."""
 
-    PROMPT = 'Quit? [y|N]'
     DEFAULT_CSS = """
-    ConfirmQuit { align: center middle; }
-    ConfirmQuit > Static {
+    Confirm { align: center middle; }
+    Confirm > Static {
         width: auto; height: auto; padding: 0 2;
         border: solid $accent; background: $panel;
     }
     """
 
+    def __init__(self, prompt: str) -> None:
+        super().__init__()
+        self.prompt = prompt
+
     def compose(self) -> ComposeResult:
-        yield Static(self.PROMPT, markup=False)
+        yield Static(self.prompt, markup=False)
 
     def on_key(self, event: events.Key) -> None:
         event.stop()
@@ -219,15 +223,32 @@ class ConfirmQuit(ModalScreen[bool]):
         self.dismiss(event.key == 'y')
 
 
+class ConfirmQuit(Confirm):
+    PROMPT = 'Quit? [y|N]'
+
+    def __init__(self) -> None:
+        super().__init__(self.PROMPT)
+
+
+@dataclass
+class Draft:
+    """A reply being written beside the thread, to one message."""
+
+    item: WorkItem
+    msgid: str
+    target: Any  # SourceActions.prepare_reply result: lmsg, checkout, mail flags
+    quote: str
+
+
 class MaintainerApp(App[None]):
     TITLE = 'b4-maintainer'
     CSS = """
     #status { height: 1; background: $primary-darken-2; }
     #main { height: 1fr; }
-    #views, #series, #summary, #tree, #content {
+    #views, #series, #summary, #tree, #content, #draft {
         border: none; border-top: solid $panel-lighten-2;
     }
-    #views:focus, #series:focus, #summary:focus, #tree:focus, #content:focus {
+    #views:focus, #series:focus, #summary:focus, #tree:focus, #content:focus, #draft:focus {
         border: none; border-top: solid $accent;
     }
     #summary, #summary:focus { border-left: solid $panel-lighten-2; }
@@ -240,9 +261,13 @@ class MaintainerApp(App[None]):
     #reader { height: 1fr; display: none; }
     #tree { width: 56; }
     #content { width: 1fr; padding: 0 1; scrollbar-gutter: stable; }
-    Screen.-narrow.-reading #tree, Screen.-narrow.-reading #content { display: none; }
+    #draft { width: 1fr; display: none; }
+    Screen.-drafting #draft { display: block; }
+    Screen.-narrow.-reading #tree, Screen.-narrow.-reading #content,
+    Screen.-narrow.-reading #draft { display: none; }
     Screen.-narrow.-rpane-tree #tree { display: block; width: 1fr; }
     Screen.-narrow.-rpane-content #content { display: block; width: 1fr; }
+    Screen.-narrow.-rpane-draft #draft { display: block; width: 1fr; }
     Screen.-reading #main { display: none; }
     Screen.-reading #reader { display: block; }
     #drawer { height: 1; background: $panel; }
@@ -260,7 +285,10 @@ class MaintainerApp(App[None]):
     BINDINGS = [
         Binding('v', 'toggle_views', 'views'),
         # Priority so the footer shows this hint instead of Screen's hidden tab binding.
-        Binding('tab', 'focus_next', 'next pane', priority=True),
+        Binding('tab', 'cycle_pane(1)', 'next pane', priority=True),
+        Binding('shift+tab', 'cycle_pane(-1)', 'previous pane', priority=True, show=False),
+        Binding('ctrl+s', 'send_draft', 'send'),
+        Binding('ctrl+g', 'discard_draft', 'discard'),
         Binding('enter', 'open_reader', 'read'),
         Binding('escape', 'back', 'back'),
         Binding('left_square_bracket', 'next_post(-1)', 'prev', key_display='['),
@@ -303,6 +331,7 @@ class MaintainerApp(App[None]):
         self._item_keys: Optional[tuple[Optional[bool], Optional[bool]]] = None
         # Replies marked seen while reading; counts refresh when the reader closes.
         self._seen_now: set[str] = set()
+        self._draft: Optional[Draft] = None
         self._thread_loader = thread_loader
         # Held for explicit maintainer launches; passive actions never call it.
         self.launcher = launcher
@@ -335,6 +364,7 @@ class MaintainerApp(App[None]):
         with Horizontal(id='reader'):
             yield OptionList(id='tree')
             yield TextPane(id='content')
+            yield TextArea(id='draft', soft_wrap=True, show_line_numbers=False)
         yield Static('', id='drawer-panel', markup=False)
         yield Static('', id='drawer', markup=False)
         yield Input(id='search', placeholder='/ regex over subject and author')
@@ -350,6 +380,7 @@ class MaintainerApp(App[None]):
         self._tree = self.query_one('#tree', OptionList)
         self._content = self.query_one('#content', TextPane)
         self._tree.border_title = 'Thread'
+        self._draft_area = self.query_one('#draft', TextArea)
         self._status_widget = self.query_one('#status', StatusLine)
         self._apply_layout(self.size.width)
         self._series_list.focus()
@@ -474,15 +505,17 @@ class MaintainerApp(App[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
         """Hide keys that would do nothing in the current layout."""
-        if isinstance(self.screen, ConfirmQuit):
+        if isinstance(self.screen, Confirm):
             return False  # The prompt owns every key while it is open.
         narrow = self._mode == 'narrow'
         summary_open = self.screen.has_class('-show-summary')
         reading = self._reading is not None
         if action == 'toggle_views':
             return not reading and self._mode == 'medium'
-        if action == 'focus_next':
-            return not narrow
+        if action == 'cycle_pane':
+            return not narrow or (reading and self._draft is not None)
+        if action in ('send_draft', 'discard_draft'):
+            return self._draft is not None
         if action == 'open_reader':
             return not reading and self._item is not None
         if action == 'back':
@@ -495,7 +528,11 @@ class MaintainerApp(App[None]):
         if action == 'refresh':
             return self._actions is not None and not reading
         if action == 'reply':
-            return self._actions is not None and self._reply_msgid() is not None
+            return (
+                self._actions is not None
+                and self._draft is None
+                and self._reply_msgid() is not None
+            )
         if action == 'mark_read':
             return self._actions is not None and (self._reading or self._item) is not None
         if action in ('hide', 'unhide'):
@@ -537,7 +574,9 @@ class MaintainerApp(App[None]):
     def reader_panes(self) -> tuple[str, ...]:
         if self._reading is None:
             return ()
-        return tuple(name for name in ('tree', 'content') if self.query_one(f'#{name}').display)
+        return tuple(
+            name for name in ('tree', 'content', 'draft') if self.query_one(f'#{name}').display
+        )
 
     def visible_panes(self) -> tuple[str, ...]:
         if not self.query_one('#main').display:
@@ -602,10 +641,15 @@ class MaintainerApp(App[None]):
             self.refresh_bindings()
             return
         if self._reading is not None:
-            # From the content, Escape returns to the tree; from the tree, it closes.
-            in_content = self._reader_pane == 'content' or self.focused is self._content
-            if in_content:
+            # From the content or draft, Escape returns to the tree; from the tree, it closes.
+            in_pane = self._reader_pane in ('content', 'draft') or self.focused in (
+                self._content,
+                self._draft_area,
+            )
+            if in_pane:
                 self._set_reader_pane('tree')
+            elif self._draft is not None:
+                self._confirm_discard(then=self._close_reader)
             else:
                 self._close_reader()
             return
@@ -633,9 +677,9 @@ class MaintainerApp(App[None]):
 
     def _set_reader_pane(self, pane: str) -> None:
         self._reader_pane = pane
-        for name in ('tree', 'content'):
+        for name in ('tree', 'content', 'draft'):
             self.screen.set_class(name == pane, f'-rpane-{name}')
-        (self._tree if pane == 'tree' else self._content).focus()
+        {'tree': self._tree, 'content': self._content, 'draft': self._draft_area}[pane].focus()
         self.refresh_bindings()
 
     def action_open_reader(self) -> None:
@@ -730,28 +774,83 @@ class MaintainerApp(App[None]):
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
     def _compose_reply(self, item: WorkItem, msgid: str, target: Any) -> None:
-        """Hand over to b4's reply flow: editor, preview, send."""
-        actions = self._actions
-        assert actions is not None
+        """Open a draft beside the thread, starting from b4's quote of the message."""
+        if self._reading is not item:
+            return  # The reader closed while the message loaded.
+        quote = reply_quote(target.lmsg)
+        self._draft = Draft(item, msgid, target, quote)
+        self._draft_area.load_text(quote)
+        self._draft_area.move_cursor(self._draft_area.document.end)
+        author = target.lmsg.fromname or target.lmsg.fromemail
+        self._draft_area.border_title = escape(f'Draft → {author} · ctrl+s send · ctrl+g discard')
+        self.screen.add_class('-drafting')
+        self._set_reader_pane('draft')
+        self.refresh_bindings()
 
-        def sent(_msg: Any) -> None:
-            def work() -> None:
-                try:
-                    result = actions.answered(item, msgid)
-                except Exception as exc:
-                    result = f'Sent, but could not mark answered: {exc}'
-                self.call_from_thread(self._set_notice, result)
-
-            self.run_worker(work, thread=True, group='action')
-
-        compose_followup_reply(
+    def action_send_draft(self) -> None:
+        """b4's preview of the real message; there Ctrl-y sends and e returns here."""
+        draft = self._draft
+        if draft is None:
+            return
+        text = self._draft_area.text
+        if text == draft.quote:
+            self._set_notice('No changes to send')
+            return
+        preview_and_send(
             self,
-            target.lmsg,
-            email_dryrun=target.email_dryrun,
-            patatt_sign=target.patatt_sign,
-            on_sent=sent,
-            topdir=str(target.checkout),
+            draft.target.lmsg,
+            text,
+            email_dryrun=draft.target.email_dryrun,
+            patatt_sign=draft.target.patatt_sign,
+            on_sent=lambda _msg: self._draft_sent(draft),
+            on_edit=lambda _text: self._set_reader_pane('draft'),
         )
+
+    def _draft_sent(self, draft: Draft) -> None:
+        actions = self._actions
+        self._close_draft()
+        if actions is None:
+            return
+
+        def work() -> None:
+            try:
+                result = actions.answered(draft.item, draft.msgid)
+            except Exception as exc:
+                result = f'Sent, but could not mark answered: {exc}'
+            self.call_from_thread(self._set_notice, result)
+
+        self.run_worker(work, thread=True, group='action')
+
+    def action_discard_draft(self) -> None:
+        self._confirm_discard(then=None)
+
+    def _confirm_discard(self, then: Optional[Callable[[], None]]) -> None:
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._close_draft()
+                if then is not None:
+                    then()
+
+        self.push_screen(Confirm('Discard draft? [y|N]'), answered)
+
+    def _close_draft(self) -> None:
+        self._draft = None
+        self._draft_area.load_text('')
+        self.screen.remove_class('-drafting')
+        if self._reading is not None and self._reader_pane == 'draft':
+            self._set_reader_pane('tree')
+        self.refresh_bindings()
+
+    def action_cycle_pane(self, delta: int) -> None:
+        """Tab/Shift-Tab: next pane; one pane at a time on narrow terminals."""
+        if self._mode == 'narrow' and self._reading is not None:
+            panes = ['tree', 'content'] + (['draft'] if self._draft is not None else [])
+            here = panes.index(self._reader_pane) if self._reader_pane in panes else 0
+            self._set_reader_pane(panes[(here + delta) % len(panes)])
+        elif delta > 0:
+            self.screen.focus_next()
+        else:
+            self.screen.focus_previous()
 
     def _unread(self) -> frozenset[str]:
         if self._reading is None:
@@ -857,7 +956,7 @@ class MaintainerApp(App[None]):
         self._reading, self._thread, self._post_key = None, None, ''
         self._node, self._rows, self._expanded = 0, [], set()
         self.screen.remove_class('-reading')
-        for name in ('tree', 'content'):
+        for name in ('tree', 'content', 'draft'):
             self.screen.remove_class(f'-rpane-{name}')
         self._series_list.focus()
         if self.index is not None:
@@ -877,7 +976,7 @@ class MaintainerApp(App[None]):
             self.exit()
 
     def quit_prompt(self) -> Optional[str]:
-        return ConfirmQuit.PROMPT if isinstance(self.screen, ConfirmQuit) else None
+        return self.screen.prompt if isinstance(self.screen, Confirm) else None
 
     def action_toggle_preview(self) -> None:
         self._preview = not self._preview
