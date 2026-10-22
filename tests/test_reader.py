@@ -599,3 +599,64 @@ async def test_opening_unfolds_only_unread_branches():
         await open_reader(pilot)
         assert names(app.tree_labels()) == ['1/1', '1a', '1b', '1ba', '1bb']
         assert app.tree_labels()[1].endswith(' (+2)')
+
+
+async def test_equals_expands_everything_then_collapses_everything():
+    item = make_item(subject='mm: branches')
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), (item,))
+    app = MaintainerApp(lambda: snapshot, thread_loader=lambda s: _branchy(item))
+    everything = ['1/1', '1a', '1aa', '1ab', '1b', '1ba', '1bb']
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        assert names(app.tree_labels()) == ['1/1']
+        assert 'equals_sign' in footer_keys(app)
+        await pilot.press('equals_sign')
+        await pilot.pause()
+        assert names(app.tree_labels()) == everything
+
+        await select_row(pilot, 4)  # 1b
+        await pilot.press('equals_sign')  # All open: collapse all.
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1']
+        assert app.tree_position() == ('1', 0)
+
+        # Anything folded: = opens everything, keeping the cursor's reply.
+        await pilot.press('equals_sign', 'down', 'minus')
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b', '1ba', '1bb']
+        await pilot.press('equals_sign')
+        await pilot.pause()
+        assert names(app.tree_labels()) == everything
+        assert app.tree_position() == ('1', 1)
+
+
+async def test_arrow_keys_expand_and_collapse_in_the_tree():
+    item = make_item(subject='mm: branches')
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), (item,))
+    app = MaintainerApp(lambda: snapshot, thread_loader=lambda s: _branchy(item))
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        await pilot.press('right')
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b']
+        await pilot.press('right')  # Already open: nothing more.
+        await pilot.press('down', 'right')
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1', '1a', '1aa', '1ab', '1b']
+        await pilot.press('left')  # Fold 1a again.
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1', '1a', '1b']
+        assert app.tree_position() == ('1', 1)
+        await pilot.press('left')  # 1a has nothing open: up to its posting, collapsed.
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1']
+        assert app.tree_position() == ('1', 0)
+
+        # In the content pane the arrows still scroll sideways.
+        await pilot.press('tab')
+        assert app.focused is app.query_one('#content')
+        await pilot.press('right')
+        await pilot.pause()
+        assert names(app.tree_labels()) == ['1/1']

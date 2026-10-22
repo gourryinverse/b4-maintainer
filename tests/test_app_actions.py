@@ -277,3 +277,40 @@ async def test_dollar_watches_and_unwatches_discussions_without_asking():
         await pilot.press('t')  # t tracks series only.
         await settle(pilot)
         assert actions.calls == 2
+
+
+async def test_dollar_label_follows_the_selection_between_discussions():
+    import dataclasses as dc
+
+    from b4_maintainer.fixtures import make_item, workspace_config
+    from b4_maintainer.workspace import Workspace
+
+    def talk(subject, root, watched):
+        item = make_item(subject=subject)
+        series = dc.replace(item.series, identity=f'thread:{root}', discussion=True)
+        return dc.replace(item, series=series, watched=watched)
+
+    items = (talk('Followed', 'a@example.org', True), talk('Not followed', 'b@example.org', False))
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), items)
+    app = MaintainerApp(lambda: snapshot, actions=WatchActions())
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        app.select_view('discussions')
+        await pilot.pause()
+
+        def label():
+            return {k: b.binding.description for k, b in app.screen.active_bindings.items()}.get(
+                'dollar_sign'
+            )
+
+        from unittest import mock
+
+        item = app.query_one(SeriesList).highlighted_item
+        assert label() == ('unwatch' if item.watched else 'watch')
+        # The footer on screen is rebuilt only by refresh_bindings: it must run when $ changes.
+        with mock.patch.object(app, 'refresh_bindings', wraps=app.refresh_bindings) as refresh:
+            await pilot.press('down')
+            await pilot.pause()
+        item = app.query_one(SeriesList).highlighted_item
+        assert label() == ('unwatch' if item.watched else 'watch')
+        assert refresh.called, 'the footer kept the previous $ label'

@@ -9,11 +9,13 @@ from typing import Any, Callable, Union
 from b4._textwidth import display_width
 from rich.segment import Segment
 from rich.style import Style
+from rich.text import Text
 from textual import events
 from textual.geometry import Size
 from textual.reactive import Reactive
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
+from textual.widget import Widget
 
 # Mail is data: drop terminal escape sequences and other control characters.
 ESCAPE_RE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.)')
@@ -140,3 +142,39 @@ def _style(style: LineStyle, line: str) -> Style:
     if callable(style):
         return style(line)
     return style or Style()
+
+
+KEY_STYLE = Style(bold=True, reverse=True)
+DISABLED_STYLE = Style(dim=True)
+
+
+class KeyBar(Widget):
+    """One line of key hints for the screen's active bindings.
+
+    Textual's Footer rebuilds a widget per key whenever bindings change, which
+    costs tens of milliseconds; this redraws one line of text instead.
+    """
+
+    DEFAULT_CSS = 'KeyBar { dock: bottom; height: 1; background: $panel; }'
+
+    def on_mount(self) -> None:
+        self.screen.bindings_updated_signal.subscribe(self, self._bindings_changed)
+
+    def on_unmount(self) -> None:
+        self.screen.bindings_updated_signal.unsubscribe(self)
+
+    def _bindings_changed(self, screen: Any) -> None:
+        if screen is self.screen:
+            self.refresh()
+
+    def render(self) -> Text:
+        text = Text(no_wrap=True, overflow='ellipsis')
+        seen: set[str] = set()
+        for _node, binding, enabled, _tooltip in self.screen.active_bindings.values():
+            if not binding.show or binding.action in seen:
+                continue
+            seen.add(binding.action)
+            key = self.app.get_key_display(binding)
+            text.append(f' {key} ', style=KEY_STYLE if enabled else DISABLED_STYLE)
+            text.append(f' {binding.description} ', style=Style() if enabled else DISABLED_STYLE)
+        return text

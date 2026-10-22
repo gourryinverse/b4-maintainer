@@ -23,7 +23,7 @@ from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Footer, Input, OptionList, Static, TextArea
+from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .adapters.b4mbox import load_thread
@@ -52,7 +52,7 @@ from .reader import (
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
 from .views import ViewIndex
-from .widgets import Block, TextPane, printable
+from .widgets import Block, KeyBar, TextPane, printable
 from .workspace import Snapshot
 
 FIXES_STYLE = Style(color='dark_orange')
@@ -346,6 +346,10 @@ class MaintainerApp(App[None]):
         Binding('n', 'next_comment', 'next comment'),
         Binding('exclamation_mark', 'next_finding', 'next finding', key_display='!'),
         Binding('minus', 'toggle_replies', 'replies', key_display='-'),
+        Binding('equals_sign', 'toggle_all', 'all', key_display='='),
+        # In the thread tree only; the content pane scrolls sideways with them.
+        Binding('right', 'expand_node', 'expand', show=False),
+        Binding('left', 'collapse_node', 'collapse', show=False),
         Binding('z', 'toggle_quotes', 'quotes'),
         Binding('p', 'toggle_preview', 'preview'),
         Binding('slash', 'search', 'search', key_display='/'),
@@ -394,7 +398,8 @@ class MaintainerApp(App[None]):
         # Rebuilt per snapshot so each keystroke only runs the regex and set intersections.
         self._texts: list[tuple[str, str]] = []
         self._view_members: dict[str, frozenset[str]] = {}
-        self._item_keys: Optional[tuple[Optional[bool], Optional[bool]]] = None
+        self._binding_state: Optional[tuple[Optional[bool], ...]] = None
+        self._facts: Optional[tuple[SeriesThread, tuple[bool, bool]]] = None
         # Replies marked seen while reading; counts refresh when the reader closes.
         self._seen_now: set[str] = set()
         self._draft: Optional[Draft] = None
@@ -438,7 +443,7 @@ class MaintainerApp(App[None]):
         yield Static('', id='drawer-panel', markup=False)
         yield Static('', id='drawer', markup=False)
         yield Input(id='search', placeholder='/ regex over subject and author')
-        yield Footer()
+        yield KeyBar(id='footer')
 
     def on_mount(self) -> None:
         self._series_list = self.query_one(SeriesList)
@@ -538,10 +543,27 @@ class MaintainerApp(App[None]):
         self._show_summary()
         if not self.screen_stack:
             return  # Highlights can still arrive during shutdown.
-        # Rebuilding the footer is costly; only do it when a per-item key's state flips.
-        keys = (self.check_action('track', ()), self.check_action('hide', ()))
-        if keys != self._item_keys:
-            self._item_keys = keys
+        self._sync_bindings()
+
+    def _thread_facts(self) -> tuple[bool, bool]:
+        """(any replies, any Sashiko findings) of the open thread, computed once per thread."""
+        thread, item = self._thread, self._reading
+        if thread is None or item is None:
+            return False, False
+        cached = self._facts
+        if cached is None or cached[0] is not thread:
+            replies = any(thread_replies(thread, k) for k in post_keys(thread))
+            cached = (thread, (replies, bool(finding_anchors(thread, item))))
+            self._facts = cached
+        return cached[1]
+
+    def _sync_bindings(self) -> None:
+        """Refresh the footer only when some key's enabled state changed: rebuilding is costly."""
+        state = tuple(
+            self.check_action(name, ()) for name in dict.fromkeys(_action_names(self.BINDINGS))
+        )
+        if state != self._binding_state:
+            self._binding_state = state
             self.refresh_bindings()
 
     def _show_summary(self) -> None:
@@ -625,11 +647,11 @@ class MaintainerApp(App[None]):
             on = item.watched if item.series.discussion else item.state.to_review
             return on == (action in ('untrack', 'unwatch'))
         if action == 'next_finding':
-            return (
-                reading
-                and self._thread is not None
-                and bool(finding_anchors(self._thread, self._reading))
-            )
+            return reading and self._thread is not None and self._thread_facts()[1]
+        if action in ('expand_node', 'collapse_node'):
+            return reading and self._thread is not None and self.focused is self._tree
+        if action == 'toggle_all':
+            return reading and self._thread is not None and self._thread_facts()[0]
         if action in ('next_post', 'next_comment', 'toggle_quotes', 'toggle_replies'):
             if not reading or self._thread is None:
                 return False
@@ -638,7 +660,7 @@ class MaintainerApp(App[None]):
             if action == 'toggle_replies':
                 return bool(self._post_key and thread_replies(self._thread, self._post_key))
             if action == 'next_comment':
-                return any(thread_replies(self._thread, k) for k in post_keys(self._thread))
+                return self._thread_facts()[0]
             reply = self._current_reply()
             return reply is not None and has_long_quote(reply)
         return True
@@ -1217,7 +1239,7 @@ class MaintainerApp(App[None]):
             blocks = message_blocks(reply, self._expand_quotes)
             self._mark_seen(reply)
         self._content.set_blocks(blocks)
-        self.refresh_bindings()
+        self._sync_bindings()
 
     def action_next_post(self, delta: int) -> None:
         if self._thread is None:
@@ -1297,6 +1319,58 @@ class MaintainerApp(App[None]):
         positions = {(row.key, row.node): n for n, row in enumerate(self._rows)}
         if target in positions:
             self._tree.highlighted = positions[target]
+
+    def action_expand_node(self) -> None:
+        """→: open the posting or folded branch under the cursor."""
+        if self._thread is None:
+            return
+        key, node = self._post_key, self._node
+        replies = thread_replies(self._thread, key)
+        if not node:
+            if replies and key not in self._expanded:
+                self._expanded.add(key)
+                self._render_tree((key, 0))
+            return
+        msgid = replies[node - 1].message.msgid
+        if msgid in self._collapsed:
+            self._collapsed.discard(msgid)
+            self._render_tree((key, node))
+
+    def action_collapse_node(self) -> None:
+        """←: fold the open branch under the cursor, else its parent's, moving there."""
+        if self._thread is None:
+            return
+        key, node = self._post_key, self._node
+        if not node:
+            if key in self._expanded:
+                self._expanded.discard(key)
+                self._render_tree((key, 0))
+            return
+        replies = thread_replies(self._thread, key)
+        msgid = replies[node - 1].message.msgid
+        if branch(replies, node) and msgid not in self._collapsed:
+            self._collapsed.add(msgid)
+            self._render_tree((key, node))
+            return
+        parent = parent_node(replies, node)
+        if parent:
+            self._collapsed.add(replies[parent - 1].message.msgid)
+            self._render_tree((key, parent))
+        else:
+            self._expanded.discard(key)
+            self._render_tree((key, 0))
+
+    def action_toggle_all(self) -> None:
+        """Expand every posting and branch; if all are open already, collapse every posting."""
+        if self._thread is None:
+            return
+        keys = [k for k in post_keys(self._thread) if thread_replies(self._thread, k)]
+        if self._collapsed or not set(keys) <= self._expanded:
+            self._expanded, self._collapsed = set(keys), set()
+            self._render_tree((self._post_key, self._node))
+        else:
+            self._expanded, self._collapsed = set(), set()
+            self._render_tree((self._post_key, 0))
 
     def _unfold_ancestors(self, key: str, node: int) -> bool:
         """Unfold every collapsed reply above *node*; return whether any was folded."""
@@ -1642,3 +1716,10 @@ def _drafted_in(thread: SeriesThread, drafted: set[str]) -> Optional[tuple[str, 
             if reply.message.msgid in drafted:
                 return key, node, reply.message.msgid
     return None
+
+
+def _action_names(bindings: Iterable[Any]) -> Iterable[str]:
+    """Action names (without arguments) of a BINDINGS list of Binding objects or tuples."""
+    for binding in bindings:
+        action = binding.action if isinstance(binding, Binding) else binding[1]
+        yield action.split('(', 1)[0]

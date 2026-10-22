@@ -363,3 +363,22 @@ async def test_summary_colours_sashiko_findings_by_severity():
         assert styles['Sashiko:  Reviewed · 1 high'] == SEVERITY_STYLES['high']
         assert styles['  1/2 high: mm: leaks foo'] == SEVERITY_STYLES['high']
         assert styles['  2/2 low (pre-existing): mm: old bug'] == SEVERITY_STYLES['low']
+
+
+async def test_key_bar_shows_enabled_keys_and_follows_changes(demo_root):
+    from b4_maintainer.widgets import KeyBar
+
+    app = make_app(demo_root)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        bar = app.query_one(KeyBar)
+
+        def hints():
+            return ' '.join(str(bar.render()).split())
+
+        assert '⏎ read' in hints() and 'Q quit' in hints()
+        assert 'send' not in hints()  # Sending applies only with a draft open.
+        await pilot.press('enter')
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert '⏎ read' not in hints() and '[ prev' in hints()

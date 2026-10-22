@@ -102,3 +102,49 @@ async def test_ten_thousand_series_meet_interface_targets():
         wall, cpu = await sample(typed)
         assert p95(cpu) <= TARGET, f'search keystroke cpu p95 {p95(cpu):.3f}s'
         assert p95(wall) - press_floor <= TARGET, f'search keystroke wall p95 {p95(wall):.3f}s'
+
+
+def deep_thread(item, replies=160, depth=21):
+    """One posting with a long, deep conversation, like a busy mailing-list discussion."""
+    from b4_maintainer.model import Message, Post, Reply, SeriesThread
+
+    rows = []
+    for n in range(replies):
+        msg = Message(
+            f'r{n}@example.org',
+            f'Reviewer {n % 9}',
+            f'r{n % 9}@example.org',
+            None,
+            'Re: subject',
+            'A comment.\n' * 20,
+        )
+        rows.append(Reply(msg, n % depth))
+    root = Message('p@example.org', 'Author', 'a@example.org', None, 'subject', 'Body.')
+    post = Post(1, root, 'Body.', 'diff --git a/x b/x', tuple(rows))
+    return SeriesThread(item.identity, item.series.revision, None, (post,))
+
+
+async def test_reader_moves_and_folds_in_a_deep_thread_meet_targets():
+    from unittest import mock
+
+    from b4_maintainer.fixtures import make_item, workspace_config
+    from b4_maintainer.workspace import Snapshot, Workspace
+
+    gc.collect()
+    item = make_item(subject='mm: busy discussion')
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), (item,))
+    app = MaintainerApp(lambda: snapshot, thread_loader=lambda s: deep_thread(item))
+    async with app.run_test(size=(180, 50)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.press('enter')
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.press('equals_sign', 'down')
+        await pilot.pause()
+        with mock.patch.object(app, 'refresh_bindings', wraps=app.refresh_bindings) as refresh:
+            wall, cpu = await sample([lambda: pilot.press('down')] * 40)
+            assert refresh.call_count == 0, 'moving between replies refreshed every key hint'
+        assert p95(cpu) <= TARGET, f'reply move cpu p95 {p95(cpu):.3f}s'
+        wall, cpu = await sample([lambda k=k: pilot.press(k) for k in ['left', 'right'] * 10])
+        assert p95(cpu) <= TARGET, f'fold cpu p95 {p95(cpu):.3f}s'
