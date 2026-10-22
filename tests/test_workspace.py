@@ -185,3 +185,31 @@ def test_hidden_series_leave_every_view_but_hidden():
             assert drop not in idx.items(view.id), view.id
     assert keep in idx.items('profile:mm') and keep in idx.items('cached')
     assert 'hidden' not in [v.id for v in ViewIndex(ws, [keep]).views]
+
+
+def test_responses_view_lists_items_with_unread_replies():
+    import dataclasses
+
+    ws = Workspace.from_config(workspace_config())
+    quiet, answered = build_items(
+        [
+            make_series('mm: quiet', msgid='q@example.org', lists=LINUX_LISTS),
+            make_series('mm: answered', msgid='a@example.org', lists=LINUX_LISTS),
+        ],
+        {},
+        ws,
+    )
+    answered = dataclasses.replace(answered, unread_msgids=frozenset({'reply@example.org'}))
+    idx = ViewIndex(ws, [quiet, answered])
+    assert [i.series.subject for i in idx.items('responses')] == ['mm: answered']
+    labels = [v.label for v in idx.views]
+    assert labels.index('Responses') < labels.index('My Responsibilities')
+
+
+def test_items_remember_every_postings_thread():
+    v1 = make_series('mm: tidy thing', revision=1, msgid='v1@example.org', lists=LINUX_LISTS)
+    v2 = make_series('mm: tidy thing', revision=2, msgid='v2@example.org', lists=LINUX_LISTS)
+    v1 = __import__('dataclasses').replace(v1, source='/cache/threads/aaa')
+    v2 = __import__('dataclasses').replace(v2, source='/cache/threads/bbb')
+    [item] = build_items([v1, v2], {}, Workspace.from_config(workspace_config()))
+    assert set(item.sources) == {'/cache/threads/aaa', '/cache/threads/bbb'}

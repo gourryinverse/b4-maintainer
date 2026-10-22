@@ -9,9 +9,9 @@ import dataclasses
 import datetime
 import pathlib
 import tomllib
-from typing import Callable, Optional, Sequence
+from typing import Callable, Iterable, Mapping, Optional, Sequence
 
-from ..model import Series, SeriesState, WorkItem
+from ..model import Coverage, Series, SeriesState, WorkItem
 from ..projectsetup import CONFIG_NAME, default_b4_command
 from ..workspace import Project, Snapshot, Workspace, build_items
 from . import b4state
@@ -19,6 +19,7 @@ from .b4mbox import parse_mbox
 from .clientstate import HiddenStore
 from .lorelist import MailCache, Search
 from .maintainers import OwnerCache, author_roles
+from .treematch import RefCache
 
 
 class LiveSource:
@@ -33,6 +34,10 @@ class LiveSource:
         b4_command: Optional[Sequence[str]] = None,
         now: Callable[[], datetime.datetime] = lambda: datetime.datetime.now(datetime.timezone.utc),
         identity: Callable[[pathlib.Path], Optional[str]] = b4state.user_email,
+        seen: Callable[[pathlib.Path, Sequence[str]], set[str]] = b4state.seen,
+        mark_seen: Callable[[pathlib.Path, Mapping[str, Optional[str]]], None] = (
+            b4state.mark_seen
+        ),
     ) -> None:
         self.root = pathlib.Path(root).resolve()
         self.cache = MailCache(self.root / 'var' / 'mail')
@@ -43,6 +48,8 @@ class LiveSource:
         self._b4_command = b4_command
         self._now = now
         self._identity = identity
+        self._seen = seen
+        self._mark_seen = mark_seen
 
     def workspace(self) -> Workspace:
         return Workspace.from_config(tomllib.loads((self.root / CONFIG_NAME).read_text()))
@@ -86,6 +93,8 @@ class LiveSource:
                 states[match.identity] = SeriesState(to_review=True)
                 assigned[match.identity] = project.id
         items = self._ownership(ws, build_items(series + extra, states, ws, assigned))
+        items = self._responses(ws, items)
+        items = self._tree_evidence(ws, items)
         hidden = self.hidden.load()
         items = tuple(
             dataclasses.replace(i, hidden=True) if hidden.matches(i) else i for i in items
@@ -115,6 +124,86 @@ class LiveSource:
             result.append(item)
         return tuple(result)
 
+    def refs(self, project: Project) -> RefCache:
+        return RefCache(self.root / 'var' / 'refs' / f'{project.id}.json', self.checkout(project))
+
+    def _tree_evidence(self, ws: Workspace, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
+        """Per-ref coverage from the last ref scan; stage is the first viewed ref holding it."""
+        caches = {p.id: (p, self.refs(p)) for p in ws.projects if p.refs and self._enrolled(p)}
+        result = []
+        for item in items:
+            entry = caches.get(item.project or '')
+            if entry is not None:
+                project, cache = entry
+                tree = tuple(
+                    (r.label, r.authority, cache.coverage(item.series, r)) for r in project.refs
+                )
+                held = (Coverage.FULL, Coverage.PARTIAL)
+                stage = next(
+                    (r.name for r, (_, _, c) in zip(project.refs, tree) if r.view and c in held), ''
+                )
+                state = dataclasses.replace(item.state, tree=tree)
+                item = dataclasses.replace(item, state=state, stage=stage)
+            result.append(item)
+        return tuple(result)
+
+    def _scan_refs(self, ws: Workspace, progress: Callable[[str], None]) -> str:
+        # Mainline: commits since a month before the window, enough to see merges.
+        since = self._now() - datetime.timedelta(days=ws.window_days + 30)
+        scanned = 0
+        for project in ws.projects:
+            if project.refs and self._enrolled(project):
+                progress(f'Checking refs for {project.id}…')
+                scanned += self.refs(project).update(project.refs, since)
+        return f'; {scanned} refs scanned' if scanned else ''
+
+    def _flags_checkout(self, ws: Workspace) -> Optional[pathlib.Path]:
+        """Checkout whose b4 configuration locates the shared message flags."""
+        return next((self.checkout(p) for p in ws.projects if self._enrolled(p)), None)
+
+    def _responses(self, ws: Workspace, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
+        """Mark unread direct replies to the maintainer's own mail, per item."""
+        checkout = self._flags_checkout(ws)
+        me = set(ws.me)
+        if checkout is None or not me:
+            return items
+        info = self.cache.messages()
+        mine = {m for m, e in info.items() if e.sender in me}
+        replies = {m: e for m, e in info.items() if e.parent in mine and e.sender not in me}
+        if not replies:
+            return items
+        unread = set(replies) - self._seen(checkout, list(replies))
+        by_thread: dict[str, set[str]] = {}
+        for msgid in unread:
+            by_thread.setdefault(self.cache.thread_name(replies[msgid].key), set()).add(msgid)
+        result = []
+        for item in items:
+            found = frozenset().union(
+                *(by_thread.get(pathlib.Path(src).name, set()) for src in item.sources)
+            )
+            if found:
+                state = dataclasses.replace(item.state, unread=len(found))
+                item = dataclasses.replace(item, unread_msgids=found, state=state)
+            result.append(item)
+        return tuple(result)
+
+    def mark_seen(self, msgids: Iterable[str]) -> None:
+        ws = self.workspace()
+        checkout = self._flags_checkout(ws)
+        if checkout is None:
+            return
+        info = self.cache.messages()
+        self._mark_seen(checkout, {m: info[m].date if m in info else None for m in msgids})
+
+    def mark_read(self, item: WorkItem) -> str:
+        """Mark every cached message in the item's threads (all revisions) as seen."""
+        names = {pathlib.Path(src).name for src in item.sources}
+        msgids = [
+            m for m, e in self.cache.messages().items() if self.cache.thread_name(e.key) in names
+        ]
+        self.mark_seen(msgids)
+        return f'Marked {len(msgids)} message(s) read: {item.series.subject}'
+
     def browse_lists(self, ws: Workspace) -> list[tuple[str, Project]]:
         """Profile lists to fetch, each with the project whose b4 configuration fetches it.
 
@@ -138,10 +227,29 @@ class LiveSource:
             progress(f'Fetching {lst} ({n}/{len(lists)})…')
             search = self._search_for(self.checkout(project))
             added += self.cache.refresh(lst, ws.window_days, search, now=self._now())
+        added += self._fetch_my_mail(self._with_identity(ws), progress)
         progress('Parsing new threads…')
         self.cache.series(parse_mbox)  # So the reload that follows reads summaries only.
         checked = self._check_owners(ws, progress)
-        return f'Refreshed {len(lists)} list(s): {added} new message(s){checked}'
+        scanned = self._scan_refs(ws, progress)
+        return f'Refreshed {len(lists)} list(s): {added} new message(s){checked}{scanned}'
+
+    def _fetch_my_mail(self, ws: Workspace, progress: Callable[[str], None]) -> int:
+        """The maintainer's own mail on any list, whole threads, for Responses."""
+        checkout = self._flags_checkout(ws)
+        if checkout is None:
+            return 0
+        added = 0
+        for addr in ws.me:
+            progress(f'Fetching mail from {addr}…')
+            added += self.cache.refresh_query(
+                f'from-{addr}',
+                lambda since, a=addr: f'f:{a} AND rt:{since:%Y-%m-%d}..',
+                ws.window_days,
+                self._search_for(checkout),
+                now=self._now(),
+            )
+        return added
 
     def _check_owners(self, ws: Workspace, progress: Callable[[str], None]) -> str:
         items = self.load().items

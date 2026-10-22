@@ -88,3 +88,20 @@ def test_track_failure_is_reported(ws, tmp_path):
         assert 'Could not retrieve series' in str(e)
     else:
         raise AssertionError('track() should fail')
+
+
+def test_seen_flags_live_in_workspace_b4_messages_db(ws, home):
+    from b4.review import messages
+
+    from b4_maintainer.adapters.b4state import mark_seen, seen
+
+    checkout = enrolled(ws)
+    assert seen(checkout, ['a@example.org', 'b@example.org']) == set()
+    mark_seen(checkout, {'a@example.org': '2026-10-21T12:00:00+00:00'})
+    assert seen(checkout, ['a@example.org', 'b@example.org']) == {'a@example.org'}
+    assert (ws / 'var' / 'b4' / 'data' / 'review' / 'messages.sqlite3').is_file()
+    with b4_repo(checkout):
+        conn = messages.get_db()
+        assert 'Seen' in messages.get_flags(conn, 'a@example.org').split()
+        conn.close()
+    assert not (home / 'xdg-data').exists()

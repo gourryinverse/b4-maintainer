@@ -6,6 +6,7 @@ CPU per action (app work) and wall time above a bare-app floor measured in the
 same run (catches blocking waits that use no CPU).
 """
 
+import gc
 import statistics
 import time
 
@@ -57,6 +58,7 @@ async def floor_samples():
 
 
 async def test_ten_thousand_series_meet_interface_targets():
+    gc.collect()  # Earlier tests' garbage is not this app's cost.
     press_floor, pause_floor = await floor_samples()
     snapshot = synthetic_snapshot(SERIES)
     app = MaintainerApp(lambda: snapshot)
@@ -86,3 +88,16 @@ async def test_ten_thousand_series_meet_interface_targets():
         wall, cpu = await sample(keys(pilot))
         assert p95(cpu) <= TARGET, f'preview selection cpu p95 {p95(cpu):.3f}s'
         assert p95(wall) - press_floor <= TARGET, f'preview selection wall p95 {p95(wall):.3f}s'
+
+        await pilot.press('p', 'slash')
+        await pilot.pause()
+
+        async def type_key(key):
+            await pilot.press(key)
+
+        typed = [lambda k=k: type_key(k) for k in 'synthetic change 1'] + [
+            lambda: type_key('backspace') for _ in range(6)
+        ]
+        wall, cpu = await sample(typed)
+        assert p95(cpu) <= TARGET, f'search keystroke cpu p95 {p95(cpu):.3f}s'
+        assert p95(wall) - press_floor <= TARGET, f'search keystroke wall p95 {p95(wall):.3f}s'

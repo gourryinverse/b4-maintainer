@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Pre-apply reader content: patch list, per-posting comment tree, and message blocks."""
 
-from typing import Optional
+from typing import Collection, Optional
 
 from rich.style import Style
 
@@ -130,13 +130,15 @@ def root_label(thread: SeriesThread, key: str) -> str:
     return post.message.subject
 
 
-def reply_labels(replies: tuple[Reply, ...]) -> list[str]:
+def reply_labels(replies: tuple[Reply, ...], unread: Collection[str] = ()) -> list[str]:
+    """Tree labels; unread replies (to the maintainer's mail) are marked ●."""
     labels = []
     for art, reply in zip(tree_art([r.depth for r in replies]), replies):
         m = reply.message
         date = f' {m.date:%m-%d}' if m.date else ''
         marks = _tag_marks(m.tags)
-        labels.append(f'{art} {m.author_name}{date}{" " + marks if marks else ""}')
+        dot = '● ' if m.msgid in unread else ''
+        labels.append(f'{art} {dot}{m.author_name}{date}{" " + marks if marks else ""}')
     return labels
 
 

@@ -1,6 +1,8 @@
 """Contract: the live workspace browses cached list mail and tracks through b4."""
 
 import datetime
+import email.message
+import email.utils
 
 import b4
 import pytest
@@ -247,3 +249,174 @@ def test_hide_toggles_and_persists_in_client_state(live, tmp_path):
     assert items['mm: noise'].hidden and not items['mm: keep'].hidden
     assert 'Unhidden' in source.toggle_hidden(items['mm: noise'])
     assert not any(i.hidden for i in source.load().items)
+
+
+def reply_to(parent, sender, msgid, days_ago=0):
+    reply = email.message.EmailMessage()
+    reply['From'] = sender
+    reply['Subject'] = 'Re: ' + str(parent['Subject'])
+    reply['Date'] = email.utils.format_datetime(NOW - datetime.timedelta(days=days_ago))
+    reply['Message-ID'] = f'<{msgid}>'
+    reply['In-Reply-To'] = str(parent['Message-ID'])
+    refs = str(parent.get('References', '')).split() + [str(parent['Message-ID'])]
+    reply['References'] = ' '.join(refs)
+    reply.set_content('Some comment.\n')
+    return reply
+
+
+class SeenStore:
+    def __init__(self):
+        self.flags: set[str] = set()
+
+    def seen(self, checkout, msgids):
+        return self.flags & set(msgids)
+
+    def mark_seen(self, checkout, dated):
+        self.flags |= set(dated)
+
+
+def responses_source(tmp_path):
+    root = tmp_path / 'ws'
+    make_checkout(root / 'projects' / 'demo')
+    (root / 'workspace.toml').write_text(CONFIG)
+    fakes, store = Fakes(), SeenStore()
+    source = LiveSource(
+        root,
+        tracked_series=fakes.tracked_series,
+        search_for=fakes.search_for,
+        track=fakes.track,
+        b4_command=['b4'],
+        now=lambda: NOW,
+        identity=lambda checkout: 'me@example.org',
+        seen=store.seen,
+        mark_seen=store.mark_seen,
+    )
+    return source, fakes, store
+
+
+def test_refresh_fetches_my_own_mail(tmp_path):
+    source, fakes, _ = responses_source(tmp_path)
+    source.refresh()
+    queries = [q for _, q in fakes.searches]
+    assert any(q.startswith('f:me@example.org AND rt:') for q in queries)
+
+
+def test_unread_replies_to_my_mail_make_responses(tmp_path):
+    source, fakes, store = responses_source(tmp_path)
+    # My own series, with a reply from a reviewer.
+    _, mine = mail(tmp_path, 'mine', 'mm: my series')
+    for m in mine:
+        m.replace_header('From', 'Me <me@example.org>')
+    cover = mine[0]
+    # Someone else's series where I replied, and someone answered me.
+    _, theirs = mail(tmp_path, 'theirs', 'mm: their series')
+    patch = next(m for m in theirs if '1/2' in str(m['Subject']))
+    my_review = reply_to(patch, 'Me <me@example.org>', 'my-review@example.org')
+    answer = reply_to(my_review, 'Contributor <contributor1@example.org>', 'answer@example.org')
+    # A reply to someone else is not a response to me.
+    aside = reply_to(patch, 'Bystander <by@example.org>', 'aside@example.org')
+    review = reply_to(cover, 'Reviewer <reviewer@example.org>', 'review-of-mine@example.org')
+    fakes.answers[MM] = mine + theirs + [my_review, answer, aside, review]
+    source.refresh()
+
+    index = ViewIndex(*_snap(source))
+    responses = {i.series.subject: i for i in index.items('responses')}
+    assert set(responses) == {'mm: my series', 'mm: their series'}
+    assert responses['mm: their series'].unread_msgids == {'answer@example.org'}
+    assert responses['mm: my series'].state.unread == 1
+
+    source.mark_seen(['answer@example.org'])
+    assert 'answer@example.org' in store.flags
+    index = ViewIndex(*_snap(source))
+    assert [i.series.subject for i in index.items('responses')] == ['mm: my series']
+
+
+def test_mark_read_covers_every_message_in_the_series(tmp_path):
+    source, fakes, store = responses_source(tmp_path)
+    _, mine = mail(tmp_path, 'mine', 'mm: my series')
+    for m in mine:
+        m.replace_header('From', 'Me <me@example.org>')
+    review = reply_to(mine[0], 'Reviewer <reviewer@example.org>', 'review@example.org')
+    fakes.answers[MM] = mine + [review] + mail(tmp_path, 'other', 'mm: other')[1]
+    source.refresh()
+    item = next(i for i in source.load().items if i.series.subject == 'mm: my series')
+    assert 'Marked 4' in source.mark_read(item)
+    assert 'review@example.org' in store.flags
+    assert len(store.flags) == 4  # The other series stays untouched.
+    assert ViewIndex(*_snap(source)).count('responses') == 0
+
+
+STAGED_CONFIG = """\
+[[projects]]
+id = "demo"
+path = "projects/demo"
+lists = ["linux-mm@kvack.org"]
+refs = [
+  { label = "m", name = "master", authority = "mainline" },
+  { label = "u", name = "unstable", authority = "preliminary", view = "MM-unstable" },
+  { label = "a", name = "new", authority = "preliminary", view = "MM-new" },
+]
+
+[[profiles]]
+id = "mm"
+label = "MM"
+project = "demo"
+lists = ["linux-mm@kvack.org"]
+"""
+
+
+def test_staged_series_move_from_profile_to_ref_views(tmp_path):
+    from gitutil import git
+
+    root = tmp_path / 'ws'
+    checkout = make_checkout(root / 'projects' / 'demo')
+    (root / 'workspace.toml').write_text(STAGED_CONFIG)
+    fakes = Fakes()
+    source = LiveSource(
+        root,
+        tracked_series=fakes.tracked_series,
+        search_for=fakes.search_for,
+        track=fakes.track,
+        b4_command=['b4'],
+        now=lambda: NOW,
+        identity=lambda c: None,
+    )
+    in_unstable, msgs_u = mail(tmp_path, 'u', 'mm: in unstable')
+    in_new, msgs_n = mail(tmp_path, 'n', 'mm: only in new')
+    _, msgs_o = mail(tmp_path, 'o', 'mm: nowhere yet')
+    fakes.answers[MM] = msgs_u + msgs_n + msgs_o
+    ident = ['-c', 'user.name=A', '-c', 'user.email=a@example.org']
+
+    def pick(sent, subject):
+        for n in (1, 2):
+            link = f'Link: https://lore.kernel.org/{sent.msgids[n]}'
+            git(
+                *ident,
+                'commit',
+                '-q',
+                '--allow-empty',
+                '-m',
+                f'{subject} {n}\n\n{link}',
+                cwd=checkout,
+            )
+
+    git('checkout', '-q', '-b', 'unstable', cwd=checkout)
+    pick(in_unstable, 'mm: in unstable')
+    git('checkout', '-q', '-b', 'new', cwd=checkout)
+    pick(in_new, 'mm: only in new')
+    git('checkout', '-q', 'master', cwd=checkout)
+
+    assert 'refs' in source.refresh()
+    snapshot = source.load()
+    index = ViewIndex(snapshot.workspace, snapshot.items)
+    labels = {v.id: v.label for v in index.views}
+    assert labels['ref:demo:unstable'] == 'MM-unstable' and labels['ref:demo:new'] == 'MM-new'
+    assert [i.series.subject for i in index.items('ref:demo:unstable')] == ['mm: in unstable']
+    assert [i.series.subject for i in index.items('ref:demo:new')] == ['mm: only in new']
+    assert [i.series.subject for i in index.items('profile:mm')] == ['mm: nowhere yet']
+    staged = next(i for i in snapshot.items if i.series.subject == 'mm: in unstable')
+    assert [(label, cov.value) for label, _, cov in staged.state.tree] == [
+        ('m', 'none'),
+        ('u', 'full'),
+        ('a', 'full'),
+    ]

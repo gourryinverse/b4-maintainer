@@ -358,3 +358,99 @@ def test_mail_signature_separator_is_not_a_removed_line():
 
     assert diff_style('-- ') == Style()
     assert diff_style('-removed') != Style()
+
+
+def _reply(msgid, author):
+    return Message(msgid, author, f'{msgid}', None, 'Re: subject', 'Comment.')
+
+
+def test_reply_labels_mark_unread_replies():
+    from b4_maintainer.reader import reply_labels
+
+    replies = (Reply(_reply('r1@example.org', 'One'), 0), Reply(_reply('r2@example.org', 'Two'), 0))
+    labels = reply_labels(replies, unread={'r2@example.org'})
+    assert '●' not in labels[0] and '●' in labels[1]
+    assert reply_labels(replies) == [label.replace('● ', '') for label in labels]
+
+
+class SeenActions:
+    def __init__(self, item):
+        self.item = item
+        self.marked = []
+        self.loads = 0
+
+    def load(self):
+        import dataclasses
+
+        self.loads += 1
+        unread = frozenset({'r1@example.org'}) - set(self.marked)
+        item = dataclasses.replace(self.item, unread_msgids=unread)
+        return Snapshot(Workspace.from_config(workspace_config()), (item,))
+
+    def refresh(self, progress):
+        return ''
+
+    def track(self, item):
+        return ''
+
+    def toggle_hidden(self, item):
+        return ''
+
+    def mark_seen(self, msgids):
+        self.marked.extend(msgids)
+
+    def mark_read(self, item):
+        self.marked.extend(item.unread_msgids)
+        return 'Marked'
+
+
+async def test_showing_an_unread_reply_marks_it_seen():
+    item = make_item(subject='mm: answered')
+    actions = SeenActions(item)
+    replies = (Reply(_reply('r1@example.org', 'One'), 0), Reply(_reply('r2@example.org', 'Two'), 0))
+    app = MaintainerApp(
+        actions.load,
+        actions=actions,
+        thread_loader=lambda s: stub_thread_with_replies(item, replies),
+    )
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        app._posts.highlighted = 0
+        await pilot.pause()
+        assert '●' in app.thread_labels()[1] and '●' not in app.thread_labels()[2]
+        app._thread_list.highlighted = 1
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert actions.marked == ['r1@example.org']
+        assert '●' not in app.thread_labels()[1]
+        await pilot.press('escape', 'escape', 'escape')
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.reading is None
+        assert actions.loads == 2
+        assert app.index.count('responses') == 0
+
+
+async def test_shift_r_in_reader_clears_unread_marks():
+    item = make_item(subject='mm: answered')
+    actions = SeenActions(item)
+    replies = (Reply(_reply('r1@example.org', 'One'), 0), Reply(_reply('r2@example.org', 'Two'), 0))
+    app = MaintainerApp(
+        actions.load,
+        actions=actions,
+        thread_loader=lambda s: stub_thread_with_replies(item, replies),
+    )
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        app._posts.highlighted = 0
+        await pilot.pause()
+        assert '●' in app.thread_labels()[1]
+        await pilot.press('R')
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert actions.marked == ['r1@example.org']
+        assert not any('●' in label for label in app.thread_labels())
+        assert app.reading is not None

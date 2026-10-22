@@ -13,10 +13,10 @@ import pathlib
 import subprocess
 import threading
 from dataclasses import dataclass
-from typing import Generator, Optional, Sequence
+from typing import Generator, Mapping, Optional, Sequence
 
 import b4
-from b4.review import tracking
+from b4.review import messages, tracking
 
 from .lorelist import Search
 
@@ -81,6 +81,28 @@ def user_email(checkout: pathlib.Path) -> Optional[str]:
     with b4_repo(checkout):
         value = b4.USER_CONFIG.get('email')
     return value if isinstance(value, str) and value else None
+
+
+def seen(checkout: pathlib.Path, msgids: Sequence[str]) -> set[str]:
+    """Which of these messages carry b4's Seen flag."""
+    with b4_repo(checkout):
+        conn = messages.get_db()
+        try:
+            flags = messages.get_flags_bulk(conn, list(msgids))
+        finally:
+            conn.close()
+    return {m for m, f in flags.items() if 'Seen' in f.split()}
+
+
+def mark_seen(checkout: pathlib.Path, dated: Mapping[str, Optional[str]]) -> None:
+    """Set b4's Seen flag on messages, given {msgid: ISO date} (b4 prunes by date)."""
+    entries = [{'msgid': m, 'msg_date': d} for m, d in dated.items()]
+    with b4_repo(checkout):
+        conn = messages.get_db()
+        try:
+            messages.set_flags_bulk(conn, entries, 'Seen')  # type: ignore[arg-type]
+        finally:
+            conn.close()
 
 
 def track(checkout: pathlib.Path, msgid: str, b4_command: Sequence[str]) -> None:

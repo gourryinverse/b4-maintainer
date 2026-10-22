@@ -41,11 +41,23 @@ class ViewIndex:
                 specs.append(
                     (
                         View(f'profile:{prof.id}', prof.label, 'profile'),
-                        lambda i, pid=prof.id: pid in i.profiles,
+                        # Series staged in a viewed ref move to that ref's view.
+                        lambda i, pid=prof.id: pid in i.profiles and not i.stage,
                         active,
                     )
                 )
+        for p in ws.projects:
+            for ref in p.refs:
+                if ref.view:
+                    specs.append(
+                        (
+                            View(f'ref:{p.id}:{ref.name}', ref.view, 'ref'),
+                            lambda i, pid=p.id, name=ref.name: i.project == pid and i.stage == name,
+                            active,
+                        )
+                    )
         specs += [
+            (View('responses', 'Responses', 'builtin'), lambda i: bool(i.unread_msgids), items),
             (
                 View('responsibilities', 'My Responsibilities', 'builtin'),
                 lambda i: i.responsible,

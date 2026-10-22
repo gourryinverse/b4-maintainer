@@ -189,6 +189,12 @@ class WorkItem:
     author_role: str = ''
     # Dismissed by the maintainer; shown only in the Hidden view.
     hidden: bool = False
+    # Unread direct replies to mail the maintainer sent, by message ID.
+    unread_msgids: frozenset[str] = frozenset()
+    # Mail sources of every posting merged into this item (all revisions).
+    sources: tuple[str, ...] = ()
+    # Most advanced ref with a sidebar view that holds this series, by config order.
+    stage: str = ''
 
     @property
     def identity(self) -> str:

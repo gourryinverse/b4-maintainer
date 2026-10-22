@@ -149,3 +149,41 @@ def test_prune_compares_dates_across_time_zones(tmp_path):
     cache.refresh(LIST, 14, FakeSearch(msgs), now=NOW)
     cache.refresh(LIST, 14, FakeSearch([]), now=window_end)
     assert subjects(cache) == ['mm: west']
+
+
+def test_index_records_sender_and_parent(tmp_path):
+    cache = MailCache(tmp_path / 'mail')
+    msgs = thread(tmp_path, 'a', 'mm: first', 1)
+    cache.refresh(LIST, 14, FakeSearch(msgs), now=NOW)
+    info = cache.messages()
+    cover = b4.LoreMessage.get_clean_msgid(msgs[0])
+    patch = next(m for m in msgs if '1/2' in str(m['Subject']))
+    entry = info[b4.LoreMessage.get_clean_msgid(patch)]
+    assert entry.parent == cover
+    assert entry.sender == 'contributor1@example.org'
+    assert cache.thread_name(entry.key) == cache.thread_name(info[cover].key)
+
+
+def test_old_index_entries_are_backfilled_from_mail(tmp_path):
+    import json
+
+    cache = MailCache(tmp_path / 'mail')
+    msgs = thread(tmp_path, 'a', 'mm: first', 1)
+    cache.refresh(LIST, 14, FakeSearch(msgs), now=NOW)
+    path = tmp_path / 'mail' / 'index.json'
+    old = {m: v[:2] for m, v in json.loads(path.read_text()).items()}
+    path.write_text(json.dumps(old))
+    info = MailCache(tmp_path / 'mail').messages()
+    assert all(e.sender == 'contributor1@example.org' for e in info.values())
+    assert all(len(v) == 4 for v in json.loads(path.read_text()).values())
+
+
+def test_refresh_with_any_query(tmp_path):
+    cache = MailCache(tmp_path / 'mail')
+    search = FakeSearch(thread(tmp_path, 'a', 'mm: mine', 1))
+    added = cache.refresh_query(
+        'from-me', lambda since: f'f:me@example.org AND rt:{since:%Y-%m-%d}..', 14, search, now=NOW
+    )
+    assert added == 3
+    assert search.queries == ['f:me@example.org AND rt:2026-10-07..']
+    assert 'from-me' in cache.fetched_lists()

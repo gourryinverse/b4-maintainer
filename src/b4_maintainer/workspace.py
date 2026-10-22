@@ -18,6 +18,8 @@ class Ref:
     label: str
     name: str
     authority: Authority
+    # Sidebar view label; series in this ref leave profile views for it.
+    view: str = ''
 
 
 @dataclass(frozen=True)
@@ -79,7 +81,7 @@ class Workspace:
                 short=p.get('short', p['id'][:4]),
                 lists=tuple(list_id(lst) for lst in p.get('lists', [])),
                 refs=tuple(
-                    Ref(r['label'], r['name'], Authority[r['authority'].upper()])
+                    Ref(r['label'], r['name'], Authority[r['authority'].upper()], r.get('view', ''))
                     for r in p.get('refs', [])
                 ),
                 path=p.get('path', f'projects/{p["id"]}'),
@@ -204,8 +206,11 @@ def build_items(
     members: dict[str, list[str]] = {}
     latest: dict[str, Series] = {}
     versions: dict[str, set[int]] = {}
+    sources: dict[str, dict[str, None]] = {}
     for s in series:
         identity = canonical[s.identity]
+        if s.source:
+            sources.setdefault(identity, {})[s.source] = None
         if s.identity not in members.setdefault(identity, []):
             members[identity].append(s.identity)
         versions.setdefault(identity, set()).add(s.revision)
@@ -239,6 +244,7 @@ def build_items(
                 profiles=profiles,
                 versions=tuple(sorted(versions[identity])),
                 responsible=any(m in responsible for m in [identity, *members[identity]]),
+                sources=tuple(sources.get(identity, ())),
             )
         )
     # Newest first; undated postings last.

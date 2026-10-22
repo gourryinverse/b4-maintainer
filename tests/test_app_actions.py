@@ -13,6 +13,7 @@ class FakeLive:
         self.fixture = FixtureSource(root)
         self.tracked: set[str] = set()
         self.hidden: set[str] = set()
+        self.read_calls = []
         self.loads = 0
         self.refreshes = 0
         self.track_calls = []
@@ -43,6 +44,14 @@ class FakeLive:
         self.threads.add(threading.get_ident())
         self.hidden.symmetric_difference_update({item.identity})
         return ('Unhidden: ' if item.hidden else 'Hidden: ') + item.series.subject
+
+    def mark_read(self, item):
+        self.threads.add(threading.get_ident())
+        self.read_calls.append(item.identity)
+        return f'Marked 3 message(s) read: {item.series.subject}'
+
+    def mark_seen(self, msgids):
+        pass
 
     def track(self, item):
         self.threads.add(threading.get_ident())
@@ -162,3 +171,19 @@ async def test_unhide_from_hidden_view(demo_root):
         await settle(pilot)
         assert live.hidden == set()
         assert app.current_view == 'all'  # The Hidden view is gone once empty.
+
+
+async def test_shift_r_marks_series_read(demo_root):
+    app, live = make(demo_root)
+    async with app.run_test(size=(180, 40)) as pilot:
+        series_list = await settle(pilot)
+        await pilot.press('down')
+        target = series_list.highlighted_item
+        assert 'R' in footer_keys(app)
+        await pilot.press('R')
+        series_list = await settle(pilot)
+        assert live.read_calls == [target.identity]
+        assert threading.get_ident() not in live.threads
+        assert live.loads == 2
+        assert series_list.highlighted_item.identity == target.identity
+        assert 'Marked 3' in app.status_text()

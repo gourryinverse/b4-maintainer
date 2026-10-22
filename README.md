@@ -50,7 +50,9 @@ Mail configuration and delivery use b4's existing integrations.
     .venv/bin/b4-maintainer --demo .local/demo
 
 - `b4-maintainer` in a workspace with `workspace.toml` opens it live: `r` fetches profile
-  lists from lore, `t` tracks the selected series through b4 (it then shows in To Review).
+  lists and your own mail from lore, `t` tracks the selected series through b4 (To Review),
+  `x` hides it, `R` marks it read, `/` filters by regex; Responses lists unread replies to your
+  mail (b4's Seen flag).
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.

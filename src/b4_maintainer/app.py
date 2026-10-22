@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Browse screen (Views | Series | Summary) and pre-apply reader, with a session drawer."""
 
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Callable, Iterable, Optional, Protocol
 
 from b4._textwidth import pad_display
 from rich.segment import Segment
@@ -20,12 +20,12 @@ from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.widgets import Footer, OptionList, Static
+from textual.widgets import Footer, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .adapters.b4mbox import load_thread
 from .layout import Breakpoints, Mode, layout_mode
-from .model import Series, SeriesThread, WorkItem
+from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
     content_title,
     has_long_quote,
@@ -38,6 +38,7 @@ from .reader import (
     thread_replies,
 )
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, row_segments
+from .search import compile_query, match_texts, texts
 from .views import ViewIndex
 from .widgets import TextPane, printable
 from .workspace import Snapshot
@@ -61,6 +62,10 @@ class SourceActions(Protocol):
     def track(self, item: WorkItem) -> str: ...
 
     def toggle_hidden(self, item: WorkItem) -> str: ...
+
+    def mark_seen(self, msgids: Iterable[str]) -> None: ...
+
+    def mark_read(self, item: WorkItem) -> str: ...
 
 
 class SeriesList(ScrollView, can_focus=True):
@@ -239,6 +244,8 @@ class MaintainerApp(App[None]):
     Screen.-reading #main { display: none; }
     Screen.-reading #reader { display: block; }
     #drawer { height: 1; background: $panel; }
+    #search { dock: bottom; display: none; height: 1; border: none; padding: 0 1; }
+    Screen.-searching #search { display: block; }
     #drawer-panel { height: 40%; display: none; border-top: solid $accent; padding: 0 1; }
     Screen.-drawer-open #drawer-panel { display: block; }
     Screen.-medium #views { display: none; }
@@ -259,11 +266,13 @@ class MaintainerApp(App[None]):
         Binding('n', 'next_comment', 'next comment'),
         Binding('z', 'toggle_quotes', 'quotes'),
         Binding('p', 'toggle_preview', 'preview'),
+        Binding('slash', 'search', 'search', key_display='/'),
         Binding('t', 'track', 'track'),
         # One key; the enabled action (and footer label) follows the item's state.
         Binding('x', 'hide', 'hide'),
         Binding('x', 'unhide', 'unhide'),
         Binding('r', 'refresh', 'refresh'),
+        Binding('R', 'mark_read', 'read all'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
         Binding('Q', 'quit', 'quit'),
     ]
@@ -281,7 +290,14 @@ class MaintainerApp(App[None]):
         self._loader = loader
         self._actions = actions
         self._notice = ''
+        self._query = compile_query('')
+        self._matches: Optional[frozenset[str]] = None
+        # Rebuilt per snapshot so each keystroke only runs the regex and set intersections.
+        self._texts: list[tuple[str, str]] = []
+        self._view_members: dict[str, frozenset[str]] = {}
         self._item_keys: Optional[tuple[Optional[bool], Optional[bool]]] = None
+        # Replies marked seen while reading; counts refresh when the reader closes.
+        self._seen_now: set[str] = set()
         self._thread_loader = thread_loader
         # Held for explicit maintainer launches; passive actions never call it.
         self.launcher = launcher
@@ -316,6 +332,7 @@ class MaintainerApp(App[None]):
             yield TextPane(id='content')
         yield Static('', id='drawer-panel', markup=False)
         yield Static('', id='drawer', markup=False)
+        yield Input(id='search', placeholder='/ regex over subject and author')
         yield Footer()
 
     def on_mount(self) -> None:
@@ -353,11 +370,15 @@ class MaintainerApp(App[None]):
             self._apply_layout(self.size.width)
         views = self._views
         views.clear_options()
-        views.add_options(
-            # Titles and option prompts are markup; labels are configured text.
-            Option(escape(f'{pad_display(v.label, 21)}{index.count(v.id):>5}'), id=v.id)
-            for v in index.views
-        )
+        pool = index.items('cached')
+        if any(v.id == 'hidden' for v in index.views):
+            pool += index.items('hidden')
+        self._texts = texts(pool)
+        self._view_members = {
+            v.id: frozenset(i.identity for i in index.items(v.id)) for v in index.views
+        }
+        self._matches = self._compute_matches()
+        views.add_options(Option(self._view_prompt(v.id, v.label), id=v.id) for v in index.views)
         self._drawer = self._drawer_line()
         self.query_one('#drawer', Static).update(self._drawer)
         self.query_one('#drawer-panel', Static).update(self._drawer_panel())
@@ -365,13 +386,32 @@ class MaintainerApp(App[None]):
         if previous is not None:
             self._series_list.select_identity(previous.identity, fallback=position)
 
+    def _view_items(self, view_id: str) -> tuple[WorkItem, ...]:
+        assert self.index is not None
+        items = self.index.items(view_id)
+        if self._matches is None:
+            return items
+        return tuple(i for i in items if i.identity in self._matches)
+
+    def views_counts(self) -> dict[str, int]:
+        assert self.index is not None
+        return {v.id: self._view_count(v.id) for v in self.index.views}
+
+    def _view_count(self, view_id: str) -> int:
+        members = self._view_members.get(view_id, frozenset())
+        return len(members) if self._matches is None else len(members & self._matches)
+
+    def _view_prompt(self, view_id: str, label: str) -> str:
+        # Titles and option prompts are markup; labels are configured text.
+        return escape(f'{pad_display(label, 21)}{self._view_count(view_id):>5}')
+
     def select_view(self, view_id: str, force: bool = False) -> None:
         if self.index is None or (view_id == self.current_view and not force):
             return
         self.current_view = view_id
         multi = len(self.index.workspace.projects) > 1
         project_width = 5 if multi and not view_id.startswith('project:') else 0
-        self._series_list.set_items(self.index.items(view_id), project_width)
+        self._series_list.set_items(self._view_items(view_id), project_width)
         views = self._views
         position = views.get_option_index(view_id)
         if views.highlighted != position:
@@ -398,12 +438,10 @@ class MaintainerApp(App[None]):
     def on_series_list_highlighted(self, event: SeriesList.Highlighted) -> None:
         self._item = event.item
         self._show_summary()
+        if not self.screen_stack:
+            return  # Highlights can still arrive during shutdown.
         # Rebuilding the footer is costly; only do it when a per-item key's state flips.
-        keys = (
-            (self.check_action('track', ()), self.check_action('hide', ()))
-            if self.screen_stack
-            else None
-        )
+        keys = (self.check_action('track', ()), self.check_action('hide', ()))
         if keys != self._item_keys:
             self._item_keys = keys
             self.refresh_bindings()
@@ -451,11 +489,16 @@ class MaintainerApp(App[None]):
         if action == 'open_reader':
             return not reading and self._item is not None
         if action == 'back':
-            return reading or (narrow and summary_open)
+            searching = self.screen.has_class('-searching') or self._query.pattern is not None
+            return reading or (narrow and summary_open) or searching
+        if action == 'search':
+            return not reading
         if action == 'toggle_preview':
             return not reading
         if action == 'refresh':
             return self._actions is not None and not reading
+        if action == 'mark_read':
+            return self._actions is not None and (self._reading or self._item) is not None
         if action in ('hide', 'unhide'):
             item = self._item
             if self._actions is None or reading or item is None:
@@ -512,7 +555,53 @@ class MaintainerApp(App[None]):
         self._summary_pane.focus()
         self.refresh_bindings()
 
+    def action_search(self) -> None:
+        search = self.query_one('#search', Input)
+        self.screen.add_class('-searching')
+        search.value = self._query.text
+        search.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == 'search':
+            self._apply_query(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == 'search':
+            self._close_search()
+
+    def _compute_matches(self) -> Optional[frozenset[str]]:
+        """Identities matching the search, over every item including hidden ones."""
+        if self._query.pattern is None:
+            return None
+        return match_texts(self._texts, self._query)
+
+    def _close_search(self) -> None:
+        self.screen.remove_class('-searching')
+        self._series_list.focus()
+        self.refresh_bindings()
+
+    def _apply_query(self, text: str) -> None:
+        if self.index is None or text == self._query.text:
+            return
+        self._query = compile_query(text)
+        self._matches = self._compute_matches()
+        previous = self._series_list.highlighted_item
+        for n, view in enumerate(self.index.views):
+            self._views.replace_option_prompt_at_index(n, self._view_prompt(view.id, view.label))
+        self.select_view(self.current_view, force=True)
+        if previous is not None:
+            self._series_list.select_identity(previous.identity)
+
     def action_back(self) -> None:
+        if self.screen.has_class('-searching'):
+            self.query_one('#search', Input).value = ''
+            self._apply_query('')
+            self._close_search()
+            return
+        if self._reading is None and self._query.pattern is not None:
+            self._apply_query('')
+            self.refresh_bindings()
+            return
         if self._reading is not None:
             up = {'content': 'thread', 'thread': 'posts'}
             if self._mode == 'narrow' and self._reader_pane in up:
@@ -598,7 +687,7 @@ class MaintainerApp(App[None]):
         self._post_key = key
         replies = thread_replies(self._thread, key)
         width = max(20, self._thread_list.scrollable_content_region.width or 42)
-        labels = [root_label(self._thread, key)] + reply_labels(replies)
+        labels = [root_label(self._thread, key)] + reply_labels(replies, self._unread())
         self._thread_list.clear_options()
         self._thread_list.add_options(
             Option(escape(pad_display(label, width).rstrip())) for label in labels
@@ -608,6 +697,30 @@ class MaintainerApp(App[None]):
         )
         target, self._pending_node = self._pending_node or 0, None
         self._thread_list.highlighted = min(target, len(labels) - 1)
+
+    def _unread(self) -> frozenset[str]:
+        if self._reading is None:
+            return frozenset()
+        return self._reading.unread_msgids - self._seen_now
+
+    def _mark_seen(self, index: int, reply: Reply) -> None:
+        msgid = reply.message.msgid
+        actions = self._actions
+        if actions is None or self._thread is None or msgid not in self._unread():
+            return
+        self._seen_now.add(msgid)
+        label = reply_labels(thread_replies(self._thread, self._post_key), self._unread())
+        width = max(20, self._thread_list.scrollable_content_region.width or 42)
+        prompt = escape(pad_display(label[index - 1], width).rstrip())
+        self._thread_list.replace_option_prompt_at_index(index, prompt)
+
+        def work() -> None:
+            try:
+                actions.mark_seen([msgid])
+            except Exception as exc:  # The flag store is local; report, do not raise.
+                self.call_from_thread(self._set_notice, f'Could not mark read: {exc}')
+
+        self.run_worker(work, thread=True, group='seen')
 
     def _current_reply(self):
         if self._thread is None or not self._node:
@@ -629,6 +742,7 @@ class MaintainerApp(App[None]):
             blocks = root_blocks(self._thread, self._post_key, self._reading)
         else:
             blocks = message_blocks(reply, self._expand_quotes)
+            self._mark_seen(index, reply)
         self._content.set_blocks(blocks)
         self.refresh_bindings()
 
@@ -667,6 +781,9 @@ class MaintainerApp(App[None]):
         if self.index is not None:
             self._update_status()
         self.refresh_bindings()
+        if self._seen_now:
+            self._seen_now = set()
+            self.run_worker(self._load, thread=True, name='load', exclusive=True)
 
     async def action_quit(self) -> None:
         """Q and Textual's ctrl+q both ask before exiting."""
@@ -724,6 +841,25 @@ class MaintainerApp(App[None]):
         self._set_notice(f'Tracking {item.series.subject}…')
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
+    def action_mark_read(self) -> None:
+        actions, item = self._actions, self._reading or self._item
+        if actions is None or item is None:
+            return
+        if self._reading is not None and self._thread is not None:
+            # Clear the reader's marks now; counts refresh with the reload below.
+            self._seen_now |= item.unread_msgids
+            self._pending_node = self._node
+            self._show_post(self._post_key)
+
+        def work() -> None:
+            try:
+                result, reload = actions.mark_read(item), True
+            except Exception as exc:
+                result, reload = f'Mark read failed: {exc}', False
+            self.call_from_thread(self._action_done, result, reload)
+
+        self.run_worker(work, thread=True, group='action', exclusive=True)
+
     def action_hide(self) -> None:
         self._toggle_hidden()
 
@@ -760,6 +896,9 @@ class MaintainerApp(App[None]):
         status = f' b4-maintainer — {view.label} ({self.index.count(view.id)})'
         if self._actions is None:
             status += ' · fixture data'
+        if self._query.pattern is not None:
+            literal = ' (literal)' if self._query.literal else ''
+            status += f' · /{self._query.text}{literal}'
         if self._notice:
             status += f' · {self._notice}'
         if self.index.needs_setup:
