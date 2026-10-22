@@ -60,3 +60,5 @@ Mail configuration and delivery use b4's existing integrations.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
+- A hang: `kill -USR1 <pid>` writes every thread's stack to
+  `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

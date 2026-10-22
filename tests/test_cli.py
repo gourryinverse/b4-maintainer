@@ -103,3 +103,21 @@ def test_draft_editor_follows_config_and_tmux(tmp_path, monkeypatch, config, tmu
     else:
         assert isinstance(editor, TmuxEditor)
         assert editor.width == (120 if 'tmux_width' in config else 100)
+
+
+def test_sigusr1_dumps_every_threads_stack(tmp_path, monkeypatch):
+    import os
+    import signal
+
+    from b4_maintainer.cli import enable_stack_dumps
+
+    path = enable_stack_dumps(tmp_path)
+    try:
+        assert path == tmp_path / f'b4-maintainer-{os.getpid()}.stacks'
+        os.kill(os.getpid(), signal.SIGUSR1)
+        text = path.read_text()
+        assert 'test_sigusr1_dumps_every_threads_stack' in text
+    finally:
+        import faulthandler
+
+        faulthandler.unregister(signal.SIGUSR1)

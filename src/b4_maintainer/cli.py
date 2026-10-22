@@ -2,9 +2,12 @@
 """b4-maintainer entry point: the fixture prototype and project setup."""
 
 import argparse
+import faulthandler
 import os
 import pathlib
+import signal
 import sys
+import tempfile
 from typing import Optional, Sequence
 
 from .adapters.fixture import FixtureSource
@@ -159,8 +162,19 @@ def project_main(argv: Sequence[str]) -> int:
     return 0
 
 
+def enable_stack_dumps(directory: Optional[pathlib.Path] = None) -> pathlib.Path:
+    """Let `kill -USR1 <pid>` write every thread's stack to a file, to diagnose hangs."""
+    directory = directory or pathlib.Path(tempfile.gettempdir())
+    path = directory / f'b4-maintainer-{os.getpid()}.stacks'
+    # Held open for the process's life: faulthandler writes to the descriptor from a signal.
+    out = path.open('a')
+    faulthandler.register(signal.SIGUSR1, file=out, all_threads=True, chain=False)
+    return path
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ['project']:
         sys.exit(project_main(args[1:]))
+    enable_stack_dumps()
     build_app(args).run()
