@@ -16,7 +16,7 @@ from .adapters.tmux import TmuxEditor
 from .app import MaintainerApp
 from .fixtures import build_demo_workspace
 from .model import Authority
-from .projectsetup import CONFIG_NAME, SetupError, add_project
+from .projectsetup import CONFIG_NAME, SetupError, add_project, has_config, setup_workspace
 from .workspace import Project, Ref, list_id, make_ref
 
 
@@ -24,7 +24,7 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
     parser = argparse.ArgumentParser(
         prog='b4-maintainer',
         description=f'Open a workspace: {CONFIG_NAME} (live) or a fixture directory '
-        '(workspace.json, mail/*.mbx, state.json). Subcommand: project add.',
+        '(workspace.json, mail/*.mbx, state.json). Subcommands: project add, setup, sync.',
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -51,13 +51,13 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
     if args.demo:
         return MaintainerApp(FixtureSource(build_demo_workspace(args.demo)).load)
     root = args.workspace or pathlib.Path('.')
-    if (root / CONFIG_NAME).is_file():
+    if has_config(root):
         return _live_app(LiveSource(root), args)
     if (root / 'workspace.json').is_file():
         return MaintainerApp(FixtureSource(root).load)
     name = str(args.workspace or '')
     is_name = name and '/' not in name and not root.exists()
-    if is_name and pathlib.Path(CONFIG_NAME).is_file():
+    if is_name and has_config(pathlib.Path('.')):
         source = LiveSource('.')
         projects = [p.id for p in source.workspace().projects]
         if name in projects:
@@ -71,8 +71,17 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
 def _live_app(source: LiveSource, args: argparse.Namespace) -> MaintainerApp:
     source.email_dryrun = args.email_dry_run
     source.no_sign = args.no_sign
+    try:
+        timeout = source.workspace().sync_timeout
+    except (OSError, ValueError):
+        timeout = 10.0
     return MaintainerApp(
-        source.load, actions=source, drafts=source.drafts, editor=_draft_editor(source)
+        source.load,
+        actions=source,
+        drafts=source.drafts,
+        editor=_draft_editor(source),
+        sync=source.sync if source.can_sync() else None,
+        sync_timeout=timeout,
     )
 
 
@@ -162,6 +171,41 @@ def project_main(argv: Sequence[str]) -> int:
     return 0
 
 
+def setup_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog='b4-maintainer setup',
+        description='Recreate this workspace from state/ (a clone of the state repository): '
+        'clone missing project checkouts as recorded, enroll them with workspace b4 state, '
+        'and import synced b4 state. Existing checkouts are left as they are.',
+    )
+    parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
+    args = parser.parse_args(argv)
+    try:
+        report = setup_workspace(args.root, verbose=True)
+    except SetupError as e:
+        print(f'b4-maintainer: {e}', file=sys.stderr)
+        return 1
+    print('\n'.join(report))
+    return 0
+
+
+def sync_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog='b4-maintainer sync',
+        description='Sync state/ with the state repository once: export, merge, import, push.',
+    )
+    parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
+    args = parser.parse_args(argv)
+    from .adapters.statesync import SyncError
+
+    try:
+        print(LiveSource(args.root).sync())
+    except (SyncError, OSError, ValueError) as e:
+        print(f'b4-maintainer: sync failed: {e}', file=sys.stderr)
+        return 1
+    return 0
+
+
 def enable_stack_dumps(directory: Optional[pathlib.Path] = None) -> pathlib.Path:
     """Let `kill -USR1 <pid>` write every thread's stack to a file, to diagnose hangs."""
     directory = directory or pathlib.Path(tempfile.gettempdir())
@@ -176,5 +220,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ['project']:
         sys.exit(project_main(args[1:]))
+    if args[:1] == ['setup']:
+        sys.exit(setup_main(args[1:]))
+    if args[:1] == ['sync']:
+        sys.exit(sync_main(args[1:]))
     enable_stack_dumps()
     build_app(args).run()

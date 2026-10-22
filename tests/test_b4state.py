@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import b4
 from b4.review import tracking
 
-from b4_maintainer.adapters.b4state import archive, b4_repo, track, tracked_series
+from b4_maintainer.adapters.b4state import archive, b4_repo, track, tracked_series, unarchive
 from b4_maintainer.cli import project_main
 
 
@@ -57,6 +57,16 @@ def test_archive_marks_the_series_archived_in_b4(ws, home):
     assert ok, detail
     [entry] = tracked_series(checkout, 'demo')
     assert entry.status == 'archived'
+
+
+def test_unarchive_tracks_an_archived_series_again(ws, home):
+    checkout = enrolled(ws)
+    add_tracked(checkout, 'cid-1', 'cover@example.org', ['p1@example.org'])
+    assert archive(checkout, 'demo', 'cid-1', 2)[0]
+    unarchive(checkout, 'demo', 'cid-1')
+    [entry] = tracked_series(checkout, 'demo')
+    assert entry.status == 'new'
+    assert 'p1@example.org' in entry.msgids
 
 
 def test_nothing_tracked(ws):

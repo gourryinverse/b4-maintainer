@@ -55,6 +55,7 @@ class Fakes:
         self.track_calls: list[tuple[str, str]] = []
         self.archive_calls: list[tuple[str, str, str, int]] = []
         self.archive_result = (True, '/archive.tar.gz')
+        self.unarchive_calls: list[tuple[str, str, str]] = []
 
     def tracked_series(self, checkout, identifier):
         return list(self.tracked)
@@ -75,6 +76,9 @@ class Fakes:
         self.archive_calls.append((checkout.name, identifier, change_id, revision))
         return self.archive_result
 
+    def unarchive(self, checkout, identifier, change_id):
+        self.unarchive_calls.append((checkout.name, identifier, change_id))
+
 
 @pytest.fixture
 def live(tmp_path):
@@ -91,6 +95,7 @@ def live(tmp_path):
         now=lambda: NOW,
         identity=lambda checkout: None,
         archive=fakes.archive,
+        unarchive=fakes.unarchive,
     )
     return source, fakes, root
 
@@ -197,6 +202,20 @@ def test_track_runs_in_the_items_project(live, tmp_path):
     message = source.track(item)
     assert fakes.track_calls == [('demo', sent.msgids[0])]
     assert 'mm: track me' in message
+
+
+def test_tracking_an_untracked_series_again_brings_it_back(live, tmp_path):
+    source, fakes, _ = live
+    sent, msgs = mail(tmp_path, 'a', 'mm: changed my mind')
+    fakes.answers[MM] = msgs
+    source.refresh()
+    fakes.tracked = [
+        dataclasses.replace(tracked(sent.msgids[0], change_id='cid-7'), status='archived')
+    ]
+    [item] = source.load().items
+    assert 'mm: changed my mind' in source.track(item)
+    assert fakes.unarchive_calls == [('demo', 'demo', 'cid-7')]
+    assert fakes.track_calls == []  # b4 review track refuses archived series.
 
 
 def test_track_requires_a_project(live, tmp_path):

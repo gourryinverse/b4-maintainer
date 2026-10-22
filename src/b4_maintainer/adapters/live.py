@@ -8,15 +8,17 @@ the UI thread.
 
 import dataclasses
 import datetime
+import json
 import pathlib
+import threading
 import tomllib
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ..model import Coverage, Series, SeriesState, WorkItem
-from ..projectsetup import CONFIG_NAME, default_b4_command
+from ..projectsetup import CONFIG_NAME, config_path, default_b4_command, describe_checkout
 from ..workspace import Project, Snapshot, Workspace, build_items
-from . import b4state, sashiko
+from . import b4state, sashiko, statesync
 from .b4mbox import parse_mbox
 from .clientstate import HiddenStore, WatchedStore
 from .drafts import DraftStore
@@ -48,6 +50,7 @@ class LiveSource:
         search_for: Callable[[pathlib.Path], Search] = b4state.lore_search,
         track: Callable[[pathlib.Path, str, Sequence[str]], None] = b4state.track,
         archive: Callable[[pathlib.Path, str, str, int], tuple[bool, str]] = b4state.archive,
+        unarchive: Callable[[pathlib.Path, str, str], None] = b4state.unarchive,
         b4_command: Optional[Sequence[str]] = None,
         now: Callable[[], datetime.datetime] = lambda: datetime.datetime.now(datetime.timezone.utc),
         identity: Callable[[pathlib.Path], Optional[str]] = b4state.user_email,
@@ -59,6 +62,12 @@ class LiveSource:
         sashiko_get: sashiko.Get = sashiko.http_get,
         sashiko_patchset: sashiko.GetPatchset = sashiko.b4_patchset,
         thread_for: Callable[[pathlib.Path], Callable[[str], Any]] = b4state.lore_thread,
+        export_series: Callable[[pathlib.Path, str], dict[str, Any]] = b4state.export_series,
+        import_series: Callable[[pathlib.Path, str, Mapping[str, Any]], None] = (
+            b4state.import_series
+        ),
+        all_flags: Callable[[pathlib.Path], list[Any]] = b4state.all_flags,
+        add_flags: Callable[[pathlib.Path, Sequence[Any]], None] = b4state.add_flags,
     ) -> None:
         self.root = pathlib.Path(root).resolve()
         self.cache = MailCache(self.root / 'var' / 'mail')
@@ -70,6 +79,7 @@ class LiveSource:
         self._search_for = search_for
         self._track = track
         self._archive = archive
+        self._unarchive = unarchive
         self._b4_command = b4_command
         self._now = now
         self._identity = identity
@@ -79,9 +89,83 @@ class LiveSource:
         self._sashiko_get = sashiko_get
         self._sashiko_patchset = sashiko_patchset
         self._thread_for = thread_for
+        self._export_series = export_series
+        self._import_series = import_series
+        self._all_flags = all_flags
+        self._add_flags = add_flags
+        self.state = statesync.StateRepo(self.root / 'state')
+        self._sync_lock = threading.Lock()
 
     def workspace(self) -> Workspace:
-        return Workspace.from_config(tomllib.loads((self.root / CONFIG_NAME).read_text()))
+        return Workspace.from_config(tomllib.loads(config_path(self.root).read_text()))
+
+    def can_sync(self) -> bool:
+        """Whether state/ syncs on its own: a state repository with a remote, and auto on."""
+        try:
+            auto = self.workspace().sync_auto
+        except (OSError, ValueError):
+            return False
+        return auto and self.state.exists() and self.state.has_remote()
+
+    def sync(self, timeout: Optional[float] = None) -> str:
+        """Sync state/ with the state repository: export, merge, import, commit, push."""
+        if not self.state.exists():
+            return 'No state repository in state/'
+        with self._sync_lock:
+            notes = self.state.sync(self._export_state, self._import_state, self._now(), timeout)
+        pushed = 'synced' if self.state.has_remote() else 'committed (no remote)'
+        return '; '.join([f'State {pushed}', *notes])
+
+    def _synced_projects(self) -> list[Project]:
+        return [p for p in self.workspace().projects if self._enrolled(p)]
+
+    def _export_state(self, current: statesync.Tree) -> statesync.Tree:
+        now = self._now()
+        files: statesync.Tree = {}
+        anchors = set(self.watched.msgids())
+        projects = self._synced_projects()
+        for project in projects:
+            checkout = self.checkout(project)
+            desc = describe_checkout(checkout)
+            files[f'projects/{project.id}/checkout.json'] = (
+                json.dumps(desc, indent=1, sort_keys=True) + '\n'
+            ).encode()
+            records = self._export_series(checkout, project.id)
+            files.update(statesync.series_files(project.id, records, current, now))
+            for rec in records.values():
+                for row in rec['series']:
+                    if row['status'] != 'archived':
+                        anchors.add(row['message_id'])
+                        anchors.update(p['message_id'] for p in row['patches'])
+        if projects:
+            thread_of = {m: info.key for m, info in self.cache.messages().items()}
+            anchor_of = statesync.known_anchors(thread_of, anchors)
+            files[statesync.FLAGS] = statesync.flags_text(
+                statesync.FlagLine(
+                    f['msgid'], f['msg_date'] or '', f['flags'], anchor_of.get(f['msgid'], '')
+                )
+                for f in self._all_flags(self.checkout(projects[0]))
+            )
+        return files
+
+    def _import_state(self, changes: statesync.Changes) -> None:
+        projects = self._synced_projects()
+        for project in projects:
+            prefix = f'projects/{project.id}/series/'
+            records = {}
+            for path, data in changes.items():
+                if path.startswith(prefix) and data is not None:
+                    rec = json.loads(data)
+                    records[rec['change_id']] = rec
+            if records:
+                self._import_series(self.checkout(project), project.id, records)
+        flags = changes.get(statesync.FLAGS)
+        if flags and projects:
+            entries = [
+                {'msgid': f.msgid, 'msg_date': f.date or None, 'flags': f.flags}
+                for f in statesync.parse_flags(flags)
+            ]
+            self._add_flags(self.checkout(projects[0]), entries)
 
     def checkout(self, project: Project) -> pathlib.Path:
         return self.root / project.path
@@ -379,6 +463,23 @@ class LiveSource:
         return list(wanted.items())
 
     def refresh(self, progress: Callable[[str], None] = lambda _: None) -> str:
+        # Others' state first (it may change workspace.toml), then this refresh's.
+        synced = self._auto_sync(progress)
+        result = self._refresh(progress)
+        return result + ((self._auto_sync(progress) or '') if synced is not None else '')
+
+    def _auto_sync(self, progress: Callable[[str], None]) -> Optional[str]:
+        """Sync when automatic; a failure is reported, never raised: local work goes on."""
+        if not self.can_sync():
+            return None
+        progress('Syncing state…')
+        try:
+            self.sync()
+            return ''
+        except statesync.SyncError as ex:
+            return f' · state sync failed: {ex}'
+
+    def _refresh(self, progress: Callable[[str], None]) -> str:
         ws = self.workspace()
         self.cache.keep = self.watched.msgids()  # Watched threads outlive the window.
         lists = self.browse_lists(ws)
@@ -473,8 +574,15 @@ class LiveSource:
         msgid = series.msgids[0] if series.msgids else ''
         if not msgid:
             raise RuntimeError('No message-id known for this series')
-        command = list(self._b4_command) if self._b4_command else default_b4_command()
-        self._track(self.checkout(project), msgid, command)
+        checkout = self.checkout(project)
+        entries = self._tracked_series(checkout, project.id)
+        archived = _tracked_entry(entries, item, status='archived')
+        if archived is not None and _tracked_entry(entries, item) is None:
+            # Untracked earlier: b4 review track refuses it, so bring b4's record back.
+            self._unarchive(checkout, project.id, archived.change_id)
+        else:
+            command = list(self._b4_command) if self._b4_command else default_b4_command()
+            self._track(checkout, msgid, command)
         return f'Tracking in {project.id}: {series.subject} v{series.revision}'
 
     def untrack(self, item: WorkItem) -> str:
@@ -492,13 +600,16 @@ class LiveSource:
         return f'Archived in {project.id}: {item.series.subject}'
 
 
-def _tracked_entry(entries: Sequence[b4state.Tracked], item: WorkItem) -> Optional[b4state.Tracked]:
-    """The active tracking record for an item, matched by any posted message-id."""
+def _tracked_entry(
+    entries: Sequence[b4state.Tracked], item: WorkItem, status: Optional[str] = None
+) -> Optional[b4state.Tracked]:
+    """The item's active tracking record (or one in *status*), matched by any message-id."""
     msgids = set(item.series.msgids)
-    return next(
-        (e for e in entries if e.status != 'archived' and e.msgids & msgids),
-        None,
-    )
+    for e in entries:
+        wanted = e.status == status if status else e.status != 'archived'
+        if wanted and e.msgids & msgids:
+            return e
+    return None
 
 
 def _from_tracking(entry: b4state.Tracked) -> Series:
