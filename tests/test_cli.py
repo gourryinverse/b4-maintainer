@@ -75,3 +75,31 @@ def test_mail_flags_mirror_b4_review(tmp_path, monkeypatch):
     assert app._actions.email_dryrun and app._actions.no_sign
     plain = build_app([])
     assert not plain._actions.email_dryrun and not plain._actions.no_sign
+
+
+@pytest.mark.parametrize(
+    'config,tmux,expected',
+    [
+        ('', '/tmp/tmux-1/default,1,0', 'tmux'),
+        ('', None, None),
+        ('[drafts]\neditor = "app"\n', '/tmp/tmux-1/default,1,0', None),
+        ('[drafts]\neditor = "tmux"\ntmux_width = 120\n', '/tmp/tmux-1/default,1,0', 'tmux'),
+        ('[drafts]\neditor = "tmux"\n', None, None),  # Not inside tmux: the in-app pane.
+    ],
+)
+def test_draft_editor_follows_config_and_tmux(tmp_path, monkeypatch, config, tmux, expected):
+    from b4_maintainer.adapters.tmux import TmuxEditor
+
+    (tmp_path / 'workspace.toml').write_text(config)
+    if tmux:
+        monkeypatch.setenv('TMUX', tmux)
+        monkeypatch.setenv('TMUX_PANE', '%3')
+    else:
+        monkeypatch.delenv('TMUX', raising=False)
+    app = build_app([str(tmp_path)])
+    editor = app._editor
+    if expected is None:
+        assert editor is None
+    else:
+        assert isinstance(editor, TmuxEditor)
+        assert editor.width == (120 if 'tmux_width' in config else 100)

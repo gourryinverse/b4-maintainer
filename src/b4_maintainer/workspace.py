@@ -96,6 +96,9 @@ class Workspace:
     window_days: int = 14
     # Senders of automated review mail; their replies are findings, not Responses.
     bots: tuple[str, ...] = SASHIKO_SENDERS
+    # Where replies are drafted: auto (tmux when inside it), tmux, or app.
+    drafts_editor: str = 'auto'
+    tmux_width: int = 100
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -146,6 +149,8 @@ class Workspace:
             bots=tuple(
                 b.lower() for b in config.get('sashiko', {}).get('senders', SASHIKO_SENDERS)
             ),
+            drafts_editor=str(config.get('drafts', {}).get('editor', 'auto')),
+            tmux_width=int(config.get('drafts', {}).get('tmux_width', 100)),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

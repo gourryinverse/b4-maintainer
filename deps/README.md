@@ -58,7 +58,8 @@ Configure remotes after initialization:
 - Carried on the fork's master, pending upstream: `build_thread_tree()` keeps
   In-Reply-To cycles; `LiteThreadScreen` accepts a mailbox; per-repository
   `b4.data-dir`/`b4.cache-dir`; reply flow (`review_tui._reply`: quote, preview, send)
-  usable outside `LiteThreadScreen`.
+  usable outside `LiteThreadScreen`; public Sashiko fetch/parse helpers; `get_editor_cmd()`
+  and `unix_newlines()` factored out of `edit_in_editor()`.
 - Carried on the sashiko fork: `third_party/linux` is `update = none` so recursive
   initialization does not clone the kernel. Drop it if upstream adopts it.
 - b4 `LoreMailbox.get_series()` hangs on a two-message reply cycle carrying trailers.

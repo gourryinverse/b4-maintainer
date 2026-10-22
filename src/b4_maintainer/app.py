@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Browse screen (Views | Series | Summary) and pre-apply reader, with a session drawer."""
 
+import pathlib
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional, Protocol
 
@@ -68,6 +69,20 @@ ROLE_STYLES = {
 
 class AgentLauncher(Protocol):
     def launch(self, request: Any) -> None: ...
+
+
+class ExternalEditor(Protocol):
+    """The maintainer's editor beside the app (a tmux pane); calls block briefly."""
+
+    def open(self, path: pathlib.Path, checkout: pathlib.Path) -> str: ...
+
+    def alive(self, pane: str) -> bool: ...
+
+    def runs(self, pane: str, path: pathlib.Path) -> bool: ...
+
+    def focus(self, pane: str) -> None: ...
+
+    def close(self, pane: str) -> None: ...
 
 
 class SourceActions(Protocol):
@@ -253,8 +268,8 @@ class Confirm(ModalScreen[bool]):
 class ConfirmQuit(Confirm):
     PROMPT = 'Quit? [y|N]'
 
-    def __init__(self) -> None:
-        super().__init__(self.PROMPT)
+    def __init__(self, prompt: str = PROMPT) -> None:
+        super().__init__(prompt)
 
 
 @dataclass
@@ -265,6 +280,8 @@ class Draft:
     msgid: str
     target: Any  # SourceActions.prepare_reply result: lmsg, checkout, mail flags
     quote: str
+    # External editor pane writing the draft file; empty for the in-app Draft pane.
+    pane: str = ''
 
 
 class MaintainerApp(App[None]):
@@ -316,6 +333,7 @@ class MaintainerApp(App[None]):
         Binding('shift+tab', 'cycle_pane(-1)', 'previous pane', priority=True, show=False),
         Binding('ctrl+s', 'send_draft', 'send'),
         Binding('ctrl+g', 'discard_draft', 'discard'),
+        Binding('e', 'focus_editor', 'editor'),
         Binding('enter', 'open_reader', 'read'),
         Binding('escape', 'back', 'back'),
         Binding('left_square_bracket', 'next_post(-1)', 'prev', key_display='['),
@@ -350,13 +368,17 @@ class MaintainerApp(App[None]):
         thread_loader: Callable[[Series], SeriesThread] = load_thread,
         actions: Optional[SourceActions] = None,
         drafts: Optional[DraftStore] = None,
+        editor: Optional[ExternalEditor] = None,
     ) -> None:
         super().__init__()
         self._loader = loader
         self._actions = actions
         # Without a store, drafts live only while the reader is open.
         self._drafts = drafts
+        # Drafts go to the maintainer's editor when there is one and a store for its file.
+        self._editor = editor if drafts is not None else None
         self._save_timer: Any = None
+        self._editor_timer: Any = None
         self._drafts_changed = False
         self._notice = ''
         self._query = compile_query('')
@@ -558,6 +580,8 @@ class MaintainerApp(App[None]):
             return not narrow or (reading and self._draft is not None)
         if action in ('send_draft', 'discard_draft'):
             return self._draft is not None
+        if action == 'focus_editor':
+            return self._draft is not None and bool(self._draft.pane)
         if action == 'open_reader':
             return not reading and self._item is not None
         if action == 'back':
@@ -696,6 +720,9 @@ class MaintainerApp(App[None]):
             )
             if in_pane:
                 self._set_reader_pane('tree')
+            elif self._draft is not None and self._draft.pane:
+                self._close_reader()
+                self._set_notice('Draft still open in your editor')
             elif self._draft is not None and self._drafts is not None:
                 subject = self._reading.series.subject
                 self._close_draft(keep=True)
@@ -786,6 +813,16 @@ class MaintainerApp(App[None]):
         self._thread, self._shown = thread, None
         self._expanded = initially_expanded(thread, self._unread())
         keys = post_keys(thread)
+        draft = self._draft
+        if draft is not None and draft.pane and draft.item.identity == item.identity:
+            # Its draft is still in the editor: back to the message, and to the editor.
+            found = _drafted_in(thread, {draft.msgid})
+            key, node = found[:2] if found else ((keys[0], 0) if keys else ('', 0))
+            if node:
+                self._expanded.add(key)
+            self._render_tree((key, node))
+            self.action_focus_editor()
+            return
         if restore is not None and self._actions is not None and self._draft is None:
             # A saved draft: back to the message it answers, with the draft open.
             key, node, msgid = restore
@@ -865,6 +902,8 @@ class MaintainerApp(App[None]):
         if actions is None:
             return
 
+        editor = self._editor
+
         def work() -> None:
             try:
                 target = actions.prepare_reply(item, msgid)
@@ -872,9 +911,108 @@ class MaintainerApp(App[None]):
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot reply: {exc}')
                 return
+            if editor is not None and drafts is not None:
+                try:
+                    pane, start = self._open_editor(editor, drafts, msgid, target, quote, saved)
+                except Exception as exc:  # tmux trouble: the in-app pane still works
+                    note = f'Editor unavailable ({exc}); drafting in the app'
+                    self.call_from_thread(self._set_notice, note)
+                    saved = drafts.get(msgid)
+                else:
+                    self.call_from_thread(self._editor_opened, item, msgid, target, start, pane)
+                    return
             self.call_from_thread(self._compose_reply, item, msgid, target, quote, saved)
 
         self.run_worker(work, thread=True, group='action', exclusive=True)
+
+    @staticmethod
+    def _open_editor(
+        editor: ExternalEditor,
+        drafts: DraftStore,
+        msgid: str,
+        target: Any,
+        quote: Optional[str],
+        saved: Optional[SavedDraft],
+    ) -> tuple[str, str]:
+        """(pane, starting quote): focus a live pane on the draft file, else open one."""
+        start = saved.quote if saved else (quote or reply_quote(target.lmsg))
+        if saved is None:
+            drafts.save(msgid, start, start)
+        path = drafts.text_path(msgid)
+        if saved is not None and saved.pane and editor.runs(saved.pane, path):
+            editor.focus(saved.pane)  # Still editing, perhaps from a crashed session.
+            return saved.pane, start
+        pane = editor.open(path, pathlib.Path(target.checkout))
+        drafts.set_pane(msgid, pane)
+        return pane, start
+
+    def _editor_opened(
+        self, item: WorkItem, msgid: str, target: Any, quote: str, pane: str
+    ) -> None:
+        if self._draft is not None:
+            return
+        draft = Draft(item, msgid, target, quote, pane)
+        self._draft = draft
+        self._set_notice(
+            'Drafting in your editor (tmux pane) · e editor · ctrl+s send · ctrl+g discard'
+        )
+        self.refresh_bindings()
+        # Poll the pane about once a second; each check is a short worker.
+        if self._editor_timer is not None:
+            self._editor_timer.stop()
+        self._editor_timer = self.set_interval(1.0, lambda: self._check_editor(draft))
+
+    def _check_editor(self, draft: Draft) -> None:
+        editor = self._editor
+        if self._draft is not draft or editor is None:
+            if self._editor_timer is not None:
+                self._editor_timer.stop()
+                self._editor_timer = None
+            return
+
+        def check() -> None:
+            if not editor.alive(draft.pane):
+                self.call_from_thread(self._editor_exited, draft)
+
+        self.run_worker(check, thread=True, group='editor-watch', exclusive=True)
+
+    def _editor_exited(self, draft: Draft) -> None:
+        """The editor closed (:wq, :q, or a killed pane): preview what it wrote."""
+        if self._draft is not draft or self._drafts is None:
+            return
+        self._draft = None
+        self.refresh_bindings()
+        saved = self._drafts.get(draft.msgid)
+        self._drafts.set_pane(draft.msgid, '')
+        self._drafts_changed = True
+        if saved is None or saved.text == draft.quote:
+            self._drafts.delete(draft.msgid)
+            self._set_notice('Draft dropped: nothing written')
+            return
+        self._set_notice('Draft kept; r reopens it')
+        preview_and_send(
+            self,
+            draft.target.lmsg,
+            saved.text,
+            email_dryrun=draft.target.email_dryrun,
+            patatt_sign=draft.target.patatt_sign,
+            on_sent=lambda _msg: self._draft_sent(draft),
+            on_edit=lambda _text: self._begin_reply(draft.item, draft.msgid, None),
+        )
+
+    def action_focus_editor(self) -> None:
+        draft, editor = self._draft, self._editor
+        if draft is None or not draft.pane or editor is None:
+            return
+        pane = draft.pane
+
+        def work() -> None:
+            try:
+                editor.focus(pane)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot focus the editor: {exc}')
+
+        self.run_worker(work, thread=True, group='editor')
 
     def _compose_reply(
         self,
@@ -904,9 +1042,15 @@ class MaintainerApp(App[None]):
         draft = self._draft
         if draft is None:
             return
-        text = self._draft_area.text
+        if draft.pane and self._drafts is not None:
+            saved = self._drafts.get(draft.msgid)  # As the editor last wrote it.
+            text = saved.text if saved else draft.quote
+        else:
+            text = self._draft_area.text
         if text == draft.quote:
-            self._set_notice('No changes to send')
+            self._set_notice(
+                'No changes to send' + (' (write the file first)' if draft.pane else '')
+            )
             return
         preview_and_send(
             self,
@@ -915,12 +1059,18 @@ class MaintainerApp(App[None]):
             email_dryrun=draft.target.email_dryrun,
             patatt_sign=draft.target.patatt_sign,
             on_sent=lambda _msg: self._draft_sent(draft),
-            on_edit=lambda _text: self._set_reader_pane('draft'),
+            on_edit=lambda _text: (
+                self.action_focus_editor() if draft.pane else self._set_reader_pane('draft')
+            ),
         )
 
     def _draft_sent(self, draft: Draft) -> None:
         actions = self._actions
-        self._close_draft(keep=False)
+        if self._draft is draft:
+            self._close_draft(keep=False)
+        elif self._drafts is not None:
+            self._drafts.delete(draft.msgid)  # Sent after its editor closed.
+            self._drafts_changed = True
         if actions is None:
             return
 
@@ -947,7 +1097,8 @@ class MaintainerApp(App[None]):
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Save the draft shortly after typing pauses."""
-        if event.text_area is self._draft_area and self._draft and self._drafts is not None:
+        draft = self._draft
+        if event.text_area is self._draft_area and draft and not draft.pane and self._drafts:
             if self._save_timer is not None:
                 self._save_timer.stop()
             self._save_timer = self.set_timer(0.5, self._save_draft)
@@ -958,8 +1109,8 @@ class MaintainerApp(App[None]):
             self._save_timer.stop()
             self._save_timer = None
         draft, drafts = self._draft, self._drafts
-        if draft is None or drafts is None:
-            return
+        if draft is None or drafts is None or draft.pane:
+            return  # An editor's draft is the file it writes.
         text = self._draft_area.text
         if text == draft.quote:
             drafts.delete(draft.msgid)
@@ -969,6 +1120,11 @@ class MaintainerApp(App[None]):
 
     def _close_draft(self, keep: bool) -> None:
         """Close the draft pane, keeping the saved draft or deleting it."""
+        draft = self._draft
+        if draft is not None and draft.pane and not keep:
+            editor, pane = self._editor, draft.pane
+            if editor is not None:
+                self.run_worker(lambda: editor.close(pane), thread=True, group='editor')
         if self._draft is not None and self._drafts is not None:
             if keep:
                 self._save_draft()
@@ -988,7 +1144,8 @@ class MaintainerApp(App[None]):
     def action_cycle_pane(self, delta: int) -> None:
         """Tab/Shift-Tab: next pane; one pane at a time on narrow terminals."""
         if self._mode == 'narrow' and self._reading is not None:
-            panes = ['tree', 'content'] + (['draft'] if self._draft is not None else [])
+            in_app = self._draft is not None and not self._draft.pane
+            panes = ['tree', 'content'] + (['draft'] if in_app else [])
             here = panes.index(self._reader_pane) if self._reader_pane in panes else 0
             self._set_reader_pane(panes[(here + delta) % len(panes)])
         elif delta > 0:
@@ -1130,15 +1287,33 @@ class MaintainerApp(App[None]):
     async def action_quit(self) -> None:
         """Q and Textual's ctrl+q both ask before exiting."""
         if not isinstance(self.screen, ConfirmQuit):
-            self.push_screen(ConfirmQuit(), self._quit_confirmed)
+            prompt = ConfirmQuit.PROMPT
+            if self._draft is not None and self._draft.pane:
+                prompt = 'Quit? Your editor pane closes; what it wrote is kept. [y|N]'
+            self.push_screen(ConfirmQuit(prompt), self._quit_confirmed)
 
     def _quit_confirmed(self, confirmed: Optional[bool]) -> None:
         if confirmed:
             self._save_draft()
+            self._close_editor()
             self.exit()
 
     def on_unmount(self) -> None:
-        self._save_draft()  # However the app ends, an open draft is kept.
+        # However the app ends, an open draft is kept and its editor pane closed.
+        self._save_draft()
+        self._close_editor()
+
+    def _close_editor(self) -> None:
+        """Close an open editor pane, keeping what it wrote (an untouched quote is no draft)."""
+        draft, editor, drafts = self._draft, self._editor, self._drafts
+        if draft is None or not draft.pane or editor is None or drafts is None:
+            return
+        self._draft = None
+        editor.close(draft.pane)
+        drafts.set_pane(draft.msgid, '')
+        saved = drafts.get(draft.msgid)
+        if saved is not None and saved.text == draft.quote:
+            drafts.delete(draft.msgid)
 
     def quit_prompt(self) -> Optional[str]:
         return self.screen.prompt if isinstance(self.screen, Confirm) else None

@@ -2,12 +2,14 @@
 """b4-maintainer entry point: the fixture prototype and project setup."""
 
 import argparse
+import os
 import pathlib
 import sys
 from typing import Optional, Sequence
 
 from .adapters.fixture import FixtureSource
 from .adapters.live import LiveSource
+from .adapters.tmux import TmuxEditor
 from .app import MaintainerApp
 from .fixtures import build_demo_workspace
 from .model import Authority
@@ -66,7 +68,20 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
 def _live_app(source: LiveSource, args: argparse.Namespace) -> MaintainerApp:
     source.email_dryrun = args.email_dry_run
     source.no_sign = args.no_sign
-    return MaintainerApp(source.load, actions=source, drafts=source.drafts)
+    return MaintainerApp(
+        source.load, actions=source, drafts=source.drafts, editor=_draft_editor(source)
+    )
+
+
+def _draft_editor(source: LiveSource) -> Optional[TmuxEditor]:
+    """The tmux editor when configured (or auto) and running inside tmux; else in-app drafts."""
+    try:
+        ws = source.workspace()
+    except (OSError, ValueError):
+        return None
+    if ws.drafts_editor not in ('auto', 'tmux') or not os.environ.get('TMUX'):
+        return None
+    return TmuxEditor(width=ws.tmux_width)
 
 
 def parse_ref(value: str) -> Ref:
