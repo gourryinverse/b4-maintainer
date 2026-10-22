@@ -45,8 +45,11 @@ Mail configuration and delivery use b4's existing integrations.
 
 ## Development
 
+Python 3.11 or newer. Commands install into `.venv/`; run them as `.venv/bin/...` (or
+`source .venv/bin/activate` first): `b4-maintainer` is not on `PATH`.
+
     git submodule update --init --recursive
-    /usr/bin/python3 -m venv .venv  # a real interpreter, not a managed python3 symlink
+    /usr/bin/python3 -m venv .venv  # a real 3.11+ interpreter, not a managed python3 symlink
     .venv/bin/pip install -e deps/liblore -e 'deps/b4[tui]' -e . pytest pytest-asyncio ruff
     .venv/bin/python -m pytest
     .venv/bin/b4-maintainer --demo .local/demo
@@ -57,18 +60,31 @@ Mail configuration and delivery use b4's existing integrations.
   reader drafts a reply beside the thread and `ctrl+s` sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
 - Workspace state syncs through a private state repository cloned as `state/` (see
-  [sync](docs/design/projects.md#multi-machine-sync)); `state/workspace.toml` is the
-  synced configuration. On another machine, after the steps above:
-
-      git clone <private state repository> state
-      .venv/bin/b4-maintainer setup   # clones checkouts as recorded; imports b4 state
-      .venv/bin/b4-maintainer         # r fetches mail
-
-  Git identity and b4's `sendemail.*` settings stay per machine. `b4-maintainer sync` syncs
-  once by hand; the app syncs at startup, around `r`, and on quit.
+  [sync](docs/design/projects.md#multi-machine-sync) and [another machine](#another-machine));
+  `state/workspace.toml` is the synced configuration. `b4-maintainer sync` syncs once by
+  hand; the app syncs at startup, around `r`, and on quit.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.
+
+## Another machine
+
+Recreate a workspace from its private state repository:
+
+    git clone --recurse-submodules <b4-maintainer repository> b4-maintainer
+    cd b4-maintainer
+    /usr/bin/python3 -m venv .venv  # 3.11+; e.g. python3.12 -m venv .venv if older
+    .venv/bin/pip install -e deps/liblore -e 'deps/b4[tui]' -e .
+    git clone <private state repository> state
+    .venv/bin/b4-maintainer setup   # clones checkouts as recorded; imports b4 state
+    .venv/bin/b4-maintainer         # r fetches mail
+
+- Already cloned without submodules: `git submodule update --init --recursive`.
+- `setup` clones missing checkouts blobless from their recorded remotes (a Linux checkout
+  takes a while; Git's progress is shown), enrolls them with workspace b4 state, and
+  imports tracked series and message flags. Existing checkouts are left as they are.
+- Per machine, not synced: Git identity and b4's `sendemail.*` settings (SMTP
+  credentials), drafts, caches, and review branches.
