@@ -18,6 +18,7 @@ from .model import (
     Coverage,
     Patch,
     Progress,
+    SashikoReview,
     Series,
     SeriesState,
     Tag,
@@ -172,6 +173,7 @@ def make_item(
     author_name: str = 'Synthetic Author',
     author_email: str = CONTRIBUTOR[1],
     author_role: str = '',
+    sashiko: Optional[SashikoReview] = None,
 ) -> WorkItem:
     series = make_series(
         subject,
@@ -185,7 +187,14 @@ def make_item(
     )
     state = SeriesState(unread, fixes_pending, progress, draft, to_review, tuple(tree))
     return WorkItem(
-        series, state, project, short, candidates, versions=(revision,), author_role=author_role
+        series,
+        state,
+        project,
+        short,
+        candidates,
+        versions=(revision,),
+        author_role=author_role,
+        sashiko=sashiko,
     )
 
 

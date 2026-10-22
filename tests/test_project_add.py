@@ -143,3 +143,14 @@ def test_project_toml_round_trips_views_and_review_ends():
     )
     loaded = Workspace.from_config(tomllib.loads(project_toml(project))).project('demo')
     assert loaded == project
+
+
+def test_add_sets_b4_sashiko_url(ws):
+    assert add(ws, 'demo', '--sashiko-url', 'https://sashiko.example.org') == 0
+    checkout = ws / 'projects' / 'demo'
+    assert git_config(checkout, 'b4.sashiko-url') == 'https://sashiko.example.org'
+
+
+def test_add_without_sashiko_url_leaves_it_unset(ws):
+    assert add(ws, 'demo') == 0
+    assert git_config(ws / 'projects' / 'demo', 'b4.sashiko-url') is None

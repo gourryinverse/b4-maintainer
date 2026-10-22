@@ -119,6 +119,13 @@ def user_email(checkout: pathlib.Path) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
+def sashiko_url(checkout: pathlib.Path) -> Optional[str]:
+    """The Sashiko instance b4 uses for this checkout (b4.sashiko-url), if any."""
+    with b4_repo(checkout):
+        value = b4.get_main_config().get('sashiko-url')
+    return value if isinstance(value, str) and value else None
+
+
 def seen(checkout: pathlib.Path, msgids: Sequence[str]) -> set[str]:
     """Which of these messages carry b4's Seen flag."""
     with b4_repo(checkout):

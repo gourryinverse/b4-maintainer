@@ -156,6 +156,54 @@ class SeriesThread:
     unattached: tuple[Reply, ...] = ()
 
 
+SEVERITIES = ('critical', 'high', 'medium', 'low')
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One Sashiko finding; severity is lower-case, one of SEVERITIES."""
+
+    severity: str
+    problem: str
+    explanation: str = ''
+    preexisting: bool = False
+    # (file, line) pairs the finding points at.
+    locations: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class SashikoPatch:
+    msgid: str
+    part: int
+    status: str
+    findings: tuple[Finding, ...] = ()
+    inline_review: str = ''
+
+
+@dataclass(frozen=True)
+class SashikoReview:
+    """Sashiko's review of one posting: list status, plus details when fetched."""
+
+    status: str
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    url: str = ''
+    baseline: str = ''
+    model: str = ''
+    patches: tuple[SashikoPatch, ...] = ()
+
+    @property
+    def findings(self) -> int:
+        """New findings; Sashiko's counts exclude pre-existing ones."""
+        return self.critical + self.high + self.medium + self.low
+
+    @property
+    def worst(self) -> str:
+        return next((s for s in SEVERITIES if getattr(self, s)), '')
+
+
 @dataclass(frozen=True)
 class SeriesState:
     """Per-series state owned by native stores or client state, read via adapters."""
@@ -197,6 +245,8 @@ class WorkItem:
     stage: str = ''
     # Fully in a ref that ends review (mainline, linux-next): out of every queue.
     landed: bool = False
+    # Sashiko's review of this posting, from the last refresh; None if unknown.
+    sashiko: Optional[SashikoReview] = None
 
     @property
     def identity(self) -> str:

@@ -94,7 +94,10 @@ def default_b4_command() -> list[str]:
 
 
 def add_project(
-    root: pathlib.Path, project: Project, b4_command: Optional[Sequence[str]] = None
+    root: pathlib.Path,
+    project: Project,
+    b4_command: Optional[Sequence[str]] = None,
+    sashiko_url: Optional[str] = None,
 ) -> None:
     root = root.resolve()
     text, workspace = load_config(root)
@@ -115,6 +118,8 @@ def add_project(
         'b4.data-dir': _dir_setting(root, top, B4_DATA),
         'b4.cache-dir': _dir_setting(root, top, B4_CACHE),
     }
+    if sashiko_url:
+        settings['b4.sashiko-url'] = sashiko_url
     for key, value in settings.items():
         current = _git(top, 'config', '--local', '--get', key).stdout.strip()
         if current and current != value:

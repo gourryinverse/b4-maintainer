@@ -83,6 +83,9 @@ class Session:
     approvals: int = 0
 
 
+SASHIKO_SENDERS = ('sashiko-bot@kernel.org', 'netdev-bot+sashiko@kernel.org')
+
+
 @dataclass(frozen=True)
 class Workspace:
     me: tuple[str, ...] = ()
@@ -91,6 +94,8 @@ class Workspace:
     sessions: tuple[Session, ...] = ()
     breakpoints: Breakpoints = Breakpoints()
     window_days: int = 14
+    # Senders of automated review mail; their replies are findings, not Responses.
+    bots: tuple[str, ...] = SASHIKO_SENDERS
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -138,6 +143,9 @@ class Workspace:
             sessions=sessions,
             breakpoints=Breakpoints.from_config(config.get('layout', {})),
             window_days=int(config.get('browse', {}).get('window_days', 14)),
+            bots=tuple(
+                b.lower() for b in config.get('sashiko', {}).get('senders', SASHIKO_SENDERS)
+            ),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

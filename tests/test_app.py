@@ -290,3 +290,64 @@ async def test_ctrl_q_also_asks_before_quitting(demo_root):
         await pilot.press('N')
         await pilot.pause()
         assert app.quit_prompt() is None and exits == []
+
+
+def sashiko_app():
+    from b4_maintainer.fixtures import make_item, workspace_config
+    from b4_maintainer.model import Finding, SashikoPatch, SashikoReview
+    from b4_maintainer.workspace import Snapshot, Workspace
+
+    review = SashikoReview(
+        'Reviewed',
+        high=1,
+        url='https://sashiko.example.org/#/patchset/7',
+        baseline='mm/mm-new @ 59d7f9ec14ad',
+        model='synthetic-model',
+        patches=(
+            SashikoPatch('p1@example.org', 1, 'Reviewed', (Finding('high', 'mm: leaks foo'),)),
+            SashikoPatch(
+                'p2@example.org', 2, 'Reviewed', (Finding('low', 'mm: old bug', preexisting=True),)
+            ),
+        ),
+    )
+    items = (
+        make_item(subject='mm: reviewed', sashiko=review),
+        make_item(subject='mm: unseen'),
+    )
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), items)
+    return MaintainerApp(lambda: snapshot)
+
+
+def screen_line(widget, y):
+    return ''.join(seg.text for seg in widget.render_line(y))
+
+
+async def test_series_list_has_a_heading_row():
+    app = sashiko_app()
+    async with app.run_test(size=(180, 30)) as pilot:
+        series_list = await loaded(pilot)
+        head = screen_line(series_list, 0)
+        assert 'CART' in head and 'AI' in head and 'Author' in head and 'Subject' in head
+        assert 'mm: reviewed' in screen_line(series_list, 1)
+        await pilot.press('end')
+        await pilot.pause()
+        assert 'Subject' in screen_line(series_list, 0)  # The heading stays put.
+        await pilot.click(SeriesList, offset=(5, 1))
+        assert series_list.highlighted_item.series.subject == 'mm: reviewed'
+        await pilot.click(SeriesList, offset=(5, 0))  # Clicking the heading selects nothing.
+        assert series_list.highlighted_item.series.subject == 'mm: reviewed'
+
+
+async def test_summary_shows_sashiko_review():
+    app = sashiko_app()
+    async with app.run_test(size=(180, 30)) as pilot:
+        await loaded(pilot)
+        text = app.summary_text()
+        assert 'Sashiko:  Reviewed · 1 high' in text
+        assert 'mm/mm-new @ 59d7f9ec14ad' in text and 'synthetic-model' in text
+        assert 'https://sashiko.example.org/#/patchset/7' in text
+        assert '1/2 high: mm: leaks foo' in text
+        assert '2/2 low (pre-existing): mm: old bug' in text
+        await pilot.press('down')
+        await pilot.pause()
+        assert 'Sashiko:  not reviewed' in app.summary_text()

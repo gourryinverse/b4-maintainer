@@ -40,7 +40,7 @@ from .reader import (
     thread_replies,
     tree_rows,
 )
-from .rows import DEFAULT_SYMBOLS, Segments, Symbols, row_segments
+from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
 from .views import ViewIndex
 from .widgets import TextPane, printable
@@ -49,8 +49,16 @@ from .workspace import Snapshot
 FIXES_STYLE = Style(color='dark_orange')
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
-# Author names by MAINTAINERS role.
-ROLE_STYLES = {'maintainer': Style(color='green'), 'reviewer': Style(color='blue')}
+HEADING_STYLE = Style(bold=True)
+# Author names by MAINTAINERS role; Sashiko findings by worst severity.
+ROLE_STYLES = {
+    'maintainer': Style(color='green'),
+    'reviewer': Style(color='blue'),
+    'sev-critical': Style(color='red', bold=True),
+    'sev-high': Style(color='red'),
+    'sev-medium': Style(color='yellow'),
+    'sev-low': Style(dim=True),
+}
 
 
 class AgentLauncher(Protocol):
@@ -76,7 +84,10 @@ class SourceActions(Protocol):
 
 
 class SeriesList(ScrollView, can_focus=True):
-    """Virtual list: renders only visible rows; switching views swaps a tuple."""
+    """Virtual list: renders only visible rows; switching views swaps a tuple.
+
+    Line 0 is a fixed heading naming the fields; item rows scroll beneath it.
+    """
 
     BINDINGS = [
         Binding('down,j', 'move(1)', 'Down', show=False),
@@ -103,6 +114,7 @@ class SeriesList(ScrollView, can_focus=True):
         self.cursor = 0
         self._items: tuple[WorkItem, ...] = ()
         self._rows: dict[int, Segments] = {}
+        self._heading = heading()
 
     @property
     def row_count(self) -> int:
@@ -116,8 +128,9 @@ class SeriesList(ScrollView, can_focus=True):
         self._items = items
         self._rows = {}
         self.project_width = project_width
+        self._heading = heading(project_width)
         self.cursor = 0
-        self.virtual_size = Size(0, len(items))
+        self.virtual_size = Size(0, len(items) + 1)
         self.scroll_to(0, 0, animate=False, immediate=True)
         self.refresh()
         self.post_message(self.Highlighted(self.highlighted_item))
@@ -134,9 +147,15 @@ class SeriesList(ScrollView, can_focus=True):
             self._rows[index] = row
         return row
 
+    @property
+    def _visible_rows(self) -> int:
+        return max(0, self.scrollable_content_region.height - 1)
+
     def render_line(self, y: int) -> Strip:
         width = self.scrollable_content_region.width
-        index = self.scroll_offset.y + y
+        if y == 0:
+            return Strip([Segment(pad_display(self._heading, width), HEADING_STYLE)]).crop(0, width)
+        index = self.scroll_offset.y + y - 1
         if index >= len(self._items):
             return Strip.blank(width)
         item = self._items[index]
@@ -162,7 +181,7 @@ class SeriesList(ScrollView, can_focus=True):
         if index == self.cursor:
             return
         self.cursor = index
-        height = self.scrollable_content_region.height
+        height = self._visible_rows
         top = self.scroll_offset.y
         if index < top:
             self.scroll_to(y=index, animate=False, immediate=True)
@@ -175,13 +194,14 @@ class SeriesList(ScrollView, can_focus=True):
         self._set_cursor(self.cursor + delta)
 
     def action_page(self, direction: int) -> None:
-        self._set_cursor(self.cursor + direction * max(1, self.scrollable_content_region.height))
+        self._set_cursor(self.cursor + direction * max(1, self._visible_rows))
 
     def action_jump(self, index: int) -> None:
         self._set_cursor(len(self._items) - 1 if index < 0 else index)
 
     def on_click(self, event: events.Click) -> None:
-        self._set_cursor(self.scroll_offset.y + event.y)
+        if event.y > 0:
+            self._set_cursor(self.scroll_offset.y + event.y - 1)
 
 
 class StatusLine(Widget):
@@ -1127,9 +1147,9 @@ class MaintainerApp(App[None]):
             f'State:    {" · ".join(flags)}',
             f'Trailers: A:{acked} R:{reviewed} T:{tested}'
             f' (cover A:{s.cover_trailers.acked} R:{s.cover_trailers.reviewed} T:{s.cover_trailers.tested})',
-            '',
-            'Tree evidence:',
         ]
+        lines += self._sashiko_lines(item)
+        lines += ['', 'Tree evidence:']
         if not st.tree:
             lines.append('  unchecked')
         refs = {r.label: r for p in (ws.projects if ws else ()) for r in p.refs}
@@ -1149,6 +1169,29 @@ class MaintainerApp(App[None]):
         elif s.preview:
             lines += ['', f'[p] preview {s.preview_label.lower()}']
         return printable('\n'.join(lines))
+
+    @staticmethod
+    def _sashiko_lines(item: WorkItem) -> list[str]:
+        review = item.sashiko
+        if review is None:
+            return ['Sashiko:  not reviewed']
+        counts = ', '.join(
+            f'{n} {sev}'
+            for sev in ('critical', 'high', 'medium', 'low')
+            if (n := getattr(review, sev))
+        )
+        lines = [f'Sashiko:  {review.status}' + (f' · {counts}' if counts else '')]
+        about = ' · '.join(part for part in (review.baseline, review.model) if part)
+        if about:
+            lines.append(f'  {about}')
+        if review.url:
+            lines.append(f'  {review.url}')
+        total = len(review.patches)
+        for patch in review.patches:
+            for f in patch.findings:
+                old = ' (pre-existing)' if f.preexisting else ''
+                lines.append(f'  {patch.part}/{total} {f.severity}{old}: {f.problem}')
+        return lines
 
     def _drawer_line(self) -> str:
         assert self.snapshot is not None

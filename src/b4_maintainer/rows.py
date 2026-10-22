@@ -7,7 +7,7 @@ from typing import Optional
 # Reuse b4's terminal column arithmetic rather than duplicating it.
 from b4._textwidth import display_width, pad_display
 
-from .model import Coverage, Progress, RefEvidence, WorkItem
+from .model import Coverage, Progress, RefEvidence, SashikoReview, WorkItem
 
 
 @dataclass(frozen=True)
@@ -29,11 +29,23 @@ class Symbols:
     tree_unchecked: str = '?'
     tree_stale: str = '~'
     unassigned: str = '?'
+    sashiko_none: str = '·'
+    sashiko_pending: str = '…'
+    sashiko_clean: str = '✓'
+    sashiko_findings: str = '!'
+    sashiko_embargoed: str = '⊘'
+    sashiko_failed: str = '✗'
 
 
 DEFAULT_SYMBOLS = Symbols()
 VERSION_WIDTH = 3
 AUTHOR_WIDTH = 16
+SASHIKO_WIDTH = 3
+FLAGS_WIDTH = 3
+CART_WIDTH = 4
+TREE_WIDTH = 2
+SASHIKO_PENDING = frozenset({'Pending', 'Fetching', 'Applying', 'In Review', 'Incomplete'})
+SASHIKO_FAILED = frozenset({'Failed', 'Failed To Apply'})
 
 
 def tree_field(evidence: tuple[RefEvidence, ...], sym: Symbols) -> str:
@@ -50,6 +62,27 @@ def tree_field(evidence: tuple[RefEvidence, ...], sym: Symbols) -> str:
     if Coverage.STALE in coverages:
         return ' ' + sym.tree_stale
     return ' ' + sym.tree_none
+
+
+def sashiko_field(review: Optional[SashikoReview], sym: Symbols) -> tuple[str, Optional[str]]:
+    """Three columns and a role: findings are coloured by their worst severity."""
+    role = None
+    if review is None:
+        mark = sym.sashiko_none
+    elif review.status == 'Reviewed' and review.findings:
+        count = str(review.findings) if review.findings < 10 else '9+'
+        mark, role = count + sym.sashiko_findings, f'sev-{review.worst}'
+    elif review.status == 'Reviewed':
+        mark = sym.sashiko_clean
+    elif review.status == 'Embargoed':
+        mark = sym.sashiko_embargoed
+    elif review.status in SASHIKO_FAILED:
+        mark = sym.sashiko_failed
+    elif review.status in SASHIKO_PENDING:
+        mark = sym.sashiko_pending
+    else:  # Cancelled, Skipped, or a status this client does not know
+        mark = sym.sashiko_none
+    return pad_display(mark, SASHIKO_WIDTH), role
 
 
 def _progress(item: WorkItem, sym: Symbols) -> str:
@@ -92,8 +125,27 @@ def author_label(item: WorkItem) -> str:
     return series.author_name or series.author_email.split('@', 1)[0]
 
 
-# (text, role): role is None for plain text, else the author's MAINTAINERS role.
+# (text, role): role is None for plain text, else the author's MAINTAINERS role
+# or a Sashiko severity (sev-critical, sev-high, ...).
 Segments = list[tuple[str, Optional[str]]]
+
+
+def heading(project_width: int = 0) -> str:
+    """Field names over the columns row_segments() lays out."""
+    head = ' '.join(
+        (
+            ' ' * FLAGS_WIDTH,
+            pad_display('CART', CART_WIDTH),
+            pad_display('Tr', TREE_WIDTH),
+            pad_display('AI', SASHIKO_WIDTH),
+            fit('Author', AUTHOR_WIDTH),
+        )
+    )
+    tail = [pad_display('Ver', VERSION_WIDTH)]
+    if project_width:
+        tail.append(fit('Project', project_width))
+    tail.append('Subject')
+    return head + ' ' + ' '.join(tail)
 
 
 def row_segments(
@@ -108,6 +160,7 @@ def row_segments(
         )
     )
     head = ' '.join((flags, cart_field(item, sym), tree_field(state.tree, sym))) + ' '
+    mark, severity = sashiko_field(item.sashiko, sym)
     tail = [pad_display(f'v{item.series.revision}', VERSION_WIDTH)]
     if project_width:
         label = item.project_short or (sym.unassigned if item.candidates else '')
@@ -115,6 +168,8 @@ def row_segments(
     tail.append(item.series.subject)
     return [
         (head, None),
+        (mark, severity),
+        (' ', None),
         (fit(author_label(item), AUTHOR_WIDTH), item.author_role),
         (' ' + ' '.join(tail), None),
     ]

@@ -1,13 +1,15 @@
 from b4._textwidth import display_width
 
 from b4_maintainer.fixtures import make_item
-from b4_maintainer.model import Authority, Coverage, Progress
+from b4_maintainer.model import Authority, Coverage, Progress, SashikoReview
 from b4_maintainer.rows import (
     AUTHOR_WIDTH,
     DEFAULT_SYMBOLS,
     Symbols,
+    heading,
     render_row,
     row_segments,
+    sashiko_field,
     tree_field,
 )
 
@@ -27,12 +29,12 @@ def test_row_matches_documented_example():
         draft=True,
         tree=[('n', ACC, Coverage.PARTIAL)],
     )
-    assert render_row(item) == '●⚠✎ CAR· n≈ Synthetic Author v3  mm: fix foo leak'
+    assert render_row(item) == '●⚠✎ CAR· n≈ ·   Synthetic Author v3  mm: fix foo leak'
 
 
 def test_quiet_incomplete_unchecked_row():
     item = make_item(subject='ndctl: baz cleanup', complete=False)
-    assert render_row(item) == '    I···  ? Synthetic Author v1  ndctl: baz cleanup'
+    assert render_row(item) == '    I···  ? ·   Synthetic Author v1  ndctl: baz cleanup'
 
 
 def test_progress_symbols():
@@ -109,3 +111,39 @@ def test_author_segment_carries_maintainers_role():
     assert roles == {'maintainer', 'reviewer', ''}
     text = ''.join(t for t, _ in row_segments(make_item(author_role='maintainer')))
     assert text == render_row(make_item(author_role='maintainer'))
+
+
+def test_sashiko_field_marks():
+    def field(review):
+        return sashiko_field(review, DEFAULT_SYMBOLS)
+
+    assert field(None) == ('·  ', None)
+    assert field(SashikoReview('In Review')) == ('…  ', None)
+    assert field(SashikoReview('Reviewed')) == ('✓  ', None)
+    assert field(SashikoReview('Reviewed', medium=2)) == ('2! ', 'sev-medium')
+    assert field(SashikoReview('Reviewed', high=1, low=11)) == ('9+!', 'sev-high')
+    assert field(SashikoReview('Embargoed')) == ('⊘  ', None)
+    assert field(SashikoReview('Failed To Apply')) == ('✗  ', None)
+    assert field(SashikoReview('Cancelled')) == ('·  ', None)
+
+
+def test_sashiko_findings_colour_only_their_field():
+    item = make_item(sashiko=SashikoReview('Reviewed', critical=1))
+    assert ('1! ', 'sev-critical') in row_segments(item)
+
+
+def test_heading_names_fields_over_their_columns():
+    item = make_item(
+        subject='mm: x', author_name='Synthetic Author', sashiko=SashikoReview('Reviewed', low=1)
+    )
+
+    def column(text, needle):
+        return display_width(text.split(needle, 1)[0])
+
+    for width in (0, 5):
+        row = render_row(item, project_width=width)
+        head = heading(project_width=width)
+        assert column(head, 'Author') == column(row, 'Synthetic')
+        assert column(head, 'Subject') == column(row, 'mm: x')
+        assert column(head, 'AI') == column(row, '1!')
+        assert column(head, 'CART') == column(row, 'C···')

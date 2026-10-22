@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The live workspace: workspace.toml, cached list mail, and each project's b4 state.
 
-load() reads only local data. refresh() fetches list mail and track() asks b4
-to track a series; both are explicit maintainer actions run off the UI thread.
+load() reads only local data. refresh() fetches list mail and Sashiko status, and
+track() asks b4 to track a series; both are explicit maintainer actions run off
+the UI thread.
 """
 
 import dataclasses
@@ -15,11 +16,12 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from ..model import Coverage, Series, SeriesState, WorkItem
 from ..projectsetup import CONFIG_NAME, default_b4_command
 from ..workspace import Project, Snapshot, Workspace, build_items
-from . import b4state
+from . import b4state, sashiko
 from .b4mbox import parse_mbox
 from .clientstate import HiddenStore
 from .lorelist import MailCache, Search
 from .maintainers import OwnerCache, author_roles
+from .sashiko import SashikoCache
 from .treematch import RefCache
 
 
@@ -51,10 +53,14 @@ class LiveSource:
         mark_seen: Callable[[pathlib.Path, Mapping[str, Optional[str]]], None] = (
             b4state.mark_seen
         ),
+        sashiko_url: Callable[[pathlib.Path], Optional[str]] = b4state.sashiko_url,
+        sashiko_get: sashiko.Get = sashiko.http_get,
+        sashiko_patchset: sashiko.GetPatchset = sashiko.b4_patchset,
     ) -> None:
         self.root = pathlib.Path(root).resolve()
         self.cache = MailCache(self.root / 'var' / 'mail')
         self.hidden = HiddenStore(self.root / 'state' / 'client' / 'hidden.json')
+        self.sashiko = SashikoCache(self.root / 'var' / 'sashiko')
         self._tracked_series = tracked_series
         self._search_for = search_for
         self._track = track
@@ -63,6 +69,9 @@ class LiveSource:
         self._identity = identity
         self._seen = seen
         self._mark_seen = mark_seen
+        self._sashiko_url = sashiko_url
+        self._sashiko_get = sashiko_get
+        self._sashiko_patchset = sashiko_patchset
 
     def workspace(self) -> Workspace:
         return Workspace.from_config(tomllib.loads((self.root / CONFIG_NAME).read_text()))
@@ -108,6 +117,7 @@ class LiveSource:
         items = self._ownership(ws, build_items(series + extra, states, ws, assigned))
         items = self._responses(ws, items)
         items = self._tree_evidence(ws, items)
+        items = self._sashiko_reviews(items)
         hidden = self.hidden.load()
         items = tuple(
             dataclasses.replace(i, hidden=True) if hidden.matches(i) else i for i in items
@@ -136,6 +146,54 @@ class LiveSource:
                 item = dataclasses.replace(item, responsible=responsible, author_role=role)
             result.append(item)
         return tuple(result)
+
+    def _sashiko_reviews(self, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
+        """Attach the cached Sashiko review of each item's posting (its newest version)."""
+        reviews = self.sashiko.reviews()
+        if not reviews:
+            return items
+        result = []
+        for item in items:
+            review = next((reviews[m] for m in item.series.msgids if m in reviews), None)
+            result.append(dataclasses.replace(item, sashiko=review) if review else item)
+        return tuple(result)
+
+    def _fetch_sashiko(self, ws: Workspace, progress: Callable[[str], None]) -> str:
+        """Status for each profile list whose project sets b4.sashiko-url, then details."""
+        notes, listed = [], 0
+        cached = self.load().items
+        for lst, project in self.browse_lists(ws):
+            url = self._sashiko_url(self.checkout(project)) if self._enrolled(project) else None
+            if not url:
+                continue
+            # Threads still active can be older than the window: reach back to their postings.
+            posted = [
+                i.series.sent for i in cached if i.series.sent and lst in i.series.list_candidates()
+            ]
+            progress(f'Fetching Sashiko status for {lst}…')
+            try:
+                listed += self.sashiko.update_list(
+                    lst,
+                    url,
+                    ws.window_days,
+                    self._sashiko_get,
+                    now=self._now(),
+                    since=min(posted, default=None),
+                )
+            except Exception as ex:  # network, HTTP, or JSON: keep the last good rows
+                notes.append(f'Sashiko failed for {lst}: {ex}')
+        if not listed and not notes:
+            return ''
+        items = self.load().items
+        wanted = {m for i in items if i.state.to_review or i.responsible for m in i.series.msgids}
+        progress('Fetching Sashiko reviews…')
+        sashiko.clear_b4_cache()
+        fetched, failed = self.sashiko.update_details(wanted, self._sashiko_patchset)
+        reviewed = sum(1 for i in items if i.sashiko is not None)
+        notes.insert(0, f'Sashiko: {reviewed} series, {fetched} review(s) fetched')
+        if failed:
+            notes.append(f'{failed} Sashiko review fetch failure(s)')
+        return ''.join(f'; {n}' for n in notes)
 
     def refs(self, project: Project) -> RefCache:
         return RefCache(self.root / 'var' / 'refs' / f'{project.id}.json', self.checkout(project))
@@ -185,7 +243,8 @@ class LiveSource:
             return items
         info = self.cache.messages()
         mine = {m for m, e in info.items() if e.sender in me}
-        replies = {m: e for m, e in info.items() if e.parent in mine and e.sender not in me}
+        others = me | set(ws.bots)
+        replies = {m: e for m, e in info.items() if e.parent in mine and e.sender not in others}
         if not replies:
             return items
         unread = set(replies) - self._seen(checkout, list(replies))
@@ -266,7 +325,8 @@ class LiveSource:
         self.cache.series(parse_mbox)  # So the reload that follows reads summaries only.
         checked = self._check_owners(ws, progress)
         scanned = self._scan_refs(ws, progress)
-        return f'Refreshed {len(lists)} list(s): {added} new message(s){checked}{scanned}'
+        reviews = self._fetch_sashiko(ws, progress)
+        return f'Refreshed {len(lists)} list(s): {added} new message(s){checked}{scanned}{reviews}'
 
     def _fetch_my_mail(self, ws: Workspace, progress: Callable[[str], None]) -> int:
         """The maintainer's own mail on any list, whole threads, for Responses."""

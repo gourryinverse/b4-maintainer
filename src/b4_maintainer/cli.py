@@ -121,6 +121,11 @@ def project_main(argv: Sequence[str]) -> int:
         metavar='LABEL:REF:AUTHORITY',
         help='tree-evidence ref, e.g. m:mainline/master:mainline; repeatable',
     )
+    add.add_argument(
+        '--sashiko-url',
+        metavar='URL',
+        help='Sashiko instance for AI review status, e.g. https://sashiko.dev (b4.sashiko-url)',
+    )
     args = parser.parse_args(argv)
     project = Project(
         id=args.id,
@@ -131,7 +136,7 @@ def project_main(argv: Sequence[str]) -> int:
         path=args.path or f'projects/{args.id}',
     )
     try:
-        add_project(args.root, project)
+        add_project(args.root, project, sashiko_url=args.sashiko_url)
     except SetupError as e:
         print(f'b4-maintainer: {e}', file=sys.stderr)
         return 1
