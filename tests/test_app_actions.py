@@ -17,6 +17,7 @@ class FakeLive:
         self.loads = 0
         self.refreshes = 0
         self.track_calls = []
+        self.untrack_calls = []
         self.threads = set()
         self.fail = None
 
@@ -61,6 +62,12 @@ class FakeLive:
         self.tracked.add(item.identity)
         return f'Tracking: {item.series.subject}'
 
+    def untrack(self, item):
+        self.threads.add(threading.get_ident())
+        self.untrack_calls.append(item.identity)
+        self.tracked.discard(item.identity)
+        return f'Archived: {item.series.subject}'
+
 
 def footer_keys(app):
     return {key for key, active in app.screen.active_bindings.items() if active.binding.show}
@@ -83,7 +90,7 @@ async def test_fixture_workspace_has_no_refresh_or_track(demo_root):
     app = MaintainerApp(FixtureSource(demo_root).load)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        assert not {'r', 't'} & footer_keys(app)
+        assert not {'r', 't', 'dollar_sign'} & footer_keys(app)
 
 
 async def test_track_marks_selection_and_keeps_place(demo_root):
@@ -95,7 +102,8 @@ async def test_track_marks_selection_and_keeps_place(demo_root):
         series_list.select_identity(target.identity)
         await pilot.pause()
         assert not target.state.to_review
-        assert 't' in footer_keys(app)
+        assert 'dollar_sign' in footer_keys(app)
+        assert 't' not in footer_keys(app)  # t still tracks; $ is the shown key.
 
         await pilot.press('t')
         series_list = await settle(pilot)
@@ -105,7 +113,6 @@ async def test_track_marks_selection_and_keeps_place(demo_root):
         assert app.current_view == 'profile:mm'
         assert series_list.highlighted_item.identity == target.identity
         assert series_list.highlighted_item.state.to_review
-        assert 't' not in footer_keys(app)
         assert target.identity in {i.identity for i in app.index.items('review')}
 
 
@@ -187,3 +194,35 @@ async def test_shift_r_marks_series_read(demo_root):
         assert live.loads == 2
         assert series_list.highlighted_item.identity == target.identity
         assert 'Marked 3' in app.status_text()
+
+
+async def test_dollar_tracks_then_untracks_after_confirmation(demo_root):
+    app, live = make(demo_root)
+    async with app.run_test(size=(180, 40)) as pilot:
+        series_list = await settle(pilot)
+        app.select_view('profile:mm')
+        target = next(i for i in app.index.items('profile:mm') if not i.state.to_review)
+        series_list.select_identity(target.identity)
+        await pilot.press('dollar_sign')
+        series_list = await settle(pilot)
+        assert live.track_calls == [target.identity]
+        assert series_list.highlighted_item.state.to_review
+        bindings = {k: b.binding.description for k, b in app.screen.active_bindings.items()}
+        assert bindings['dollar_sign'] == 'untrack'
+
+        await pilot.press('dollar_sign')
+        await pilot.pause()
+        assert app.quit_prompt() == 'Untrack (archive in b4)? [y|N]'
+        await pilot.press('n')
+        await settle(pilot)
+        assert live.untrack_calls == []
+
+        await pilot.press('dollar_sign')
+        await pilot.pause()
+        await pilot.press('y')
+        series_list = await settle(pilot)
+        assert live.untrack_calls == [target.identity]
+        assert threading.get_ident() not in live.threads
+        assert not series_list.highlighted_item.state.to_review
+        assert 'Archived' in app.status_text()
+        assert target.identity not in {i.identity for i in app.index.items('review')}

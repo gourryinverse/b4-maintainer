@@ -30,6 +30,7 @@ from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
     SASHIKO_PREFIX,
+    SEVERITY_STYLES,
     TreeRow,
     content_title,
     find_post,
@@ -46,7 +47,7 @@ from .reader import (
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
 from .views import ViewIndex
-from .widgets import TextPane, printable
+from .widgets import Block, TextPane, printable
 from .workspace import Snapshot
 
 FIXES_STYLE = Style(color='dark_orange')
@@ -74,6 +75,8 @@ class SourceActions(Protocol):
     def refresh(self, progress: Callable[[str], None]) -> str: ...
 
     def track(self, item: WorkItem) -> str: ...
+
+    def untrack(self, item: WorkItem) -> str: ...
 
     def toggle_hidden(self, item: WorkItem) -> str: ...
 
@@ -322,7 +325,10 @@ class MaintainerApp(App[None]):
         Binding('z', 'toggle_quotes', 'quotes'),
         Binding('p', 'toggle_preview', 'preview'),
         Binding('slash', 'search', 'search', key_display='/'),
-        Binding('t', 'track', 'track'),
+        # $ tracks, or untracks (archives in b4) after confirmation; t also tracks.
+        Binding('dollar_sign', 'track', 'track', key_display='$'),
+        Binding('dollar_sign', 'untrack', 'untrack', key_display='$'),
+        Binding('t', 'track', 'track', show=False),
         # One key; the enabled action (and footer label) follows the item's state.
         Binding('x', 'hide', 'hide'),
         Binding('x', 'unhide', 'unhide'),
@@ -502,7 +508,11 @@ class MaintainerApp(App[None]):
 
     def _show_summary(self) -> None:
         self._summary = self._summary_for(self._item)
-        self._summary_pane.set_text(self._summary)
+        # Sashiko lines are coloured by severity, as in the reader.
+        styles = dict(self._sashiko_lines(self._item)) if self._item else {}
+        self._summary_pane.set_blocks(
+            [Block(self._summary, style=lambda line: styles.get(line) or Style())]
+        )
 
     def on_resize(self, event: events.Resize) -> None:
         self._apply_layout(event.size.width)
@@ -566,13 +576,13 @@ class MaintainerApp(App[None]):
             if self._actions is None or reading or item is None:
                 return False
             return item.hidden == (action == 'unhide')
-        if action == 'track':
+        if action in ('track', 'untrack'):
             item = self._item
             return (
                 self._actions is not None
                 and not reading
                 and item is not None
-                and not item.state.to_review
+                and item.state.to_review == (action == 'untrack')
             )
         if action == 'next_finding':
             return (
@@ -1096,6 +1106,26 @@ class MaintainerApp(App[None]):
         self._set_notice(f'Tracking {item.series.subject}…')
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
+    def action_untrack(self) -> None:
+        """Archive the series in b4 review after confirmation; b4 keeps the archive."""
+        actions, item = self._actions, self._item
+        if actions is None or item is None:
+            return
+
+        def work() -> None:
+            try:
+                result, reload = actions.untrack(item), True
+            except Exception as exc:
+                result, reload = f'Untrack failed: {exc}', False
+            self.call_from_thread(self._action_done, result, reload)
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._set_notice(f'Archiving {item.series.subject}…')
+                self.run_worker(work, thread=True, group='action', exclusive=True)
+
+        self.push_screen(Confirm('Untrack (archive in b4)? [y|N]'), answered)
+
     def action_mark_read(self) -> None:
         actions, item = self._actions, self._reading or self._item
         if actions is None or item is None:
@@ -1202,7 +1232,7 @@ class MaintainerApp(App[None]):
             f'Trailers: A:{acked} R:{reviewed} T:{tested}'
             f' (cover A:{s.cover_trailers.acked} R:{s.cover_trailers.reviewed} T:{s.cover_trailers.tested})',
         ]
-        lines += self._sashiko_lines(item)
+        lines += [text for text, _ in self._sashiko_lines(item)]
         lines += ['', 'Tree evidence:']
         if not st.tree:
             lines.append('  unchecked')
@@ -1225,26 +1255,29 @@ class MaintainerApp(App[None]):
         return printable('\n'.join(lines))
 
     @staticmethod
-    def _sashiko_lines(item: WorkItem) -> list[str]:
+    def _sashiko_lines(item: WorkItem) -> list[tuple[str, Optional[Style]]]:
+        """Summary lines, each with its severity style (None for plain text)."""
         review = item.sashiko
         if review is None:
-            return ['Sashiko:  not reviewed']
+            return [('Sashiko:  not reviewed', None)]
         counts = ', '.join(
             f'{n} {sev}'
             for sev in ('critical', 'high', 'medium', 'low')
             if (n := getattr(review, sev))
         )
-        lines = [f'Sashiko:  {review.status}' + (f' · {counts}' if counts else '')]
+        status = f'Sashiko:  {review.status}' + (f' · {counts}' if counts else '')
+        lines = [(status, SEVERITY_STYLES.get(review.worst))]
         about = ' · '.join(part for part in (review.baseline, review.model) if part)
         if about:
-            lines.append(f'  {about}')
+            lines.append((f'  {about}', None))
         if review.url:
-            lines.append(f'  {review.url}')
+            lines.append((f'  {review.url}', None))
         total = len(review.patches)
         for patch in review.patches:
             for f in patch.findings:
                 old = ' (pre-existing)' if f.preexisting else ''
-                lines.append(f'  {patch.part}/{total} {f.severity}{old}: {f.problem}')
+                text = f'  {patch.part}/{total} {f.severity}{old}: {f.problem}'
+                lines.append((text, SEVERITY_STYLES.get(f.severity)))
         return lines
 
     def _drawer_line(self) -> str:

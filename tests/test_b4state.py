@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import b4
 from b4.review import tracking
 
-from b4_maintainer.adapters.b4state import b4_repo, track, tracked_series
+from b4_maintainer.adapters.b4state import archive, b4_repo, track, tracked_series
 from b4_maintainer.cli import project_main
 
 
@@ -48,6 +48,15 @@ def test_tracked_series_come_from_workspace_state(ws, home):
     assert {'cover@example.org', 'p1@example.org', 'p2@example.org'} <= entry.msgids
     assert entry.sent is not None and entry.sent.year == 2026
     assert not (home / 'xdg-data').exists()
+
+
+def test_archive_marks_the_series_archived_in_b4(ws, home):
+    checkout = enrolled(ws)
+    add_tracked(checkout, 'cid-1', 'cover@example.org', ['p1@example.org'])
+    ok, detail = archive(checkout, 'demo', 'cid-1', 2)
+    assert ok, detail
+    [entry] = tracked_series(checkout, 'demo')
+    assert entry.status == 'archived'
 
 
 def test_nothing_tracked(ws):

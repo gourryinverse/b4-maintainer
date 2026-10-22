@@ -17,6 +17,7 @@ class Symbols:
     partial: str = '◐'
     done: str = '✓'
     draft: str = '✎'
+    tracked: str = '$'
     absent: str = '·'
     complete: str = 'C'
     incomplete: str = 'I'
@@ -41,7 +42,7 @@ DEFAULT_SYMBOLS = Symbols()
 VERSION_WIDTH = 3
 AUTHOR_WIDTH = 16
 SASHIKO_WIDTH = 3
-FLAGS_WIDTH = 3
+FLAGS_WIDTH = 4
 CART_WIDTH = 4
 TREE_WIDTH = 2
 SASHIKO_PENDING = frozenset({'Pending', 'Fetching', 'Applying', 'In Review', 'Incomplete'})
@@ -157,6 +158,7 @@ def row_segments(
             pad_display(sym.unread if state.unread else '', 1),
             pad_display(sym.fixes if state.fixes_pending else '', 1),
             pad_display(_progress(item, sym), 1),
+            pad_display(sym.tracked if state.to_review else '', 1),
         )
     )
     head = ' '.join((flags, cart_field(item, sym), tree_field(state.tree, sym))) + ' '

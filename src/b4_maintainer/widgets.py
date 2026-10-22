@@ -65,6 +65,10 @@ class TextPane(ScrollView, can_focus=True):
         """Rendered lines, after wrapping."""
         return [text for text, _ in self._lines]
 
+    @property
+    def styled_lines(self) -> list[tuple[str, Style]]:
+        return list(self._lines)
+
     def scroll_to_anchor(self, anchor: str, context: int = 3) -> None:
         """Scroll an anchored block to the top, with *context* lines above it."""
         self._pending_anchor = (anchor, context)

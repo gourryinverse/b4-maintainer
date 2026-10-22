@@ -29,12 +29,12 @@ def test_row_matches_documented_example():
         draft=True,
         tree=[('n', ACC, Coverage.PARTIAL)],
     )
-    assert render_row(item) == '●⚠✎ CAR· n≈ ·   Synthetic Author v3  mm: fix foo leak'
+    assert render_row(item) == '●⚠✎  CAR· n≈ ·   Synthetic Author v3  mm: fix foo leak'
 
 
 def test_quiet_incomplete_unchecked_row():
     item = make_item(subject='ndctl: baz cleanup', complete=False)
-    assert render_row(item) == '    I···  ? ·   Synthetic Author v1  ndctl: baz cleanup'
+    assert render_row(item) == '     I···  ? ·   Synthetic Author v1  ndctl: baz cleanup'
 
 
 def test_progress_symbols():
@@ -147,3 +147,9 @@ def test_heading_names_fields_over_their_columns():
         assert column(head, 'Subject') == column(row, 'mm: x')
         assert column(head, 'AI') == column(row, '1!')
         assert column(head, 'CART') == column(row, 'C···')
+
+
+def test_tracked_series_show_dollar():
+    assert render_row(make_item(to_review=True))[3] == '$'
+    assert render_row(make_item())[3] == ' '
+    assert render_row(make_item(to_review=True), Symbols(tracked='T'))[3] == 'T'

@@ -1,5 +1,6 @@
 """Contract: the live workspace browses cached list mail and tracks through b4."""
 
+import dataclasses
 import datetime
 import email.message
 import email.utils
@@ -51,6 +52,8 @@ class Fakes:
         self.searches: list[tuple[str, str]] = []
         self.answers: dict[str, list] = {}
         self.track_calls: list[tuple[str, str]] = []
+        self.archive_calls: list[tuple[str, str, str, int]] = []
+        self.archive_result = (True, '/archive.tar.gz')
 
     def tracked_series(self, checkout, identifier):
         return list(self.tracked)
@@ -64,6 +67,10 @@ class Fakes:
 
     def track(self, checkout, msgid, command):
         self.track_calls.append((checkout.name, msgid))
+
+    def archive(self, checkout, identifier, change_id, revision):
+        self.archive_calls.append((checkout.name, identifier, change_id, revision))
+        return self.archive_result
 
 
 @pytest.fixture
@@ -80,6 +87,7 @@ def live(tmp_path):
         b4_command=['b4'],
         now=lambda: NOW,
         identity=lambda checkout: None,
+        archive=fakes.archive,
     )
     return source, fakes, root
 
@@ -130,6 +138,41 @@ def test_tracked_series_appear_in_to_review(live, tmp_path):
     index = ViewIndex(*_snap(source))
     assert [i.series.subject for i in index.items('review')] == ['mm: tracked one']
     assert index.count('profile:mm') == 2
+
+
+def test_archived_series_are_not_in_to_review(live, tmp_path):
+    source, fakes, _ = live
+    sent, msgs = mail(tmp_path, 'a', 'mm: done with this')
+    fakes.answers[MM] = msgs
+    source.refresh()
+    fakes.tracked = [dataclasses.replace(tracked(sent.msgids[0]), status='archived')]
+    index = ViewIndex(*_snap(source))
+    assert index.count('review') == 0
+    assert index.count('profile:mm') == 1
+
+
+def test_untrack_archives_through_b4(live, tmp_path):
+    source, fakes, _ = live
+    sent, msgs = mail(tmp_path, 'a', 'mm: untrack me')
+    fakes.answers[MM] = msgs
+    source.refresh()
+    fakes.tracked = [tracked(sent.msgids[0], change_id='cid-9')]
+    [item] = source.load().items
+    assert 'Archived' in source.untrack(item)
+    assert fakes.archive_calls == [('demo', 'demo', 'cid-9', 1)]
+
+    fakes.archive_result = (False, 'branch is checked out')
+    with pytest.raises(RuntimeError, match='branch is checked out'):
+        source.untrack(item)
+
+
+def test_untrack_requires_tracking(live, tmp_path):
+    source, fakes, _ = live
+    fakes.answers[MM] = mail(tmp_path, 'a', 'mm: never tracked')[1]
+    source.refresh()
+    [item] = source.load().items
+    with pytest.raises(RuntimeError, match='not tracked'):
+        source.untrack(item)
 
 
 def test_tracked_series_outside_the_cache_still_show(live):

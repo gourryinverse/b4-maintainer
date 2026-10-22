@@ -46,6 +46,7 @@ class LiveSource:
         ),
         search_for: Callable[[pathlib.Path], Search] = b4state.lore_search,
         track: Callable[[pathlib.Path, str, Sequence[str]], None] = b4state.track,
+        archive: Callable[[pathlib.Path, str, str, int], tuple[bool, str]] = b4state.archive,
         b4_command: Optional[Sequence[str]] = None,
         now: Callable[[], datetime.datetime] = lambda: datetime.datetime.now(datetime.timezone.utc),
         identity: Callable[[pathlib.Path], Optional[str]] = b4state.user_email,
@@ -64,6 +65,7 @@ class LiveSource:
         self._tracked_series = tracked_series
         self._search_for = search_for
         self._track = track
+        self._archive = archive
         self._b4_command = b4_command
         self._now = now
         self._identity = identity
@@ -108,6 +110,8 @@ class LiveSource:
             if not self._enrolled(project):
                 continue
             for entry in self._tracked_series(self.checkout(project), project.id):
+                if entry.status == 'archived':
+                    continue  # Untracked: out of To Review, kept in b4's archive.
                 match = next((s for s in series if entry.msgids & set(s.msgids)), None)
                 if match is None:
                     match = _from_tracking(entry)
@@ -386,6 +390,29 @@ class LiveSource:
         command = list(self._b4_command) if self._b4_command else default_b4_command()
         self._track(self.checkout(project), msgid, command)
         return f'Tracking in {project.id}: {series.subject} v{series.revision}'
+
+    def untrack(self, item: WorkItem) -> str:
+        """Archive the series in b4 review: it leaves To Review; b4 keeps the archive."""
+        project = self.workspace().project(item.project)
+        if project is None:
+            raise RuntimeError('Assign a project before untracking this series')
+        checkout = self.checkout(project)
+        entry = _tracked_entry(self._tracked_series(checkout, project.id), item)
+        if entry is None:
+            raise RuntimeError(f'{item.series.subject} is not tracked in {project.id}')
+        ok, detail = self._archive(checkout, project.id, entry.change_id, entry.revision)
+        if not ok:
+            raise RuntimeError(f'b4 could not archive the series: {detail}')
+        return f'Archived in {project.id}: {item.series.subject}'
+
+
+def _tracked_entry(entries: Sequence[b4state.Tracked], item: WorkItem) -> Optional[b4state.Tracked]:
+    """The active tracking record for an item, matched by any posted message-id."""
+    msgids = set(item.series.msgids)
+    return next(
+        (e for e in entries if e.status != 'archived' and e.msgids & msgids),
+        None,
+    )
 
 
 def _from_tracking(entry: b4state.Tracked) -> Series:

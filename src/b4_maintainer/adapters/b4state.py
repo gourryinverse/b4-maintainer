@@ -163,6 +163,21 @@ def track(checkout: pathlib.Path, msgid: str, b4_command: Sequence[str]) -> None
         raise RuntimeError(f'b4 review track failed: {lines[-1] if lines else "no output"}')
 
 
+def archive(
+    checkout: pathlib.Path, identifier: str, change_id: str, revision: int
+) -> tuple[bool, str]:
+    """Archive a tracked series as b4 review's TUI does: (ok, archive path or error).
+
+    b4 saves the review branch to its data directory, deletes the branch, and
+    marks the series archived (and archives it in Patchwork when configured).
+    It refuses rather than switch away from a checked-out review branch.
+    """
+    with b4_repo(checkout):
+        from b4.review import archive_series
+
+        return archive_series(str(checkout), identifier, change_id, revision)
+
+
 def lore_search(checkout: pathlib.Path) -> Search:
     """b4's lore search with this checkout's configuration (mirror, cache directory)."""
 

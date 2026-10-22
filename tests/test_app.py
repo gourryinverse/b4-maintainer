@@ -351,3 +351,15 @@ async def test_summary_shows_sashiko_review():
         await pilot.press('down')
         await pilot.pause()
         assert 'Sashiko:  not reviewed' in app.summary_text()
+
+
+async def test_summary_colours_sashiko_findings_by_severity():
+    from b4_maintainer.reader import SEVERITY_STYLES
+
+    app = sashiko_app()
+    async with app.run_test(size=(180, 30)) as pilot:
+        await loaded(pilot)
+        styles = dict(app.query_one('#summary').styled_lines)
+        assert styles['Sashiko:  Reviewed · 1 high'] == SEVERITY_STYLES['high']
+        assert styles['  1/2 high: mm: leaks foo'] == SEVERITY_STYLES['high']
+        assert styles['  2/2 low (pre-existing): mm: old bug'] == SEVERITY_STYLES['low']
