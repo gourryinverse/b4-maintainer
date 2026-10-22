@@ -221,3 +221,13 @@ def test_an_existing_venv_older_than_3_11_is_rebuilt(clone):
     )
     assert run(['./setup.sh'], repo, env).returncode == 0
     assert log.read_text().splitlines()[0].startswith('venv -m venv --clear')
+
+
+def test_first_run_continues_when_state_is_already_cloned(clone):
+    repo, state, log, env = clone
+    git('clone', '-q', str(state), 'state', cwd=repo)
+    (repo / 'setup.site.conf').write_text("PYTHON='python-fake'\n")
+    result = run(['./setup.sh'], repo, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / 'setup.conf').is_file()
+    assert log.read_text().splitlines()[-1] == f'b4-maintainer {repo} setup'

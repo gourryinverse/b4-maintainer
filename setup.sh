@@ -7,8 +7,11 @@ cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
 if [[ ! -f setup.conf ]]; then
     cp setup.conf.example setup.conf
-    echo 'Created setup.conf: set STATE_REPO (and PYTHON if needed), then run ./setup.sh again.'
-    exit 1
+    if [[ ! -e state/.git ]]; then
+        echo 'Created setup.conf: set STATE_REPO (and PYTHON if needed), then run ./setup.sh again.'
+        exit 1
+    fi
+    echo 'Created setup.conf with defaults (state/ is already cloned).'
 fi
 STATE_REPO='' PYTHON='' DEV_TOOLS=no SITE_CONF=''
 PIP_ARGS=()

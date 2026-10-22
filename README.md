@@ -48,7 +48,7 @@ Mail configuration and delivery use b4's existing integrations.
 Python 3.11 or newer.
 
     git clone <b4-maintainer repository> b4-maintainer && cd b4-maintainer
-    ./setup.sh        # first run creates setup.conf: set STATE_REPO, then run it again
+    ./setup.sh        # first run creates setup.conf: set STATE_REPO, run again (if no state/)
     ./b4-maintainer
 
 - `setup.conf` (ignored by Git; from `setup.conf.example`): `STATE_REPO`, the private state
