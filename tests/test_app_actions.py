@@ -122,8 +122,8 @@ async def test_refresh_reports_progress_and_reloads(demo_root):
         series_list = await settle(pilot)
         await pilot.press('down')
         selected = series_list.highlighted_item.identity
-        assert 'r' in footer_keys(app)
-        await pilot.press('r')
+        assert 'f5' in footer_keys(app)
+        await pilot.press('f5')
         series_list = await settle(pilot)
         assert live.refreshes == 1
         assert live.loads == 2

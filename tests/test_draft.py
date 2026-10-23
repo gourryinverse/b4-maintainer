@@ -280,3 +280,68 @@ async def test_send_and_discard_delete_the_saved_draft(demo_root, tmp_path):
             await pilot.press('ctrl+y')
             await settle(pilot)
         assert store.msgids() == set()
+
+
+class RecordingActions(DraftActions):
+    def __init__(self, root):
+        super().__init__(root)
+        self.replied_to = []
+
+    def prepare_reply(self, item, msgid):
+        self.replied_to.append(msgid)
+        return super().prepare_reply(item, msgid)
+
+
+async def test_r_in_the_series_list_replies_to_the_cover_letter(demo_root):
+    actions = RecordingActions(demo_root)
+    app = MaintainerApp(actions.load, actions=actions)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        item = app.query_one(SeriesList).highlighted_item
+        assert item.series.has_cover
+        assert 'r' in bindings(app)
+        await pilot.press('r')
+        await settle(pilot)
+        assert app.reading is item
+        assert actions.replied_to == [item.series.msgids[0]]  # The cover letter.
+        assert app.reader_panes() == ('tree', 'content', 'draft')
+        assert app.tree_labels()[0].startswith('0/5 cover') or 'cover' in app.tree_labels()[0]
+
+
+async def test_r_in_the_series_list_replies_to_the_first_patch_without_a_cover(demo_root):
+    actions = RecordingActions(demo_root)
+    app = MaintainerApp(actions.load, actions=actions)
+    async with app.run_test(size=(180, 40)) as pilot:
+        series_list = (await settle(pilot)) or app.query_one(SeriesList)
+        target = next(i for i in app.index.items(app.current_view) if not i.series.has_cover)
+        series_list.select_identity(target.identity)
+        await pilot.press('r')
+        await settle(pilot)
+        assert app.reading is target
+        assert actions.replied_to == [target.series.patches[0].msgid]
+
+
+async def test_r_in_the_series_list_reopens_a_saved_draft_instead(demo_root, tmp_path):
+    from b4_maintainer.adapters.drafts import DraftStore
+
+    store = DraftStore(tmp_path / 'drafts')
+    first = RecordingActions(demo_root)
+    app = MaintainerApp(first.load, actions=first, drafts=store)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await reading(pilot)
+        await pilot.press('down', 'down')  # A patch, not the cover letter.
+        await pilot.press('r')
+        await settle(pilot)
+        app.query_one('#draft').insert('On the patch.')
+        msgid = app.draft_msgid()
+        assert msgid != app.reading.series.msgids[0]
+    assert store.msgids() == {msgid}
+
+    actions = RecordingActions(demo_root)
+    again = MaintainerApp(actions.load, actions=actions, drafts=store)
+    async with again.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('r')
+        await settle(pilot)
+        assert actions.replied_to == [msgid]  # Not the cover letter: one draft at a time.
+        assert 'On the patch.' in again.query_one('#draft').text

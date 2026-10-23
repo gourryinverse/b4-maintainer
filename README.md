@@ -76,14 +76,14 @@ Python 3.11 or newer.
     ./b4-maintainer --demo .local/demo
 
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
-  live: `r` fetches profile lists and your own mail from lore, `t` tracks the selected series
-  through b4 (To Review), `x` hides it, `R` marks it read, `/` filters by regex, `r` in the
-  reader drafts a reply beside the thread and `ctrl+s` sends it through b4
+  live: `F5` fetches profile lists and your own mail from lore, `t` tracks the selected series
+  through b4 (To Review), `x` hides it, `R` marks it read, `/` filters by regex, `r` drafts a
+  reply beside the thread (in the list: to the cover letter) and `ctrl+s` sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
 - Workspace state syncs through a private state repository cloned as `state/` (see
   [sync](docs/design/projects.md#multi-machine-sync) and [setup](#setup));
   `state/workspace.toml` is the synced configuration. `b4-maintainer sync` syncs once by
-  hand; the app syncs at startup, around `r`, and on quit.
+  hand; the app syncs at startup, around `F5`, and on quit.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.

@@ -364,8 +364,7 @@ class MaintainerApp(App[None]):
         # One key; the enabled action (and footer label) follows the item's state.
         Binding('x', 'hide', 'hide'),
         Binding('x', 'unhide', 'unhide'),
-        # r refreshes while browsing and replies while reading.
-        Binding('r', 'refresh', 'refresh'),
+        Binding('f5', 'refresh', 'refresh', key_display='F5'),
         Binding('r', 'reply', 'reply'),
         Binding('R', 'mark_read', 'read all'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
@@ -410,6 +409,8 @@ class MaintainerApp(App[None]):
         # Replies marked seen while reading; counts refresh when the reader closes.
         self._seen_now: set[str] = set()
         self._draft: Optional[Draft] = None
+        # r in the series list: reply to the first posting once the opened thread loads.
+        self._reply_on_open = False
         self._thread_loader = thread_loader
         # Held for explicit maintainer launches; passive actions never call it.
         self.launcher = launcher
@@ -655,11 +656,10 @@ class MaintainerApp(App[None]):
         if action == 'refresh':
             return self._actions is not None and not reading
         if action == 'reply':
-            return (
-                self._actions is not None
-                and self._draft is None
-                and self._reply_msgid() is not None
-            )
+            if self._actions is None or self._draft is not None:
+                return False
+            # In the series list: the selected series' cover letter (or first patch).
+            return self._reply_msgid() is not None if reading else self._item is not None
         if action == 'mark_read':
             return self._actions is not None and (self._reading or self._item) is not None
         if action in ('hide', 'unhide'):
@@ -847,6 +847,7 @@ class MaintainerApp(App[None]):
         if item is None:
             return
         self._reading, self._thread, self._post_key = item, None, ''
+        self._reply_on_open = False
         self.screen.add_class('-reading')
         self._tree.clear_options()
         self._rows, self._expanded, self._node = [], set(), 0
@@ -881,6 +882,8 @@ class MaintainerApp(App[None]):
     ) -> None:
         if not self._still_reading(item):
             return  # Closed or reopened on another series while loading.
+        # A draft already open or saved for this thread takes precedence: one at a time.
+        reply_now, self._reply_on_open = self._reply_on_open, False
         if thread is None:
             self._content.set_text(f'Could not load thread: {error}')
             return
@@ -907,6 +910,8 @@ class MaintainerApp(App[None]):
             self._begin_reply(item, msgid, None)
             return
         self._render_tree((keys[0], 0) if keys else ('', 0))
+        if reply_now:
+            self.action_reply()  # On the first posting: the cover letter, else the first patch.
 
     def _bots(self) -> tuple[str, ...]:
         return self.snapshot.workspace.bots if self.snapshot else ()
@@ -958,6 +963,11 @@ class MaintainerApp(App[None]):
         return post.message.msgid if post is not None else None
 
     def action_reply(self) -> None:
+        if self._reading is None:
+            # Open the series; the reply starts on its first posting once the thread loads.
+            self.action_open_reader()
+            self._reply_on_open = self._reading is not None
+            return
         actions, item, msgid = self._actions, self._reading, self._reply_msgid()
         if actions is None or item is None or msgid is None:
             return
