@@ -25,7 +25,7 @@ def test_row_matches_documented_example():
         acked=2,
         reviewed=1,
         unread=1,
-        fixes_pending=True,
+        stable_pending=True,
         draft=True,
         tree=[('n', ACC, Coverage.PARTIAL)],
     )
@@ -47,7 +47,7 @@ def test_progress_symbols():
 def test_subject_column_aligns_across_symbol_combinations():
     items = [
         make_item(subject='x'),
-        make_item(subject='x', unread=3, fixes_pending=True, draft=True, revision=12),
+        make_item(subject='x', unread=3, stable_pending=True, draft=True, revision=12),
         make_item(subject='x', acked=1, reviewed=1, tested=1, tree=[('n', ACC, Coverage.FULL)]),
     ]
     offsets = {display_width(render_row(i).rsplit('x', 1)[0]) for i in items}
@@ -55,8 +55,8 @@ def test_subject_column_aligns_across_symbol_combinations():
 
 
 def test_symbols_are_configurable():
-    ascii_syms = Symbols(fixes='!', unread='*')
-    row = render_row(make_item(unread=1, fixes_pending=True), ascii_syms)
+    ascii_syms = Symbols(stable='!', unread='*')
+    row = render_row(make_item(unread=1, stable_pending=True), ascii_syms)
     assert row.startswith('*!')
 
 
@@ -183,3 +183,10 @@ def test_no_tree_column_ref_views_list_landed_series():
     item = make_item(subject='mm: x', tree=[('n', ACC, Coverage.FULL)])
     assert 'n≡' not in render_row(item)
     assert 'Tr' not in heading().split()
+
+
+def test_only_the_stable_mark_is_coloured():
+    segments = row_segments(make_item(subject='mm: x', unread=1, stable_pending=True))
+    marked = [(text, role) for text, role in segments if role == 'stable']
+    assert marked == [('⚠', 'stable')]
+    assert render_row(make_item(subject='mm: x', unread=1, stable_pending=True)).startswith('●⚠')

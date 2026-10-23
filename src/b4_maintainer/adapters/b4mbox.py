@@ -47,6 +47,19 @@ def _replied(lmsg: Optional['b4.LoreMessage']) -> frozenset[Tag]:
     return _tags(lmsg.followup_trailers) if lmsg is not None else frozenset()
 
 
+STABLE_ADDRESSES = frozenset({'stable@vger.kernel.org', 'stable@kernel.org'})
+
+
+def _fix_tags(lmsg: 'b4.LoreMessage') -> tuple[tuple[str, ...], bool]:
+    """Fixes: trailers in the commit message, and a stable Cc there or in the mail headers."""
+    _headers, _message, trailers, _basement, _signature = b4.LoreMessage.get_body_parts(lmsg.body)
+    fixes = tuple(t.value for t in trailers if t.name.lower() == 'fixes')
+    cced = {t.addr[1].lower() for t in trailers if t.name.lower() == 'cc' and t.addr}
+    for header in ('To', 'Cc'):
+        cced.update(a.lower() for _, a in email.utils.getaddresses(lmsg.msg.get_all(header, [])))
+    return fixes, bool(cced & STABLE_ADDRESSES)
+
+
 def _carried(lmsg: 'b4.LoreMessage') -> frozenset[Tag]:
     """Tags in the patch's own commit message, usually from earlier revisions."""
     _headers, _message, trailers, _basement, _signature = b4.LoreMessage.get_body_parts(lmsg.body)
@@ -92,7 +105,8 @@ def _series(lser: 'b4.LoreSeries', source: str) -> Series:
         author_email=lser.fromemail,
         sent=present[0].date,
         patches=tuple(
-            Patch(p.counter, p.msgid, p.lsubject.subject, _replied(p), _carried(p)) for p in patches
+            Patch(p.counter, p.msgid, p.lsubject.subject, _replied(p), _carried(p), *_fix_tags(p))
+            for p in patches
         ),
         cover_trailers=Trailers.of(_replied(cover)),
         change_id=change_id,

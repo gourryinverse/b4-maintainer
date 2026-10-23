@@ -27,7 +27,7 @@ from typing import Callable, Collection, Optional, Sequence
 import b4
 
 from ..model import Series
-from .summaries import VERSION, series_from_dict, series_to_dict
+from .summaries import READABLE, VERSION, series_from_dict, series_to_dict
 
 Search = Callable[[str], Optional[Sequence[email.message.EmailMessage]]]
 
@@ -191,8 +191,15 @@ class MailCache:
             )
         return found
 
-    def series(self, parse: Callable[[pathlib.Path], list[Series]]) -> list[Series]:
-        """Every cached thread's series; threads whose files changed are reparsed."""
+    def series(
+        self, parse: Callable[[pathlib.Path], list[Series]], upgrade: bool = True
+    ) -> list[Series]:
+        """Every cached thread's series; threads whose files changed are reparsed.
+
+        Without *upgrade* (startup), summaries in an older readable format are used as
+        they are; a refresh reparses them.
+        """
+        accepted = {VERSION} if upgrade else READABLE
         result: list[Series] = []
         for tdir in self.sources():
             stamp = hashlib.sha1(
@@ -201,7 +208,7 @@ class MailCache:
             path = self._summaries / f'{tdir.name}.json'
             try:
                 cached = json.loads(path.read_text())
-                if cached['version'] == VERSION and cached['stamp'] == stamp:
+                if cached['version'] in accepted and cached['stamp'] == stamp:
                     result.extend(series_from_dict(d) for d in cached['series'])
                     continue
             except (OSError, ValueError, KeyError, TypeError):

@@ -62,6 +62,9 @@ class Patch:
     subject: str
     replied: frozenset[Tag] = frozenset()
     carried: frozenset[Tag] = frozenset()
+    # Fixes: trailer values (commit and subject), and whether it Cc's stable.
+    fixes: tuple[str, ...] = ()
+    stable: bool = False
 
     @property
     def trailers(self) -> Trailers:
@@ -111,6 +114,11 @@ class Series:
         """
         converted = tuple(addr.replace('@', '.', 1) for addr in self.recipients)
         return tuple(dict.fromkeys(self.lists + converted))
+
+    @property
+    def cc_stable(self) -> bool:
+        """Any patch Cc's stable: a fix meant for stable kernels."""
+        return any(p.stable for p in self.patches)
 
     def trailer_totals(self) -> tuple[int, int, int]:
         total = self.cover_trailers
@@ -213,7 +221,8 @@ class SeriesState:
     """Per-series state owned by native stores or client state, read via adapters."""
 
     unread: int = 0
-    fixes_pending: bool = False
+    # A patch Cc's stable and the series has not landed in a review-ending ref.
+    stable_pending: bool = False
     progress: Progress = Progress.NONE
     draft: bool = False
     to_review: bool = False

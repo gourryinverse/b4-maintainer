@@ -558,3 +558,40 @@ def test_series_with_saved_drafts_are_marked_and_listed(live, tmp_path):
     index = ViewIndex(*_snap(source))
     assert [i.series.subject for i in index.items('drafts')] == ['mm: drafting']
     assert index.items('drafts')[0].state.draft
+
+
+def test_series_that_cc_stable_are_stable_pending(live, tmp_path):
+    source, fakes, _ = live
+    path = tmp_path / 'src' / 'fix.mbx'
+    path.parent.mkdir(exist_ok=True)
+    patches = [
+        PatchSpec('mm/a.c'),
+        PatchSpec('mm/b.c', trailers=('Cc: stable@vger.kernel.org',)),
+    ]
+    write_series_mbox(path, 'mm: fix it', patches=patches, date=NOW, lists=(MM,))
+    fixes_only = tmp_path / 'src' / 'fixes.mbx'
+    tagged = [PatchSpec('mm/c.c', trailers=('Fixes: 0123456789ab ("mm: the bug")',))]
+    write_series_mbox(fixes_only, 'mm: fix, no stable', patches=tagged, date=NOW, lists=(MM,))
+    plain, msgs = mail(tmp_path, 'plain', 'mm: a feature')
+    fakes.answers[MM] = (
+        msgs
+        + b4.get_msgs_from_mailbox_or_maildir(str(path))
+        + b4.get_msgs_from_mailbox_or_maildir(str(fixes_only))
+    )
+    source.refresh()
+    flagged = {i.series.subject: i.state.stable_pending for i in source.load().items}
+    assert flagged == {'mm: fix it': True, 'mm: fix, no stable': False, 'mm: a feature': False}
+
+
+def test_a_landed_stable_fix_is_no_longer_pending():
+    import dataclasses
+
+    from b4_maintainer.adapters.live import _stable_pending
+    from b4_maintainer.fixtures import make_item
+
+    item = make_item(subject='mm: fix')
+    patch = dataclasses.replace(item.series.patches[0], stable=True)
+    item = dataclasses.replace(item, series=dataclasses.replace(item.series, patches=(patch,)))
+    assert _stable_pending((item,))[0].state.stable_pending
+    landed = dataclasses.replace(item, landed=True)
+    assert not _stable_pending((landed,))[0].state.stable_pending

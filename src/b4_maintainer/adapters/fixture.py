@@ -17,7 +17,7 @@ from .b4mbox import parse_mbox
 def state_from_config(entry: Mapping[str, Any]) -> SeriesState:
     return SeriesState(
         unread=int(entry.get('unread', 0)),
-        fixes_pending=bool(entry.get('fixes_pending', False)),
+        stable_pending=bool(entry.get('stable_pending', False)),
         progress=Progress(entry.get('progress', 'none')),
         draft=bool(entry.get('draft', False)),
         to_review=bool(entry.get('to_review', False)),

@@ -192,7 +192,7 @@ class LiveSource:
 
     def load(self) -> Snapshot:
         ws = self._with_identity(self.workspace())
-        series = self.cache.series(parse_mbox)
+        series = self.cache.series(parse_mbox, upgrade=False)  # Startup never reparses.
         covered = {pathlib.Path(s.source).name for s in series if s.source}
         series += self.cache.discussions(covered)
         states: dict[str, SeriesState] = {}
@@ -217,6 +217,7 @@ class LiveSource:
         )
         items = self._responses(ws, items)
         items = self._tree_evidence(ws, items)
+        items = _stable_pending(items)
         items = self._sashiko_reviews(items)
         items = self._drafted(items)
         hidden = self.hidden.load()
@@ -633,6 +634,17 @@ class LiveSource:
         if not ok:
             raise RuntimeError(f'b4 could not archive the series: {detail}')
         return f'Archived in {project.id}: {item.series.subject}'
+
+
+def _stable_pending(items: Iterable[WorkItem]) -> tuple[WorkItem, ...]:
+    """Fixes or stable-Cc'd series, until they land in a review-ending ref."""
+    return tuple(
+        dataclasses.replace(
+            i,
+            state=dataclasses.replace(i.state, stable_pending=i.series.cc_stable and not i.landed),
+        )
+        for i in items
+    )
 
 
 def _tracked_entry(

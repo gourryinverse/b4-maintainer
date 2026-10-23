@@ -134,3 +134,35 @@ def test_commit_trailers_are_carried_evidence_deduplicated_with_replies(tmp_path
     assert second.carried_trailers == Trailers()
     assert second.trailers == Trailers(tested=1)
     assert series.trailer_totals() == (1, 1, 1)
+
+
+def test_fixes_and_stable_tags_are_read_from_every_patch(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'f.mbx',
+        subject='mm: fix things',
+        patches=[
+            PatchSpec('mm/a.c'),
+            PatchSpec(
+                'mm/b.c',
+                trailers=(
+                    'Fixes: 0123456789ab ("mm: introduce the bug")',
+                    'Cc: stable@vger.kernel.org # 6.1+',
+                ),
+            ),
+            PatchSpec('mm/c.c', trailers=('Cc: <stable@kernel.org>',)),
+        ],
+    )
+    [series] = parse_mbox(mail.path)
+    first, second, third = series.patches
+    assert first.fixes == () and not first.stable
+    assert second.fixes == ('0123456789ab ("mm: introduce the bug")',) and second.stable
+    assert third.fixes == () and third.stable
+    assert series.cc_stable
+
+
+def test_series_without_fix_tags(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'n.mbx', subject='mm: feature', patches=[PatchSpec('mm/a.c')]
+    )
+    [series] = parse_mbox(mail.path)
+    assert not series.cc_stable

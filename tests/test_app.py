@@ -382,3 +382,49 @@ async def test_key_bar_shows_enabled_keys_and_follows_changes(demo_root):
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert '⏎ read' not in hints() and '[ prev' in hints()
+
+
+async def test_summary_says_which_patches_carry_fixes_or_stable():
+    import dataclasses
+
+    from b4_maintainer.fixtures import make_item, workspace_config
+    from b4_maintainer.model import Patch
+    from b4_maintainer.workspace import Snapshot, Workspace
+
+    item = make_item(subject='mm: fix things', stable_pending=True)
+    patches = (
+        Patch(1, 'p1@example.org', 'mm: one', fixes=('0123456789ab ("mm: the bug")',)),
+        Patch(2, 'p2@example.org', 'mm: two'),
+        Patch(3, 'p3@example.org', 'mm: three', stable=True),
+    )
+    series = dataclasses.replace(item.series, patches=patches, expected=3)
+    item = dataclasses.replace(item, series=series)
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), (item,))
+    app = MaintainerApp(lambda: snapshot)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        text = app.summary_text()
+        assert 'Cc stable pending' in text
+        assert 'Fixes:    1/3 0123456789ab ("mm: the bug")' in text
+        assert 'Stable:   Cc stable in 3/3' in text
+        assert '1/3 ··· mm: one [Fixes]' in text
+        assert '3/3 ··· mm: three [stable]' in text
+
+
+async def test_a_stable_pending_row_colours_only_its_mark():
+    from b4_maintainer.fixtures import make_item, workspace_config
+    from b4_maintainer.workspace import Snapshot, Workspace
+
+    item = make_item(subject='mm: fix things', stable_pending=True)
+    snapshot = Snapshot(Workspace.from_config(workspace_config()), (item,))
+    app = MaintainerApp(lambda: snapshot)
+    async with app.run_test(size=(180, 40)) as pilot:
+        series_list = await loaded(pilot)
+        coloured = [
+            seg.text
+            for seg in series_list.render_line(1)
+            if seg.style is not None
+            and seg.style.color is not None
+            and seg.style.color.name == 'dark_orange'
+        ]
+        assert coloured == ['⚠']

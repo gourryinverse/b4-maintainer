@@ -6,7 +6,9 @@ from typing import Any
 
 from ..model import Patch, Series, Tag, Trailers
 
-VERSION = 1
+VERSION = 2  # 2: per-patch Fixes and stable tags.
+# Older summaries still read (missing fields empty) until a refresh reparses them.
+READABLE = frozenset({1, VERSION})
 
 
 def _tags(tags: frozenset[Tag]) -> list[list[str]]:
@@ -29,7 +31,16 @@ def series_to_dict(s: Series) -> dict[str, Any]:
         'author_email': s.author_email,
         'sent': s.sent.isoformat() if s.sent else None,
         'patches': [
-            [p.counter, p.msgid, p.subject, _tags(p.replied), _tags(p.carried)] for p in s.patches
+            [
+                p.counter,
+                p.msgid,
+                p.subject,
+                _tags(p.replied),
+                _tags(p.carried),
+                list(p.fixes),
+                p.stable,
+            ]
+            for p in s.patches
         ],
         'cover_trailers': [
             s.cover_trailers.acked,
@@ -59,8 +70,16 @@ def series_from_dict(d: dict[str, Any]) -> Series:
         author_email=d['author_email'],
         sent=datetime.datetime.fromisoformat(d['sent']) if d['sent'] else None,
         patches=tuple(
-            Patch(counter, msgid, subject, _from_tags(replied), _from_tags(carried))
-            for counter, msgid, subject, replied, carried in d['patches']
+            Patch(
+                counter,
+                msgid,
+                subject,
+                _from_tags(replied),
+                _from_tags(carried),
+                tuple(rest[0]) if rest else (),
+                bool(rest[1]) if len(rest) > 1 else False,
+            )
+            for counter, msgid, subject, replied, carried, *rest in d['patches']
         ),
         cover_trailers=Trailers(*d['cover_trailers']),
         change_id=d['change_id'],

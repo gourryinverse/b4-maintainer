@@ -13,7 +13,7 @@ from .model import Progress, SashikoReview, Series, WorkItem
 @dataclass(frozen=True)
 class Symbols:
     unread: str = '●'
-    fixes: str = '⚠'
+    stable: str = '⚠'
     partial: str = '◐'
     done: str = '✓'
     draft: str = '✎'
@@ -103,8 +103,8 @@ def author_label(item: WorkItem) -> str:
     return series.author_name or series.author_email.split('@', 1)[0]
 
 
-# (text, role): role is None for plain text, else the author's MAINTAINERS role
-# or a Sashiko severity (sev-critical, sev-high, ...).
+# (text, role): role is None for plain text, else the author's MAINTAINERS role, a Sashiko
+# severity (sev-critical, sev-high, ...), stable (the ⚠ mark), or incomplete.
 Segments = list[tuple[str, Optional[str]]]
 
 
@@ -128,17 +128,16 @@ def row_segments(
     item: WorkItem, sym: Symbols = DEFAULT_SYMBOLS, project_width: int = 0
 ) -> Segments:
     state = item.state
-    flags = ''.join(
+    unread = pad_display(sym.unread if state.unread else '', 1)
+    stable = pad_display(sym.stable if state.stable_pending else '', 1)
+    rest = ''.join(
         (
-            pad_display(sym.unread if state.unread else '', 1),
-            pad_display(sym.fixes if state.fixes_pending else '', 1),
             pad_display(_progress(item, sym), 1),
             pad_display(sym.tracked if state.to_review or item.watched else '', 1),
         )
     )
     # No tree or trailer columns: ref views list series by the tree they reached, and the
     # summary shows completeness and trailers.
-    head = flags + ' '
     mark, severity = sashiko_field(item.sashiko, sym)
     version = '' if item.series.discussion else f'v{item.series.revision}'
     patches, completeness = patches_field(item.series, sym)
@@ -148,7 +147,9 @@ def row_segments(
         tail.append(pad_display(label, project_width))
     tail.append(item.series.subject)
     return [
-        (head, None),
+        (unread, None),
+        (stable, 'stable' if state.stable_pending else None),
+        (rest + ' ', None),
         (mark, severity),
         (' ', None),
         (fit(author_label(item), AUTHOR_WIDTH), item.author_role),

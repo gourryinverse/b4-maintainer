@@ -56,7 +56,6 @@ from .views import ViewIndex
 from .widgets import Block, KeyBar, TextPane, printable
 from .workspace import Snapshot
 
-FIXES_STYLE = Style(color='dark_orange')
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
@@ -69,6 +68,7 @@ ROLE_STYLES = {
     'sev-medium': Style(color='yellow'),
     'sev-low': Style(dim=True),
     'incomplete': Style(color='yellow'),
+    'stable': Style(color='dark_orange'),
 }
 
 
@@ -188,11 +188,8 @@ class SeriesList(ScrollView, can_focus=True):
         if index >= len(self._items):
             return Strip.blank(width)
         item = self._items[index]
-        style = Style()
-        if item.state.fixes_pending:
-            style = FIXES_STYLE
-        elif item.state.unread:
-            style = UNREAD_STYLE
+        # Unread colours the row; a pending stable fix colours only its ⚠ (a row role).
+        style = UNREAD_STYLE if item.state.unread else Style()
         segments = []
         for text, role in self._row(index):
             seg_style = style + ROLE_STYLES[role] if role in ROLE_STYLES else style
@@ -1682,7 +1679,7 @@ class MaintainerApp(App[None]):
             for on, label in (
                 (st.to_review, 'To Review'),
                 (st.unread, f'{st.unread} unread'),
-                (st.fixes_pending, 'Fixes pending'),
+                (st.stable_pending, 'Cc stable pending'),
                 (st.draft, 'draft'),
             )
             if on
@@ -1702,6 +1699,14 @@ class MaintainerApp(App[None]):
             f'Trailers: A:{acked} R:{reviewed} T:{tested}'
             f' (cover A:{s.cover_trailers.acked} R:{s.cover_trailers.reviewed} T:{s.cover_trailers.tested})',
         ]
+        # Why ⚠: each patch's Fixes targets, and which patches Cc stable.
+        for p in s.patches:
+            lines += [f'Fixes:    {p.counter}/{s.expected} {target}' for target in p.fixes]
+        stable = [f'{p.counter}/{s.expected}' for p in s.patches if p.stable]
+        if stable:
+            lines.append(f'Stable:   Cc stable in {", ".join(stable)}')
+        if s.cc_stable and item.landed:
+            lines.append('          landed: no longer pending')
         lines += [text for text, _ in self._sashiko_lines(item)]
         lines += ['', 'Tree evidence:']
         if not st.tree:
@@ -1717,7 +1722,9 @@ class MaintainerApp(App[None]):
                 c if n else self.symbols.absent
                 for c, n in (('A', t.acked), ('R', t.reviewed), ('T', t.tested))
             )
-            lines.append(f'  {p.counter}/{s.expected} {marks} {p.subject}')
+            tags = [label for on, label in ((p.fixes, 'Fixes'), (p.stable, 'stable')) if on]
+            suffix = f' [{", ".join(tags)}]' if tags else ''
+            lines.append(f'  {p.counter}/{s.expected} {marks} {p.subject}{suffix}')
         if self._preview and s.preview:
             lines += ['', f'── {s.preview_label} ──', '', s.preview]
         elif s.preview:

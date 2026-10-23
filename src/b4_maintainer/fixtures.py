@@ -160,7 +160,7 @@ def make_item(
     reviewed: int = 0,
     tested: int = 0,
     unread: int = 0,
-    fixes_pending: bool = False,
+    stable_pending: bool = False,
     draft: bool = False,
     progress: Progress = Progress.NONE,
     to_review: bool = False,
@@ -185,7 +185,7 @@ def make_item(
         carried=carried,
         preview=preview,
     )
-    state = SeriesState(unread, fixes_pending, progress, draft, to_review, tuple(tree))
+    state = SeriesState(unread, stable_pending, progress, draft, to_review, tuple(tree))
     return WorkItem(
         series,
         state,
@@ -374,7 +374,7 @@ def build_demo_workspace(
         'mm-foo',
         {
             'unread': 1,
-            'fixes_pending': True,
+            'stable_pending': True,
             'draft': True,
             'responsible': True,
             'tree': _tree(('n', 'acceptance', 'partial')),
@@ -516,7 +516,7 @@ def synthetic_snapshot(n: int, seed: int = 0) -> Snapshot:
             tree.append(('m', Authority.MAINLINE, Coverage.FULL))
         states[s.identity] = SeriesState(
             unread=rng.choice([0, 0, 0, 1, 3]),
-            fixes_pending=rng.random() < 0.05,
+            stable_pending=rng.random() < 0.05,
             progress=rng.choice(list(Progress)),
             draft=rng.random() < 0.05,
             to_review=rng.random() < 0.2,
