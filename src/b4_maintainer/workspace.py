@@ -102,6 +102,8 @@ class Workspace:
     # State sync with state/'s remote: at startup, around refresh, and on quit.
     sync_auto: bool = True
     sync_timeout: float = 10.0
+    # Refresh fetches the remotes behind configured refs before scanning them.
+    fetch_refs: bool = True
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -156,6 +158,7 @@ class Workspace:
             tmux_width=int(config.get('drafts', {}).get('tmux_width', 100)),
             sync_auto=bool(config.get('sync', {}).get('auto', True)),
             sync_timeout=float(config.get('sync', {}).get('timeout', 10.0)),
+            fetch_refs=bool(config.get('refs', {}).get('fetch', True)),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

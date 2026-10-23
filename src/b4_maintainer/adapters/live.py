@@ -10,6 +10,7 @@ import dataclasses
 import datetime
 import json
 import pathlib
+import subprocess
 import threading
 import tomllib
 from dataclasses import dataclass
@@ -343,11 +344,45 @@ class LiveSource:
         # Mainline: commits since a month before the window, enough to see merges.
         since = self._now() - datetime.timedelta(days=ws.window_days + 30)
         scanned = 0
+        failures: list[str] = []
         for project in ws.projects:
             if project.refs and self._enrolled(project):
+                if ws.fetch_refs:
+                    failures += self._fetch_ref_remotes(project, progress)
                 progress(f'Checking refs for {project.id}…')
                 scanned += self.refs(project).update(project.refs, since)
-        return f'; {scanned} refs scanned' if scanned else ''
+        result = f'; {scanned} refs scanned' if scanned else ''
+        return result + ''.join(f'; {f}' for f in failures)
+
+    def _fetch_ref_remotes(self, project: Project, progress: Callable[[str], None]) -> list[str]:
+        """Fetch each remote a configured ref lives on (remote/branch), as configured.
+
+        Only remote-tracking refs move; the checkout's HEAD, index and worktree are untouched.
+        """
+        checkout = self.checkout(project)
+        listed = subprocess.run(
+            ['git', '-C', str(checkout), 'remote'], capture_output=True, text=True, check=False
+        )
+        remotes = set(listed.stdout.split())
+        wanted = dict.fromkeys(r.name.split('/', 1)[0] for r in project.refs if '/' in r.name)
+        failures = []
+        for remote in (r for r in wanted if r in remotes):
+            progress(f'Fetching {remote} for {project.id}…')
+            try:
+                result = subprocess.run(
+                    ['git', '-C', str(checkout), 'fetch', '-q', remote],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=900,
+                    check=False,
+                )
+                error = result.stderr.strip().splitlines()[-1:] if result.returncode else []
+            except subprocess.TimeoutExpired:
+                error = ['timed out']
+            if error:
+                failures.append(f'fetch {remote} failed: {error[0] if error else "error"}')
+        return failures
 
     def _flags_checkout(self, ws: Workspace) -> Optional[pathlib.Path]:
         """Checkout whose b4 configuration locates the shared message flags."""
