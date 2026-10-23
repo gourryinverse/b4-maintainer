@@ -282,3 +282,4 @@ async def test_passive_actions_launch_no_agents(demo_root, store, runner):
         await poll(pilot)
     assert runner.launches == []
     assert (runner.resumes, runner.stops, runner.switches, runner.ends) == ([], [], [], [])
+

@@ -15,6 +15,8 @@ id = "goal"
 label = "Goal"
 kind = "choice"
 required = true
+custom = "Goal: {text}"
+custom_label = "Custom goal"
 
 [[fields.choices]]
 id = "review"
@@ -27,17 +29,13 @@ id = "reproduce"
 label = "Reproduce and validate"
 prompt = "Reproduce the problem the series fixes and validate the fix."
 needs = "worktree"
-
-[[fields.choices]]
-id = "custom"
-label = "Custom"
-text = true
-prompt = "Goal: {text}"
+skills = ["vng"]
 
 [[fields]]
 id = "artifacts"
 label = "Artifacts"
 kind = "multi"
+custom = "Also produce: {text}"
 
 [[fields.choices]]
 id = "draft"
@@ -49,12 +47,6 @@ id = "selftest"
 label = "Selftest"
 prompt = "Write a kselftest under out/selftest/."
 needs = "worktree"
-
-[[fields.choices]]
-id = "custom"
-label = "Custom artifact"
-text = true
-prompt = "Also produce: {text}"
 """
 
 
@@ -106,6 +98,8 @@ class FakeSessionRunner:
         self.switches = []
         self.ends = []
         self.windows = set()
+        self.fail = None  # Message for launch to fail with.
+        self.blocker_reason = None
 
     def add(self, record, alive=True):
         """A session as if launched earlier (not counted as a launch)."""
@@ -119,7 +113,12 @@ class FakeSessionRunner:
 
         self.store.append(sid, event_from_payload(payload(event, **fields), time))
 
+    def blocker(self):
+        return self.blocker_reason
+
     def launch(self, record, request):
+        if self.fail:
+            raise RuntimeError(self.fail)
         self.launches.append((record.id, request))
         self.windows.add(record.id)
 

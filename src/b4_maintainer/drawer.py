@@ -5,9 +5,10 @@ Each session is named by the series it was launched for, never by the selection.
 """
 
 import datetime
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Union
 
 from .sessions.hub import Overview, WorktreeInfo
+from .sessions.launch import Target
 from .sessions.records import SessionRecord
 from .sessions.store import SessionView
 
@@ -32,7 +33,7 @@ def format_bytes(n: int) -> str:
     return f'{n} B'
 
 
-def session_label(record: SessionRecord) -> str:
+def session_label(record: Union[SessionRecord, Target]) -> str:
     if record.scope == 'workspace' or not record.series:
         return 'workspace'
     return f'{record.project}: {record.subject} v{record.revision}'
@@ -88,7 +89,11 @@ def age(created: str, now: datetime.datetime) -> str:
 
 def _goal(record: SessionRecord) -> str:
     goal = record.choices.get('goal')
-    return goal if isinstance(goal, str) else record.profile_id
+    if isinstance(goal, list) and goal:
+        return '+'.join(str(g) for g in goal)
+    if isinstance(goal, str) and goal:
+        return goal
+    return 'custom' if record.choices.get('goal:text') else record.profile_id
 
 
 def session_row(view: SessionView, now: datetime.datetime) -> str:

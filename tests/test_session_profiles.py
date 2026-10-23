@@ -3,7 +3,13 @@
 import pytest
 from sessiondata import PROFILE
 
-from b4_maintainer.sessions.profiles import ProfileError, compose, load_profiles, parse_profile
+from b4_maintainer.sessions.profiles import (
+    ProfileError,
+    compose,
+    load_profiles,
+    parse_profile,
+    suggested_skills,
+)
 
 
 def write(directory, name, text):
@@ -22,14 +28,30 @@ def test_choices_compose_the_prompts_in_field_order():
     assert request.mode == 'lightweight' and request.notes == ()
 
 
-def test_free_text_choices_fill_their_prompt():
+def test_custom_text_adds_to_the_picked_choices():
     profile = parse_profile(PROFILE)
     request = compose(
         profile,
-        {'goal': 'custom', 'artifacts': ['custom']},
+        {'goal': 'review', 'artifacts': ['draft']},
         text={'goal': 'find the leak', 'artifacts': 'a timeline'},
     )
-    assert request.prompt == 'Goal: find the leak\n\nAlso produce: a timeline'
+    assert request.prompt == (
+        'Help me review this series.\n\nGoal: find the leak\n\n'
+        'Write an inline review reply to out/draft/reply.txt.\n\nAlso produce: a timeline'
+    )
+
+
+def test_custom_text_alone_answers_a_required_field():
+    profile = parse_profile(PROFILE)
+    request = compose(profile, {}, text={'goal': 'find the leak'})
+    assert request.prompt == 'Goal: find the leak'
+
+
+def test_multi_choice_goals_compose_each():
+    profile = parse_profile(PROFILE.replace('kind = "choice"', 'kind = "multi"'))
+    request = compose(profile, {'goal': ['review', 'reproduce']})
+    assert request.prompt.startswith('Help me review this series.\n\nReproduce the problem')
+    assert request.mode == 'worktree'
 
 
 def test_a_choice_needing_a_tree_switches_to_worktree_with_a_note():
@@ -41,14 +63,24 @@ def test_a_choice_needing_a_tree_switches_to_worktree_with_a_note():
     assert kept.mode == 'lightweight'  # The maintainer may switch back.
 
 
+def test_profile_and_choice_skills_are_suggested_in_order():
+    profile = parse_profile('skills = ["style"]\n' + PROFILE)
+    picked = {'goal': 'reproduce', 'artifacts': ['draft']}
+    assert compose(profile, picked).skills == ('style', 'vng')
+    assert suggested_skills(profile, {'goal': 'reproduce', 'artifacts': ['nope']}) == (
+        'style',
+        'vng',
+    )
+
+
 def test_required_fields_and_unknown_choices_are_refused():
     profile = parse_profile(PROFILE)
     with pytest.raises(ProfileError, match='Goal'):
         compose(profile, {})
     with pytest.raises(ProfileError, match='nope'):
         compose(profile, {'goal': 'nope'})
-    with pytest.raises(ProfileError, match='text'):
-        compose(profile, {'goal': 'custom'})
+    with pytest.raises(ProfileError, match='Goal'):
+        compose(profile, {}, text={'goal': '   '})  # Blank custom text is no answer.
 
 
 @pytest.mark.parametrize(
@@ -71,6 +103,18 @@ def test_required_fields_and_unknown_choices_are_refused():
         ),
         ('id = "x"\nversion = 1\nlabel = "X"\npermissions = "root"', 'permissions'),
         ('not toml = = 1', 'TOML'),
+        (
+            'id = "x"\nversion = 1\nlabel = "X"\n[[fields]]\nid = "g"\nlabel = "G"\n'
+            'kind = "multi"\ncustom = "no placeholder"\n'
+            '[[fields.choices]]\nid = "a"\nlabel = "A"',
+            '{text}',
+        ),
+        ('id = "x"\nversion = 1\nlabel = "X"\nskills = "vng"', 'skills'),
+        (
+            'id = "x"\nversion = 1\nlabel = "X"\n[[fields]]\nid = "g"\nlabel = "G"\n'
+            'kind = "choice"\n[[fields.choices]]\nid = "a"\nlabel = "A"\nskills = [1]',
+            'skills',
+        ),
     ],
 )
 def test_invalid_profiles_are_reported(text, message):
@@ -102,4 +146,5 @@ def test_the_built_in_profiles_load():
     assert problems == []
     series = next(p for p in profiles if p.scope == 'series')
     goal = next(f for f in series.fields if f.id == 'goal')
-    assert {c.id for c in goal.choices} >= {'review', 'bugs', 'reproduce', 'performance', 'custom'}
+    assert goal.kind == 'multi' and goal.custom
+    assert {c.id for c in goal.choices} >= {'review', 'bugs', 'reproduce', 'performance'}

@@ -28,9 +28,9 @@ class Choice:
     id: str
     label: str
     prompt: str = ''
-    text: bool = False  # Takes free text, filling {text} in its prompt.
     files: tuple[str, ...] = ()  # Guidance files, e.g. review-prompts:agents/review.md.
     needs: str = ''  # 'worktree' when the choice needs a tree to build or run.
+    skills: tuple[str, ...] = ()  # Skills suggested when picked.
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,9 @@ class Field:
     required: bool = False
     choices: tuple[Choice, ...] = ()
     prompt: str = ''  # For text fields: filled with {text}.
+    # Choice fields: optional free text added to the picked choices, filling {text}.
+    custom: str = ''
+    custom_label: str = ''
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,7 @@ class Profile:
     permissions: str
     fields: tuple[Field, ...]
     hash: str
+    skills: tuple[str, ...] = ()  # Skills suggested for every session of this profile.
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class Request:
     files: tuple[str, ...]
     mode: str
     notes: tuple[str, ...]
+    skills: tuple[str, ...] = ()  # Suggested by the profile and the picked choices.
 
 
 def _str(data: Mapping[str, Any], key: str, where: str, default: Optional[str] = None) -> str:
@@ -80,17 +85,21 @@ def _choice(raw: Any, where: str) -> Choice:
     needs = _str(raw, 'needs', f'{where}.{cid}', '')
     if needs not in ('', 'worktree'):
         raise ProfileError(f'{where}.{cid}: needs must be "worktree"')
-    files = raw.get('files', [])
-    if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
-        raise ProfileError(f'{where}.{cid}: files must be a list of strings')
     return Choice(
         cid,
         _str(raw, 'label', f'{where}.{cid}'),
         _str(raw, 'prompt', f'{where}.{cid}', ''),
-        bool(raw.get('text', False)),
-        tuple(files),
+        _strings(raw, 'files', f'{where}.{cid}'),
         needs,
+        _strings(raw, 'skills', f'{where}.{cid}'),
     )
+
+
+def _strings(raw: Mapping[str, Any], key: str, where: str) -> tuple[str, ...]:
+    values = raw.get(key, [])
+    if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+        raise ProfileError(f'{where}: {key} must be a list of strings')
+    return tuple(values)
 
 
 def _field(raw: Any) -> Field:
@@ -105,6 +114,9 @@ def _field(raw: Any) -> Field:
         raise ProfileError(f'{fid}: duplicate choice ids')
     if kind != 'text' and not choices:
         raise ProfileError(f'{fid}: a {kind} field needs choices')
+    custom = _str(raw, 'custom', fid, '')
+    if custom and (kind == 'text' or '{text}' not in custom):
+        raise ProfileError(f'{fid}: custom is for choice fields and must contain {{text}}')
     return Field(
         fid,
         _str(raw, 'label', fid),
@@ -112,6 +124,8 @@ def _field(raw: Any) -> Field:
         bool(raw.get('required', False)),
         choices,
         _str(raw, 'prompt', fid, ''),
+        custom,
+        _str(raw, 'custom_label', fid, ''),
     )
 
 
@@ -142,6 +156,7 @@ def parse_profile(text: str) -> Profile:
         permissions,
         fields,
         hashlib.sha256(text.encode()).hexdigest(),
+        _strings(data, 'skills', pid),
     )
 
 
@@ -164,6 +179,27 @@ def load_profiles(
     return list(found.values()), problems
 
 
+def _picked(field: Field, value: Any) -> list[str]:
+    if field.kind == 'text':
+        return []
+    return [value] if isinstance(value, str) else list(value or [])
+
+
+def suggested_skills(profile: Profile, choices: Mapping[str, Any]) -> tuple[str, ...]:
+    """The profile's skills, then those of each picked choice, in field order, once each.
+
+    Unknown choices are ignored here: the dialog shows suggestions while it is incomplete.
+    """
+    skills = list(profile.skills)
+    for field in profile.fields:
+        by_id = {c.id: c for c in field.choices}
+        for cid in _picked(field, choices.get(field.id)):
+            choice = by_id.get(cid)
+            if choice is not None:
+                skills.extend(choice.skills)
+    return tuple(dict.fromkeys(skills))
+
+
 def compose(
     profile: Profile,
     choices: Mapping[str, Any],
@@ -173,8 +209,8 @@ def compose(
     """The session's prompts from the dialog's choices, in field order.
 
     *choices* maps field ids to a choice id (choice), a list of ids (multi), or text
-    (text fields); *text* holds the free text of choices that take it. Choices needing a
-    tree suggest the worktree mode; an explicit *mode* wins.
+    (text fields); *text* holds each choice field's custom text, added after its picked
+    choices. Choices needing a tree suggest the worktree mode; an explicit *mode* wins.
     """
     text = text or {}
     parts: list[str] = []
@@ -188,29 +224,31 @@ def compose(
             elif field.required:
                 raise ProfileError(f'{field.label} is required')
             continue
-        picked: Sequence[str] = [value] if isinstance(value, str) else list(value or [])
-        if field.required and not picked:
+        picked: Sequence[str] = _picked(field, value)
+        free = text.get(field.id, '').strip() if field.custom else ''
+        if field.required and not picked and not free:
             raise ProfileError(f'{field.label} is required')
         by_id = {c.id: c for c in field.choices}
         for cid in picked:
             choice = by_id.get(cid)
             if choice is None:
                 raise ProfileError(f'{field.label}: unknown choice {cid!r}')
-            prompt = choice.prompt
-            if choice.text:
-                free = text.get(field.id, '').strip()
-                if not free:
-                    raise ProfileError(f'{field.label}: {choice.label} needs text')
-                prompt = prompt.replace('{text}', free) if prompt else free
-            if prompt:
-                parts.append(prompt)
+            if choice.prompt:
+                parts.append(choice.prompt)
             files.extend(f for f in choice.files if f not in files)
             if choice.needs == 'worktree':
                 needing.append(choice.label)
+        if free:
+            parts.append(field.custom.replace('{text}', free))
     if mode is not None and mode not in MODES:
         raise ProfileError(f'mode must be one of {", ".join(MODES)}')
     suggested = 'worktree' if needing else 'lightweight'
     notes = (f'Worktree suggested: {", ".join(needing)} needs a tree',) if needing else ()
     return Request(
-        '\n\n'.join(parts), profile.system_prompt, tuple(files), mode or suggested, notes
+        '\n\n'.join(parts),
+        profile.system_prompt,
+        tuple(files),
+        mode or suggested,
+        notes,
+        suggested_skills(profile, choices),
     )

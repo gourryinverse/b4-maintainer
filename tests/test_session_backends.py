@@ -55,7 +55,7 @@ def test_bad_entries_are_reported_not_fatal():
     assert len(entries) == 7  # The id-less entry is skipped.
 
 
-def test_env_and_models_are_kept_and_private_ok_is_explicit():
+def test_env_and_models_are_kept():
     config = [
         {
             'id': 'local',
@@ -63,13 +63,10 @@ def test_env_and_models_are_kept_and_private_ok_is_explicit():
             'command': ['pi'],
             'models': ['llama'],
             'env': {'PI_HOME': '/srv/pi'},
-            'private_ok': True,
         }
     ]
     [local] = [e for e in backend_entries(config, which=found('pi')) if e.id == 'local']
     assert local.models == ('llama',) and local.env == {'PI_HOME': '/srv/pi'}
-    assert local.private_ok
-    assert not next(e for e in backend_entries([], which=found()) if e.id == 'claude').private_ok
 
 
 def test_launch_problems_refuse_unenforceable_permissions():
@@ -84,5 +81,5 @@ def test_launch_problems_refuse_unenforceable_permissions():
 
 def test_dry_run_needs_nothing_installed_and_runs_no_provider():
     [dry] = [e for e in backend_entries([], which=found()) if e.id == 'dry-run']
-    assert dry.available and dry.private_ok and dry.state_events
+    assert dry.available and dry.state_events
     assert launch_problems(dry, 'execute') == []

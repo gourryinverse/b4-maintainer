@@ -1,32 +1,7 @@
-"""Contract: private context reaches only backends allowed it; limits say why to wait."""
+"""Contract: launch limits say why a launch must wait."""
 
-from b4_maintainer.sessions.backends import backend_entries
-from b4_maintainer.sessions.policy import ContextItem, SessionLimits, disclosure, launch_check
+from b4_maintainer.sessions.policy import SessionLimits, launch_check
 from b4_maintainer.workspace import Workspace
-
-ITEMS = (
-    ContextItem('mbox', 'Series mail', private=False),
-    ContextItem('sashiko', 'Sashiko findings', private=False),
-    ContextItem('drafts', 'Your unsent drafts', private=True),
-    ContextItem('notes', 'Synced client state', private=True),
-)
-
-
-def entry(eid, config=()):
-    return next(e for e in backend_entries(list(config), which=lambda c: c) if e.id == eid)
-
-
-def test_public_context_always_goes_and_private_only_when_ticked_and_allowed():
-    included, refused = disclosure(ITEMS, entry('claude'), ticked=set())
-    assert [i.id for i in included] == ['mbox', 'sashiko'] and refused == []
-
-    included, refused = disclosure(ITEMS, entry('claude'), ticked={'drafts'})
-    assert [i.id for i in included] == ['mbox', 'sashiko']
-    assert refused and 'Your unsent drafts' in refused[0] and 'claude' in refused[0]
-
-    local = entry('local', [{'id': 'local', 'adapter': 'claude', 'private_ok': True}])
-    included, refused = disclosure(ITEMS, local, ticked={'drafts'})
-    assert [i.id for i in included] == ['mbox', 'sashiko', 'drafts'] and refused == []
 
 
 def test_limits_block_live_sessions_and_warn_on_worktrees():

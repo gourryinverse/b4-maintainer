@@ -13,8 +13,10 @@ commands rather than assuming they will run."""
 [[fields]]
 id = "goal"
 label = "Goal"
-kind = "choice"
+kind = "multi"
 required = true
+custom = "Goal: {text}"
+custom_label = "Custom goal (adds to those ticked)"
 
 [[fields.choices]]
 id = "review"
@@ -40,16 +42,12 @@ label = "Performance testing"
 prompt = "Assess the performance impact of this series with a reproducible measurement."
 needs = "worktree"
 
-[[fields.choices]]
-id = "custom"
-label = "Custom"
-text = true
-prompt = "Goal: {text}"
-
 [[fields]]
 id = "artifacts"
 label = "Artifacts"
 kind = "multi"
+custom = "Also produce: {text}"
+custom_label = "Custom artifact (adds to those ticked)"
 
 [[fields.choices]]
 id = "quality"
@@ -86,12 +84,6 @@ label = "Backport series"
 prompt = "Backport the series to the chosen base as commits on the session branch."
 needs = "worktree"
 
-[[fields.choices]]
-id = "custom"
-label = "Custom artifact"
-text = true
-prompt = "Also produce: {text}"
-
 [[fields]]
 id = "apparatus"
 label = "Testing apparatus"
@@ -102,6 +94,7 @@ id = "vng"
 label = "vng"
 prompt = "Run kernels with virtme-ng through the sandbox wrapper."
 needs = "worktree"
+skills = ["vng"]
 
 [[fields.choices]]
 id = "baremetal"

@@ -1,36 +1,20 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""What context a backend may receive, and when a launch must wait."""
+"""What a session receives, and when a launch must wait.
+
+Sessions receive public data only (list mail, public trees, Sashiko): never unsent drafts,
+synced client state, or internal trees.
+"""
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
-
-from .backends import BackendEntry
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
 class ContextItem:
+    """Public material given to a session, e.g. the series mbox and thread."""
+
     id: str
     label: str
-    private: bool  # Unsent drafts, synced client state, internal trees.
-
-
-def disclosure(
-    items: Iterable[ContextItem], entry: BackendEntry, ticked: set[str]
-) -> tuple[list[ContextItem], list[str]]:
-    """Public items always; private ones only when ticked and the entry is private_ok.
-
-    Returns the included items and why any ticked item was left out.
-    """
-    included, refused = [], []
-    for item in items:
-        if not item.private:
-            included.append(item)
-        elif item.id in ticked:
-            if entry.private_ok:
-                included.append(item)
-            else:
-                refused.append(f'{item.label}: not sent to {entry.id} (not private_ok)')
-    return included, refused
 
 
 @dataclass(frozen=True)

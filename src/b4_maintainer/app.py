@@ -30,6 +30,7 @@ from textual.worker import Worker, WorkerState
 from .adapters.b4mbox import load_thread
 from .adapters.drafts import DraftStore, SavedDraft
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
+from .launchdialog import LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
@@ -54,13 +55,20 @@ from .reader import (
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
 from .sessions.hub import Overview, SessionHub
+from .sessions.launch import Situation, Target
+from .sessions.policy import ContextItem
+from .sessions.profiles import Profile
+from .sessions.skills import Skill
 from .sessions.store import SessionView
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TextPane, printable
-from .workspace import Snapshot
+from .workspace import Snapshot, Workspace
 
 SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
 DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit'})
+LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
+# Until the sandbox exists, sessions may not execute series code.
+EXECUTE_REASON = 'sandboxed execution is not available yet'
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
@@ -386,6 +394,7 @@ class MaintainerApp(App[None]):
         Binding('f5', 'refresh', 'refresh', key_display='F5'),
         Binding('r', 'reply', 'reply'),
         Binding('R', 'mark_read', 'read all'),
+        Binding('f1', 'launch_session', 'session', key_display='F1'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
         Binding('Q', 'quit', 'quit'),
     ]
@@ -662,8 +671,12 @@ class MaintainerApp(App[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
         """Hide keys that would do nothing in the current layout."""
-        if isinstance(self.screen, Confirm):
-            return False  # The prompt owns every key while it is open.
+        if isinstance(self.screen, LaunchDialog):
+            return action == 'cycle_pane'  # Tab moves between the dialog's sections.
+        if isinstance(self.screen, ModalScreen):
+            return False  # A prompt or dialog owns every key while it is open.
+        if action == 'launch_session':
+            return self._sessions is not None and not self._drawer_focused()
         if action in SESSION_ACTIONS:
             view = self._selected_view()
             return view is not None and (action != 'open_session' or view.state != 'ended')
@@ -1268,7 +1281,9 @@ class MaintainerApp(App[None]):
 
     def action_cycle_pane(self, delta: int) -> None:
         """Tab/Shift-Tab: next pane; one pane at a time on narrow terminals."""
-        if self._drawer_focused():
+        if isinstance(self.screen, LaunchDialog):
+            self.screen.focus_next() if delta > 0 else self.screen.focus_previous()
+        elif self._drawer_focused():
             self._show_drawer_tab('worktrees' if self._drawer_tab == 'sessions' else 'sessions')
         elif self._mode == 'narrow' and self._reading is not None:
             in_app = self._draft is not None and not self._draft.pane
@@ -1658,6 +1673,59 @@ class MaintainerApp(App[None]):
             self._set_notice(notice)
         self.poll_sessions()
 
+    def action_launch_session(self) -> None:
+        """F1: the launch dialog for the open or selected series (or the workspace)."""
+        hub, snapshot = self._sessions, self.snapshot
+        if hub is None or snapshot is None:
+            return
+        item = self._reading or self._item
+        workspace, overview = snapshot.workspace, self._overview
+
+        def work() -> None:
+            try:
+                blocker = hub.blocker()
+                if blocker is not None:
+                    self.call_from_thread(self.push_screen, Notice(f'Agent sessions: {blocker}'))
+                    return
+                profiles, problems = hub.profiles()
+                skills, skill_problems = hub.skills()
+                situation = _situation(hub, workspace, overview, skills)
+                problems += skill_problems
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot open the session dialog: {exc}')
+                return
+            self.call_from_thread(self._show_launch, item, profiles, problems, situation)
+
+        self.run_worker(work, thread=True, group='session-action')
+
+    def _show_launch(
+        self,
+        item: Optional[WorkItem],
+        profiles: list[Profile],
+        problems: list[str],
+        situation: Situation,
+    ) -> None:
+        target = _target(item) if item is not None else None
+        items: dict[str, tuple[ContextItem, ...]] = {'series': SERIES_CONTEXT, 'workspace': ()}
+        dialog = LaunchDialog(target, profiles, situation, items, problems)
+        self.push_screen(dialog, self._launch_chosen)
+
+    def _launch_chosen(self, result: Optional[LaunchResult]) -> None:
+        hub, snapshot = self._sessions, self.snapshot
+        if result is None or hub is None or snapshot is None:
+            return
+        workspace, label = snapshot.workspace, session_label(result.target)
+
+        def launch() -> str:
+            # Checked again with fresh counts: the dialog may have been open a while.
+            situation = _situation(hub, workspace, hub.overview(), hub.skills()[0])
+            record = hub.launch(
+                result.target, result.profile, result.choice, situation, result.items
+            )
+            return f'Launched session {record.id}: {label}'
+
+        self._session_call(launch)
+
     def action_open_session(self) -> None:
         view, hub = self._selected_view(), self._sessions
         if view is None or hub is None:
@@ -1963,6 +2031,28 @@ def _action_names(bindings: Iterable[Any]) -> Iterable[str]:
     for binding in bindings:
         action = binding.action if isinstance(binding, Binding) else binding[1]
         yield action.split('(', 1)[0]
+
+
+def _situation(
+    hub: SessionHub, workspace: Workspace, overview: Overview, skills: list[Skill]
+) -> Situation:
+    return Situation(
+        hub.backends(workspace.backends),
+        workspace.session_limits,
+        live=sum(v.state in LIVE_STATES for v in overview.sessions),
+        worktrees=len(overview.worktrees),
+        worktree_bytes=overview.worktree_bytes,
+        execute_reason=EXECUTE_REASON,
+        skills=skills,
+    )
+
+
+def _target(item: WorkItem) -> Target:
+    s = item.series
+    return Target('series', item.project or '', item.identity, s.revision, s.subject)
+
+
+SERIES_CONTEXT: tuple[ContextItem, ...] = (ContextItem('mbox', 'Series mbox and thread'),)
 
 
 def _replace_rows(rows: OptionList, entries: list[tuple[str, str]], empty: str) -> None:

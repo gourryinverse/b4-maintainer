@@ -27,7 +27,6 @@ class Adapter:
     enforces: frozenset[str] = frozenset()  # Permission profiles it can enforce.
     resume: bool = False
     headless: bool = False
-    private_ok: bool = False  # Runs no third-party provider (e.g. local models).
 
 
 ADAPTERS = {
@@ -42,7 +41,7 @@ ADAPTERS = {
     ),
     'codex': Adapter('codex', ('codex',), False),
     'other': Adapter('other', ('other',), False),
-    'pi': Adapter('pi', ('pi',), False, private_ok=True),
+    'pi': Adapter('pi', ('pi',), False),
     # Runs a script instead of an agent; the launch, hooks, and sandbox are real.
     'dry-run': Adapter(
         'dry-run',
@@ -51,7 +50,6 @@ ADAPTERS = {
         state_events=True,
         enforces=ALL_PERMISSIONS,
         resume=True,
-        private_ok=True,
     ),
 }
 
@@ -63,7 +61,6 @@ class BackendEntry:
     command: tuple[str, ...]
     models: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
-    private_ok: bool = False
     state_events: bool = False
     enforces: frozenset[str] = frozenset()
     resume: bool = False
@@ -90,7 +87,6 @@ def _entry(eid: str, adapter_name: str, raw: Mapping[str, Any], which: Which) ->
         tuple(str(c) for c in command) if isinstance(command, list) else (),
         tuple(str(m) for m in models) if isinstance(models, list) else (),
         {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {},
-        bool(raw.get('private_ok', adapter.private_ok)),
         adapter.state_events,
         adapter.enforces,
         adapter.resume,
@@ -130,9 +126,8 @@ def backend_entries(
 
 def launch_problems(entry: BackendEntry, permissions: str) -> list[str]:
     """Why a session with *permissions* cannot launch on *entry* (empty: it can)."""
-    problems = []
     if not entry.available:
-        problems.append(f'{entry.id}: {entry.reason}')
+        return [f'{entry.id}: {entry.reason}']  # Its capabilities do not matter yet.
     if permissions not in entry.enforces:
-        problems.append(f'{entry.id} cannot enforce {permissions}')
-    return problems
+        return [f'{entry.id} cannot enforce {permissions}']
+    return []

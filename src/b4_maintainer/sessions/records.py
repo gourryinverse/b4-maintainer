@@ -51,6 +51,8 @@ class SessionRecord:
     worktree: Optional[Worktree] = None
     state: str = ''  # App-recorded: stopped, ended, failed; else derived from events.
     provenance: dict[str, str] = field(default_factory=dict)
+    context: tuple[str, ...] = ()  # Public context items given (ids).
+    skills: tuple[str, ...] = ()
 
     def replace(self, **changes: Any) -> 'SessionRecord':
         return dataclasses.replace(self, **changes)
@@ -58,6 +60,8 @@ class SessionRecord:
     def save(self, path: pathlib.Path) -> None:
         data = dataclasses.asdict(self)
         data['command'] = list(self.command)
+        data['context'] = list(self.context)
+        data['skills'] = list(self.skills)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f'.{path.name}.tmp')
         tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + '\n')
@@ -68,6 +72,8 @@ class SessionRecord:
         data = json.loads(path.read_text())
         worktree = data.pop('worktree', None)
         data['command'] = tuple(data.get('command', ()))
+        data['context'] = tuple(data.get('context', ()))
+        data['skills'] = tuple(data.get('skills', ()))
         names = {f.name for f in dataclasses.fields(cls)}
         known = {k: v for k, v in data.items() if k in names}
         return cls(**known, worktree=Worktree(**worktree) if worktree else None)
