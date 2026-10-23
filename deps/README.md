@@ -52,6 +52,8 @@ Configure remotes after initialization:
     '
 
 - See [dependency-first requirements](../docs/design/architecture.md).
+- b4 fork commits, behaviour changes, and upstream status:
+  [b4 fork notes](../docs/design/b4-fork.md).
 
 ## Known gaps
 

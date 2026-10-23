@@ -30,6 +30,7 @@ in the background.
 - [Sashiko feedback](docs/design/sashiko.md)
 - [External editor drafts](docs/design/editor.md)
 - [Agent sessions and drawer](docs/design/sessions.md)
+- [b4 fork notes](docs/design/b4-fork.md)
 - [Open decisions](docs/design/open.md)
 - [Contributor instructions](AGENTS.md)
 
