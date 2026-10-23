@@ -29,6 +29,7 @@ in the background.
 - [Project workspaces](docs/design/projects.md)
 - [Sashiko feedback](docs/design/sashiko.md)
 - [External editor drafts](docs/design/editor.md)
+- [Agent sessions and drawer](docs/design/sessions.md)
 - [Open decisions](docs/design/open.md)
 - [Contributor instructions](AGENTS.md)
 
