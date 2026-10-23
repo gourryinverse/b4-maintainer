@@ -1600,12 +1600,23 @@ class MaintainerApp(App[None]):
             overview: Optional[Overview] = self._sessions.overview()
         except Exception:  # A record being written, a vanished directory: next poll.
             overview = None
-        self.call_from_thread(self._apply_overview, overview)
+        try:
+            self.call_from_thread(self._apply_overview, overview)
+        except RuntimeError:  # The app has stopped.
+            self._polling = False
 
     def _apply_overview(self, overview: Optional[Overview]) -> None:
+        """A background refresh: a failure is reported in the status line, never fatal."""
         self._polling = False
         if overview is None or not self.screen_stack:
             return
+        try:
+            self._show_overview(overview)
+        except Exception as exc:
+            self.log.error(f'session drawer update failed: {exc!r}')
+            self._set_notice(f'Session drawer update failed: {exc}')
+
+    def _show_overview(self, overview: Overview) -> None:
         self._overview = overview
         line = drawer_line(overview)
         if line != self._drawer:

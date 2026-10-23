@@ -283,3 +283,25 @@ async def test_passive_actions_launch_no_agents(demo_root, store, runner):
     assert runner.launches == []
     assert (runner.resumes, runner.stops, runner.switches, runner.ends) == ([], [], [], [])
 
+
+async def test_a_failed_drawer_update_is_reported_not_fatal(demo_root, store, runner, monkeypatch):
+    import b4_maintainer.app as app_module
+
+    runner.add(make_record('a'))
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+
+        def broken(overview):
+            raise RuntimeError('synthetic drawer failure')
+
+        real = app_module.drawer_line
+        monkeypatch.setattr(app_module, 'drawer_line', broken)
+        runner.emit('a', 'Notification', notification_type='permission_prompt')
+        await poll(pilot)
+        assert app.is_running
+        assert 'synthetic drawer failure' in app.status_text()
+        monkeypatch.setattr(app_module, 'drawer_line', real)
+        await poll(pilot)  # Polling continues after a failure.
+        assert 'needs approval' in app.drawer_text()
+    assert app.return_code in (0, None)
