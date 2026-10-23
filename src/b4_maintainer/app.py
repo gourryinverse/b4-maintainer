@@ -13,7 +13,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.geometry import Size
 from textual.markup import escape
@@ -29,6 +29,7 @@ from textual.worker import Worker, WorkerState
 
 from .adapters.b4mbox import load_thread
 from .adapters.drafts import DraftStore, SavedDraft
+from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
@@ -52,10 +53,14 @@ from .reader import (
 )
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
+from .sessions.hub import Overview, SessionHub
+from .sessions.store import SessionView
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TextPane, printable
 from .workspace import Snapshot
 
+SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
+DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit'})
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
@@ -70,10 +75,6 @@ ROLE_STYLES = {
     'incomplete': Style(color='yellow'),
     'stable': Style(color='dark_orange'),
 }
-
-
-class AgentLauncher(Protocol):
-    def launch(self, request: Any) -> None: ...
 
 
 class ExternalEditor(Protocol):
@@ -276,6 +277,21 @@ class ConfirmQuit(Confirm):
         super().__init__(prompt)
 
 
+class Notice(Confirm):
+    """Text shown until any key."""
+
+
+class DrawerList(OptionList):
+    """A drawer tab; its keys act on the selected session (the app checks which apply)."""
+
+    BINDINGS = [
+        Binding('enter', 'app.open_session', 'switch'),
+        Binding('s', 'app.stop_session', 'stop'),
+        Binding('o', 'app.session_artifacts', 'artifacts'),
+        Binding('x', 'app.end_session', 'end'),
+    ]
+
+
 @dataclass
 class Draft:
     """A reply being written beside the thread, to one message."""
@@ -321,8 +337,13 @@ class MaintainerApp(App[None]):
     #drawer { height: 1; background: $panel; }
     #search { dock: bottom; display: none; height: 1; border: none; padding: 0 1; }
     Screen.-searching #search { display: block; }
-    #drawer-panel { height: 40%; display: none; border-top: solid $accent; padding: 0 1; }
+    #drawer-panel { height: 40%; display: none; border-top: solid $accent; }
     Screen.-drawer-open #drawer-panel { display: block; }
+    #drawer-tabs { height: 1; padding: 0 1; }
+    #drawer-sessions, #drawer-worktrees { height: 1fr; border: none; }
+    #drawer-worktrees { display: none; }
+    Screen.-drawer-worktrees #drawer-sessions { display: none; }
+    Screen.-drawer-worktrees #drawer-worktrees { display: block; }
     Screen.-medium #views { display: none; }
     Screen.-medium.-show-views #views { display: block; }
     Screen.-narrow #views { display: none; }
@@ -372,7 +393,7 @@ class MaintainerApp(App[None]):
     def __init__(
         self,
         loader: Callable[[], Snapshot],
-        launcher: Optional[AgentLauncher] = None,
+        sessions: Optional[SessionHub] = None,
         breakpoints: Optional[Breakpoints] = None,
         symbols: Symbols = DEFAULT_SYMBOLS,
         thread_loader: Callable[[Series], SeriesThread] = load_thread,
@@ -410,8 +431,13 @@ class MaintainerApp(App[None]):
         # r in the series list: reply to the first posting once the opened thread loads.
         self._reply_on_open = False
         self._thread_loader = thread_loader
-        # Held for explicit maintainer launches; passive actions never call it.
-        self.launcher = launcher
+        # Agent sessions: polled for the drawer; only the maintainer's keys act on them.
+        self._sessions = sessions
+        self._overview = Overview()
+        self._polling = False
+        self._drawer_tab = 'sessions'
+        self._session_rows: list[tuple[str, str]] = []
+        self._worktree_rows: list[tuple[str, str]] = []
         self._breakpoints = breakpoints
         self.symbols = symbols
         self.snapshot: Optional[Snapshot] = None
@@ -419,7 +445,7 @@ class MaintainerApp(App[None]):
         self.current_view = 'all'
         self._summary = 'Loading…'
         self._status = ' b4-maintainer — loading'
-        self._drawer = ''
+        self._drawer = drawer_line(Overview())
         self._mode: Mode = 'wide'
         self._preview = False
         self._item: Optional[WorkItem] = None
@@ -446,8 +472,11 @@ class MaintainerApp(App[None]):
             yield OptionList(id='tree')
             yield TextPane(id='content')
             yield TextArea(id='draft', soft_wrap=True, show_line_numbers=False)
-        yield Static('', id='drawer-panel', markup=False)
-        yield Static('', id='drawer', markup=False)
+        with Vertical(id='drawer-panel'):
+            yield Static('', id='drawer-tabs', markup=False)
+            yield DrawerList(id='drawer-sessions')
+            yield DrawerList(id='drawer-worktrees')
+        yield Static(self._drawer, id='drawer', markup=False)
         yield Input(id='search', placeholder='/ regex over subject and author')
         yield KeyBar(id='footer')
 
@@ -463,9 +492,14 @@ class MaintainerApp(App[None]):
         self._tree.border_title = 'Thread'
         self._draft_area = self.query_one('#draft', TextArea)
         self._status_widget = self.query_one('#status', StatusLine)
+        self._drawer_sessions = self.query_one('#drawer-sessions', DrawerList)
+        self._drawer_worktrees = self.query_one('#drawer-worktrees', DrawerList)
         self._apply_layout(self.size.width)
         self._series_list.focus()
         self.run_worker(self._load, thread=True, name='load', exclusive=True)
+        if self._sessions is not None:
+            self.poll_sessions()
+            self.set_interval(1.0, self.poll_sessions)
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # After the first load has finished, so the sync's reload cannot cancel it.
@@ -510,9 +544,6 @@ class MaintainerApp(App[None]):
         }
         self._matches = self._compute_matches()
         views.add_options(Option(self._view_prompt(v.id, v.label), id=v.id) for v in index.views)
-        self._drawer = self._drawer_line()
-        self.query_one('#drawer', Static).update(self._drawer)
-        self.query_one('#drawer-panel', Static).update(self._drawer_panel())
         self.select_view(view, force=True)
         if previous is not None:
             self._series_list.select_identity(previous.identity, fallback=position)
@@ -556,7 +587,9 @@ class MaintainerApp(App[None]):
         self._update_status()
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option_list.id == 'tree':
+        if isinstance(event.option_list, DrawerList):
+            self._sync_bindings()
+        elif event.option_list.id == 'tree':
             self._show_row(event.option_index)
         elif event.option_id:
             self.select_view(event.option_id)
@@ -631,6 +664,11 @@ class MaintainerApp(App[None]):
         """Hide keys that would do nothing in the current layout."""
         if isinstance(self.screen, Confirm):
             return False  # The prompt owns every key while it is open.
+        if action in SESSION_ACTIONS:
+            view = self._selected_view()
+            return view is not None and (action != 'open_session' or view.state != 'ended')
+        if self._drawer_focused():
+            return action in DRAWER_ACTIONS  # Series keys wait until focus leaves the drawer.
         narrow = self._mode == 'narrow'
         summary_open = self.screen.has_class('-show-summary')
         reading = self._reading is not None
@@ -762,6 +800,9 @@ class MaintainerApp(App[None]):
             self._series_list.select_identity(previous.identity)
 
     def action_back(self) -> None:
+        if self._drawer_focused():
+            self._focus_main()
+            return
         if self.screen.has_class('-searching'):
             self.query_one('#search', Input).value = ''
             self._apply_query('')
@@ -1227,7 +1268,9 @@ class MaintainerApp(App[None]):
 
     def action_cycle_pane(self, delta: int) -> None:
         """Tab/Shift-Tab: next pane; one pane at a time on narrow terminals."""
-        if self._mode == 'narrow' and self._reading is not None:
+        if self._drawer_focused():
+            self._show_drawer_tab('worktrees' if self._drawer_tab == 'sessions' else 'sessions')
+        elif self._mode == 'narrow' and self._reading is not None:
             in_app = self._draft is not None and not self._draft.pane
             panes = ['tree', 'content'] + (['draft'] if in_app else [])
             here = panes.index(self._reader_pane) if self._reader_pane in panes else 0
@@ -1518,7 +1561,150 @@ class MaintainerApp(App[None]):
         self._show_summary()
 
     def action_toggle_drawer(self) -> None:
-        self.screen.toggle_class('-drawer-open')
+        """Open and focus the drawer; close it (focus back on the list or reader)."""
+        if self.screen.has_class('-drawer-open'):
+            self.screen.remove_class('-drawer-open')
+            if self._drawer_focused():
+                self._focus_main()
+        else:
+            self.screen.add_class('-drawer-open')
+            self._show_drawer_tab(self._drawer_tab)
+            self.poll_sessions()
+        self.refresh_bindings()
+
+    # Sessions: polled off the UI thread; results change the drawer's text only.
+    def poll_sessions(self) -> None:
+        if self._sessions is None or self._polling:
+            return
+        self._polling = True
+        self.run_worker(self._poll_sessions, thread=True, group='sessions')
+
+    def _poll_sessions(self) -> None:
+        assert self._sessions is not None
+        try:
+            overview: Optional[Overview] = self._sessions.overview()
+        except Exception:  # A record being written, a vanished directory: next poll.
+            overview = None
+        self.call_from_thread(self._apply_overview, overview)
+
+    def _apply_overview(self, overview: Optional[Overview]) -> None:
+        self._polling = False
+        if overview is None or not self.screen_stack:
+            return
+        self._overview = overview
+        line = drawer_line(overview)
+        if line != self._drawer:
+            self._drawer = line
+            self.query_one('#drawer', Static).update(line)
+        self.query_one('#drawer-tabs', Static).update(tabs_line(overview, self._drawer_tab))
+        states = {v.record.id: v.state for v in overview.sessions}
+        sessions = session_rows(overview.sessions)
+        worktrees = [(w.path, worktree_row(w, states)) for w in overview.worktrees]
+        if sessions != self._session_rows:
+            self._session_rows = sessions
+            _replace_rows(self._drawer_sessions, sessions, 'No agent sessions.')
+        if worktrees != self._worktree_rows:
+            self._worktree_rows = worktrees
+            _replace_rows(self._drawer_worktrees, worktrees, 'No session worktrees.')
+        self._sync_bindings()
+
+    def drawer_rows(self) -> list[str]:
+        """Rows of the drawer tab shown, for tests."""
+        rows = self._session_rows if self._drawer_tab == 'sessions' else self._worktree_rows
+        return [text for _key, text in rows]
+
+    def selected_session(self) -> Optional[str]:
+        view = self._selected_view()
+        return view.record.id if view is not None else None
+
+    def _drawer_focused(self) -> bool:
+        return self.focused is not None and isinstance(self.focused, DrawerList)
+
+    def _selected_view(self) -> Optional[SessionView]:
+        if self.focused is not self._drawer_sessions:
+            return None
+        option = self._drawer_sessions.highlighted_option
+        sid = option.id if option is not None else None
+        return next((v for v in self._overview.sessions if v.record.id == sid), None)
+
+    def _show_drawer_tab(self, tab: str) -> None:
+        self._drawer_tab = tab
+        self.screen.set_class(tab == 'worktrees', '-drawer-worktrees')
+        self.query_one('#drawer-tabs', Static).update(tabs_line(self._overview, tab))
+        (self._drawer_sessions if tab == 'sessions' else self._drawer_worktrees).focus()
+        self.refresh_bindings()
+
+    def _focus_main(self) -> None:
+        if self._reading is not None:
+            self._set_reader_pane(self._reader_pane)
+        else:
+            self._series_list.focus()
+        self.refresh_bindings()
+
+    def _session_call(self, call: Callable[[], Optional[str]]) -> None:
+        """Run a maintainer's session action off the UI thread, then poll."""
+
+        def work() -> None:
+            try:
+                notice = call()
+            except Exception as exc:
+                notice = f'Session action failed: {exc}'
+            self.call_from_thread(self._session_done, notice)
+
+        self.run_worker(work, thread=True, group='session-action')
+
+    def _session_done(self, notice: Optional[str]) -> None:
+        if notice:
+            self._set_notice(notice)
+        self.poll_sessions()
+
+    def action_open_session(self) -> None:
+        view, hub = self._selected_view(), self._sessions
+        if view is None or hub is None:
+            return
+        sid = view.record.id
+        self._session_call(lambda: hub.open(sid))
+
+    def action_stop_session(self) -> None:
+        view, hub = self._selected_view(), self._sessions
+        if view is None or hub is None:
+            return
+        sid, label = view.record.id, session_label(view.record)
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._session_call(lambda: hub.stop(sid) or f'Stopped: {label}')
+
+        self.push_screen(Confirm(f'Stop session {sid} ({label})? [y|N]'), answered)
+
+    def action_end_session(self) -> None:
+        view, hub = self._selected_view(), self._sessions
+        if view is None or hub is None:
+            return
+        sid, label = view.record.id, session_label(view.record)
+        kept = ' Its worktree is kept (Worktrees tab).' if view.record.worktree else ''
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._session_call(lambda: hub.end(sid) or f'Ended: {label}')
+
+        self.push_screen(Confirm(f'End session {sid} ({label})?{kept} [y|N]'), answered)
+
+    def action_session_artifacts(self) -> None:
+        view, hub = self._selected_view(), self._sessions
+        if view is None or hub is None:
+            return
+        sid, label = view.record.id, session_label(view.record)
+
+        def work() -> None:
+            try:
+                files = hub.artifacts(sid)
+                text = '\n'.join(f'  out/{f}' for f in files) or '  No artifacts yet.'
+            except OSError as exc:
+                text = f'  Cannot list artifacts: {exc}'
+            self.call_from_thread(self.push_screen, Notice(f'Session {sid} ({label})\n{text}'))
+
+        self.run_worker(work, thread=True, group='session-action')
 
     def action_refresh(self) -> None:
         actions = self._actions
@@ -1757,31 +1943,6 @@ class MaintainerApp(App[None]):
                 lines.append((text, SEVERITY_STYLES.get(f.severity)))
         return lines
 
-    def _drawer_line(self) -> str:
-        assert self.snapshot is not None
-        sessions = self.snapshot.workspace.sessions
-        if not sessions:
-            return ' No agent sessions'
-        s = sessions[0]
-        item = self.snapshot.item_by_identity(s.series)
-        target = f'{item.series.subject} v{item.series.revision}' if item else s.series
-        more = f' (+{len(sessions) - 1})' if len(sessions) > 1 else ''
-        approvals = (
-            f' · {s.approvals} approval{"s" if s.approvals != 1 else ""}' if s.approvals else ''
-        )
-        return f' ◆ {s.id}: {target} @ {s.project or "?"} · {s.backend} · {s.state}{approvals}{more}   [`] open'
-
-    def _drawer_panel(self) -> str:
-        assert self.snapshot is not None
-        sessions = self.snapshot.workspace.sessions
-        if not sessions:
-            return 'No agent sessions. Sessions start only on explicit maintainer request.'
-        s = sessions[0]
-        return (
-            f'◆ Session {s.id} · {s.backend} · {s.state}\n'
-            'Fixture session: no conversation, approvals, or artifacts recorded.'
-        )
-
 
 def _drafted_in(thread: SeriesThread, drafted: set[str]) -> Optional[tuple[str, int, str]]:
     """(posting key, node, message-id) of the first message in the thread with a saved draft."""
@@ -1802,3 +1963,16 @@ def _action_names(bindings: Iterable[Any]) -> Iterable[str]:
     for binding in bindings:
         action = binding.action if isinstance(binding, Binding) else binding[1]
         yield action.split('(', 1)[0]
+
+
+def _replace_rows(rows: OptionList, entries: list[tuple[str, str]], empty: str) -> None:
+    """Replace a drawer list's rows, keeping the highlight on the same entry."""
+    option = rows.highlighted_option
+    keep, position = (option.id if option is not None else None), rows.highlighted or 0
+    rows.clear_options()
+    if not entries:
+        rows.add_option(Option(empty, disabled=True))
+        return
+    rows.add_options(Option(text, id=key) for key, text in entries)
+    keys = [key for key, _text in entries]
+    rows.highlighted = keys.index(keep) if keep in keys else min(position, len(keys) - 1)

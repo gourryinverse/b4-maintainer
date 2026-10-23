@@ -6,6 +6,7 @@ from typing import Any, Collection, Iterable, Mapping, Optional
 
 from .layout import Breakpoints
 from .model import Authority, Series, SeriesState, WorkItem
+from .sessions.policy import SessionLimits
 
 
 def list_id(name: str) -> str:
@@ -71,18 +72,6 @@ class Profile:
         return any(p.startswith(prefix) for p in series.paths for prefix in self.paths)
 
 
-@dataclass(frozen=True)
-class Session:
-    """Display record for an agent session; fixtures only until a backend exists."""
-
-    id: str
-    series: str
-    project: Optional[str]
-    backend: str
-    state: str
-    approvals: int = 0
-
-
 SASHIKO_SENDERS = ('sashiko-bot@kernel.org', 'netdev-bot+sashiko@kernel.org')
 
 
@@ -91,7 +80,6 @@ class Workspace:
     me: tuple[str, ...] = ()
     projects: tuple[Project, ...] = ()
     profiles: tuple[Profile, ...] = ()
-    sessions: tuple[Session, ...] = ()
     breakpoints: Breakpoints = Breakpoints()
     window_days: int = 14
     # Senders of automated review mail; their replies are findings, not Responses.
@@ -104,6 +92,9 @@ class Workspace:
     sync_timeout: float = 10.0
     # Refresh fetches the remotes behind configured refs before scanning them.
     fetch_refs: bool = True
+    # Agent sessions: limits, and hand-configured backend entries (see sessions/backends.py).
+    session_limits: SessionLimits = SessionLimits()
+    backends: tuple[Mapping[str, Any], ...] = ()
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -133,22 +124,10 @@ class Workspace:
             )
             for p in config.get('profiles', [])
         )
-        sessions = tuple(
-            Session(
-                id=s['id'],
-                series=s['series'],
-                project=s.get('project'),
-                backend=s['backend'],
-                state=s['state'],
-                approvals=s.get('approvals', 0),
-            )
-            for s in config.get('sessions', [])
-        )
         return cls(
             me=tuple(m.lower() for m in config.get('me', [])),
             projects=projects,
             profiles=profiles,
-            sessions=sessions,
             breakpoints=Breakpoints.from_config(config.get('layout', {})),
             window_days=int(config.get('browse', {}).get('window_days', 14)),
             bots=tuple(
@@ -159,6 +138,8 @@ class Workspace:
             sync_auto=bool(config.get('sync', {}).get('auto', True)),
             sync_timeout=float(config.get('sync', {}).get('timeout', 10.0)),
             fetch_refs=bool(config.get('refs', {}).get('fetch', True)),
+            session_limits=SessionLimits.from_config(config.get('sessions', {})),
+            backends=tuple(b for b in config.get('backends', []) if isinstance(b, dict)),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

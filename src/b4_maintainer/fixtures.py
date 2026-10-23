@@ -78,13 +78,11 @@ DEFAULT_PROFILES = [
 def workspace_config(
     projects: Sequence[str] = ('linux', 'qemu'),
     profiles: Optional[list[dict[str, Any]]] = None,
-    sessions: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     return {
         'me': [ME],
         'projects': [copy.deepcopy(PROJECTS[p]) for p in projects],
         'profiles': copy.deepcopy(DEFAULT_PROFILES if profiles is None else profiles),
-        'sessions': list(sessions),
     }
 
 
@@ -472,20 +470,41 @@ def build_demo_workspace(
         date=EPOCH + 1 * day,
     )
 
-    sessions = [
-        {
-            'id': 'A',
-            'series': session_series,
-            'project': 'linux',
-            'backend': 'claude',
-            'state': 'running',
-            'approvals': 1,
-        }
-    ]
-    config = workspace_config(profiles=profiles, sessions=sessions)
+    write_demo_session(root / 'var' / 'sessions', session_series)
+    config = workspace_config(profiles=profiles)
     (root / 'workspace.json').write_text(json.dumps(config, indent=2) + '\n')
     (root / 'state.json').write_text(json.dumps(states, indent=2) + '\n')
     return root
+
+
+def write_demo_session(root: pathlib.Path, series: str) -> None:
+    """A session that needs approval, pinned to the demo's mm series (no agent behind it)."""
+    from .sessions.records import Event, EventLog, SessionRecord
+
+    created = (EPOCH + datetime.timedelta(days=13)).isoformat()
+    record = SessionRecord(
+        id='A',
+        created=created,
+        scope='series',
+        project='linux',
+        series=series,
+        revision=3,
+        subject='mm: fix foo leak',
+        profile_id='series',
+        profile_version=1,
+        profile_hash='',
+        choices={'goal': 'review', 'artifacts': ['draft']},
+        mode='lightweight',
+        backend='claude',
+        adapter='claude',
+        command=(),
+        native_id='',
+        model='',
+        permissions='read-only',
+    )
+    record.save(root / 'A' / 'session.json')
+    for event in (Event(created, 'SessionStart'), Event(created, 'Notification', '', 'permission')):
+        EventLog.append(root / 'A' / 'events.jsonl', event)
 
 
 def synthetic_snapshot(n: int, seed: int = 0) -> Snapshot:

@@ -1,20 +1,24 @@
 import threading
 
+from sessiondata import FakeSessionRunner, FakeWorktrees
+
 from b4_maintainer.adapters.fixture import FixtureSource
 from b4_maintainer.app import MaintainerApp, SeriesList
 from b4_maintainer.layout import Breakpoints
-
-
-class SpyLauncher:
-    def __init__(self):
-        self.launches = []
-
-    def launch(self, request):
-        self.launches.append(request)
+from b4_maintainer.sessions.hub import SessionHub
+from b4_maintainer.sessions.store import SessionStore
 
 
 def make_app(demo_root, **kwargs):
     return MaintainerApp(FixtureSource(demo_root).load, **kwargs)
+
+
+def demo_sessions(demo_root, runner=None):
+    """The demo's session records, with its window open."""
+    store = SessionStore(demo_root / 'var' / 'sessions')
+    runner = runner or FakeSessionRunner(store)
+    runner.windows.add('A')
+    return SessionHub(store, runner, FakeWorktrees())
 
 
 async def loaded(pilot):
@@ -46,8 +50,8 @@ async def test_switching_views_filters_rows_with_matching_counts(demo_root):
 
 
 async def test_passive_actions_launch_no_agents(demo_root):
-    spy = SpyLauncher()
-    app = make_app(demo_root, launcher=spy)
+    runner = FakeSessionRunner(SessionStore(demo_root / 'var' / 'sessions'))
+    app = make_app(demo_root, sessions=demo_sessions(demo_root, runner))
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await pilot.press('down', 'down', 'up', 'end', 'home')
@@ -56,7 +60,7 @@ async def test_passive_actions_launch_no_agents(demo_root):
         await pilot.resize_terminal(90, 30)
         await pilot.press('enter', 'escape')
         await pilot.pause()
-    assert spy.launches == []
+    assert runner.launches == []
 
 
 async def test_loading_runs_off_the_ui_thread(demo_root):
@@ -96,13 +100,14 @@ async def test_layout_follows_breakpoints(demo_root):
 
 
 async def test_drawer_line_stays_pinned_to_session_series(demo_root):
-    app = make_app(demo_root)
+    hub = demo_sessions(demo_root)
+    app = make_app(demo_root, sessions=hub)
     async with app.run_test(size=(180, 40)) as pilot:
         series_list = await loaded(pilot)
-        session = app.snapshot.workspace.sessions[0]
+        session = hub.store.record('A')
         pinned = app.snapshot.item_by_identity(session.series)
         before = app.drawer_text()
-        assert pinned.series.subject in before
+        assert f'{pinned.series.subject} v3 needs approval' in before
         await pilot.press('down', 'down')
         assert series_list.highlighted_item is not pinned
         assert app.drawer_text() == before

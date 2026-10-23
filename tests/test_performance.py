@@ -148,3 +148,34 @@ async def test_reader_moves_and_folds_in_a_deep_thread_meet_targets():
         assert p95(cpu) <= TARGET, f'reply move cpu p95 {p95(cpu):.3f}s'
         wall, cpu = await sample([lambda k=k: pilot.press(k) for k in ['left', 'right'] * 10])
         assert p95(cpu) <= TARGET, f'fold cpu p95 {p95(cpu):.3f}s'
+
+
+async def test_drawer_polls_twenty_sessions_with_steady_events_within_targets(tmp_path):
+    from sessiondata import FakeSessionRunner, FakeWorktrees, make_record
+
+    from b4_maintainer.sessions.hub import SessionHub
+    from b4_maintainer.sessions.store import SessionStore
+
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    runner = FakeSessionRunner(store)
+    for n in range(20):
+        runner.add(make_record(f's{n:02}', subject=f'mm: synthetic change {n}'))
+    snapshot = synthetic_snapshot(SERIES)
+    hub = SessionHub(store, runner, FakeWorktrees())
+    app = MaintainerApp(lambda: snapshot, sessions=hub)
+    events = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']
+
+    async def tick(n=0):
+        for k in range(5):  # A quarter of the sessions report each second.
+            runner.emit(f's{(n * 5 + k) % 20:02}', events[n % 4], tool_name='Read')
+        app.poll_sessions()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    async with app.run_test(size=(180, 50)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press('grave_accent')
+        await tick()
+        _, cpu = await sample([lambda n=n: tick(n) for n in range(40)])
+        assert len(app.drawer_rows()) == 20
+        assert p95(cpu) <= TARGET, f'session poll cpu p95 {p95(cpu):.3f}s'

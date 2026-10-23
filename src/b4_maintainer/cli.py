@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""b4-maintainer entry point: the fixture prototype and project setup."""
+"""b4-maintainer entry point: the fixture prototype and project setup.
+
+The UI, b4, and mail stacks are imported where needed: `hook` runs on every agent tool
+call and must start quickly.
+"""
 
 import argparse
 import faulthandler
@@ -8,19 +12,26 @@ import pathlib
 import signal
 import sys
 import tempfile
-from typing import Optional, Sequence
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional, Sequence
 
-from .adapters.fixture import FixtureSource
-from .adapters.live import LiveSource
 from .adapters.tmux import TmuxEditor
-from .app import MaintainerApp
-from .fixtures import build_demo_workspace
 from .model import Authority
-from .projectsetup import CONFIG_NAME, SetupError, add_project, has_config, setup_workspace
 from .workspace import Project, Ref, list_id, make_ref
 
+if TYPE_CHECKING:
+    from .adapters.live import LiveSource
+    from .app import MaintainerApp
+    from .sessions.hub import SessionHub
 
-def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
+
+def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
+    from .adapters.fixture import FixtureSource
+    from .adapters.live import LiveSource
+    from .app import MaintainerApp
+    from .fixtures import build_demo_workspace
+    from .projectsetup import CONFIG_NAME, has_config
+
     parser = argparse.ArgumentParser(
         prog='b4-maintainer',
         description=f'Open a workspace: {CONFIG_NAME} (live) or a fixture directory '
@@ -49,12 +60,13 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
     )
     args = parser.parse_args(argv)
     if args.demo:
-        return MaintainerApp(FixtureSource(build_demo_workspace(args.demo)).load)
+        root = build_demo_workspace(args.demo)
+        return MaintainerApp(FixtureSource(root).load, sessions=_sessions(root, demo=True))
     root = args.workspace or pathlib.Path('.')
     if has_config(root):
         return _live_app(LiveSource(root), args)
     if (root / 'workspace.json').is_file():
-        return MaintainerApp(FixtureSource(root).load)
+        return MaintainerApp(FixtureSource(root).load, sessions=_sessions(root, demo=True))
     name = str(args.workspace or '')
     is_name = name and '/' not in name and not root.exists()
     if is_name and has_config(pathlib.Path('.')):
@@ -68,7 +80,9 @@ def build_app(argv: Optional[Sequence[str]] = None) -> MaintainerApp:
     parser.error(f'{root}: no {CONFIG_NAME} (live workspace) or workspace.json (fixture)')
 
 
-def _live_app(source: LiveSource, args: argparse.Namespace) -> MaintainerApp:
+def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp':
+    from .app import MaintainerApp
+
     source.email_dryrun = args.email_dry_run
     source.no_sign = args.no_sign
     try:
@@ -82,10 +96,19 @@ def _live_app(source: LiveSource, args: argparse.Namespace) -> MaintainerApp:
         editor=_draft_editor(source),
         sync=source.sync if source.can_sync() else None,
         sync_timeout=timeout,
+        sessions=_sessions(source.root),
     )
 
 
-def _draft_editor(source: LiveSource) -> Optional[TmuxEditor]:
+def _sessions(root: pathlib.Path, demo: bool = False) -> 'SessionHub':
+    """Sessions under var/sessions/; nothing launches them yet (fixture windows count as open)."""
+    from .sessions.hub import IdleRunner, SessionHub
+    from .sessions.store import SessionStore
+
+    return SessionHub(SessionStore(root / 'var' / 'sessions'), IdleRunner(alive=demo))
+
+
+def _draft_editor(source: 'LiveSource') -> Optional[TmuxEditor]:
     """The tmux editor when configured (or auto) and running inside tmux; else in-app drafts."""
     try:
         ws = source.workspace()
@@ -112,6 +135,8 @@ def parse_ref(value: str) -> Ref:
 
 
 def project_main(argv: Sequence[str]) -> int:
+    from .projectsetup import CONFIG_NAME, SetupError, add_project
+
     parser = argparse.ArgumentParser(prog='b4-maintainer project')
     commands = parser.add_subparsers(dest='command', required=True)
     add = commands.add_parser(
@@ -172,6 +197,8 @@ def project_main(argv: Sequence[str]) -> int:
 
 
 def setup_main(argv: Sequence[str]) -> int:
+    from .projectsetup import SetupError, setup_workspace
+
     parser = argparse.ArgumentParser(
         prog='b4-maintainer setup',
         description='Recreate this workspace from state/ (a clone of the state repository): '
@@ -196,6 +223,7 @@ def sync_main(argv: Sequence[str]) -> int:
     )
     parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
     args = parser.parse_args(argv)
+    from .adapters.live import LiveSource
     from .adapters.statesync import SyncError
 
     try:
@@ -204,6 +232,28 @@ def sync_main(argv: Sequence[str]) -> int:
         print(f'b4-maintainer: sync failed: {e}', file=sys.stderr)
         return 1
     return 0
+
+
+def hook_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog='b4-maintainer hook',
+        description='Agent CLI hook: record the event on stdin for session ID, and deny '
+        'shell commands outside the sandbox wrapper (Claude Code hook protocol).',
+    )
+    parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
+    parser.add_argument('id', help='session id')
+    args = parser.parse_args(argv)
+    from .sessions.hook import run_hook
+    from .sessions.store import SessionStore
+
+    now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    store = SessionStore(args.root / 'var' / 'sessions')
+    code, out, err = run_hook(store, args.id, sys.stdin.read(), now)
+    if out:
+        print(out)
+    if err:
+        print(err, end='', file=sys.stderr)
+    return code
 
 
 def enable_stack_dumps(directory: Optional[pathlib.Path] = None) -> pathlib.Path:
@@ -224,5 +274,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         sys.exit(setup_main(args[1:]))
     if args[:1] == ['sync']:
         sys.exit(sync_main(args[1:]))
+    if args[:1] == ['hook']:
+        sys.exit(hook_main(args[1:]))
     enable_stack_dumps()
     build_app(args).run()

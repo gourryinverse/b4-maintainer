@@ -221,10 +221,13 @@ async def test_reader_footer_shows_only_applicable_keys(demo_root):
 
 
 async def test_drawer_line_stays_visible_and_pinned_while_reading(demo_root):
-    app = MaintainerApp(FixtureSource(demo_root).load)
+    from test_app import demo_sessions
+
+    app = MaintainerApp(FixtureSource(demo_root).load, sessions=demo_sessions(demo_root))
     async with app.run_test(size=(180, 40)) as pilot:
         series_list = await loaded(pilot)
         before = app.drawer_text()
+        assert 'mm: fix foo leak v3' in before
         await pilot.press('down')
         await open_reader(pilot)
         assert app.reading is series_list.highlighted_item
