@@ -7,7 +7,7 @@ from typing import Optional
 # Reuse b4's terminal column arithmetic rather than duplicating it.
 from b4._textwidth import display_width, pad_display
 
-from .model import Coverage, Progress, RefEvidence, SashikoReview, WorkItem
+from .model import Progress, SashikoReview, Series, WorkItem
 
 
 @dataclass(frozen=True)
@@ -19,16 +19,6 @@ class Symbols:
     draft: str = '✎'
     tracked: str = '$'
     absent: str = '·'
-    complete: str = 'C'
-    incomplete: str = 'I'
-    acked: str = 'A'
-    reviewed: str = 'R'
-    tested: str = 'T'
-    tree_full: str = '≡'
-    tree_partial: str = '≈'
-    tree_none: str = '·'
-    tree_unchecked: str = '?'
-    tree_stale: str = '~'
     unassigned: str = '?'
     sashiko_none: str = '·'
     sashiko_pending: str = '…'
@@ -37,6 +27,7 @@ class Symbols:
     sashiko_embargoed: str = '⊘'
     sashiko_failed: str = '✗'
     discussion: str = 'disc'
+    cover: str = '+'
 
 
 DEFAULT_SYMBOLS = Symbols()
@@ -44,26 +35,9 @@ VERSION_WIDTH = 3
 AUTHOR_WIDTH = 16
 SASHIKO_WIDTH = 3
 FLAGS_WIDTH = 4
-CART_WIDTH = 4
-TREE_WIDTH = 2
+PATCHES_WIDTH = 6
 SASHIKO_PENDING = frozenset({'Pending', 'Fetching', 'Applying', 'In Review', 'Incomplete'})
 SASHIKO_FAILED = frozenset({'Failed', 'Failed To Apply'})
-
-
-def tree_field(evidence: tuple[RefEvidence, ...], sym: Symbols) -> str:
-    """Two columns: highest-authority matching ref label plus coverage symbol."""
-    matched = [e for e in evidence if e[2] in (Coverage.FULL, Coverage.PARTIAL)]
-    if matched:
-        label, _, coverage = min(matched, key=lambda e: e[1])
-        mark = sym.tree_full if coverage == Coverage.FULL else sym.tree_partial
-        return pad_display(label, 1) + mark
-    coverages = {e[2] for e in evidence}
-    # Unknown is not absent: never-checked outranks stale, which outranks none.
-    if not evidence or Coverage.UNCHECKED in coverages:
-        return ' ' + sym.tree_unchecked
-    if Coverage.STALE in coverages:
-        return ' ' + sym.tree_stale
-    return ' ' + sym.tree_none
 
 
 def sashiko_field(review: Optional[SashikoReview], sym: Symbols) -> tuple[str, Optional[str]]:
@@ -87,6 +61,20 @@ def sashiko_field(review: Optional[SashikoReview], sym: Symbols) -> tuple[str, O
     return pad_display(mark, SASHIKO_WIDTH), role
 
 
+def patches_field(series: Series, sym: Symbols) -> tuple[str, Optional[str]]:
+    """Patches received of expected, as b4 numbers them; the cover mark when there is one.
+
+    Slashes align across rows; a series missing patches is marked incomplete.
+    """
+    if series.discussion:
+        return pad_display(sym.discussion, PATCHES_WIDTH), None
+    received = len(series.patches)
+    expected = series.expected or received
+    head = (sym.cover if series.has_cover else '') + str(received)
+    text = pad_display(' ' * max(0, 3 - display_width(head)) + head + '/' + str(expected), 6)
+    return text, 'incomplete' if received < expected else None
+
+
 def _progress(item: WorkItem, sym: Symbols) -> str:
     if item.state.draft:
         return sym.draft
@@ -95,20 +83,6 @@ def _progress(item: WorkItem, sym: Symbols) -> str:
     if item.state.progress == Progress.PARTIAL:
         return sym.partial
     return ' '
-
-
-def cart_field(item: WorkItem, sym: Symbols) -> str:
-    if item.series.discussion:
-        return pad_display(sym.discussion, CART_WIDTH)
-    acked, reviewed, tested = item.series.trailer_totals()
-    return ''.join(
-        (
-            sym.complete if item.series.complete else sym.incomplete,
-            sym.acked if acked else sym.absent,
-            sym.reviewed if reviewed else sym.absent,
-            sym.tested if tested else sym.absent,
-        )
-    )
 
 
 def fit(text: str, width: int) -> str:
@@ -139,13 +113,11 @@ def heading(project_width: int = 0) -> str:
     head = ' '.join(
         (
             ' ' * FLAGS_WIDTH,
-            pad_display('CART', CART_WIDTH),
-            pad_display('Tr', TREE_WIDTH),
             pad_display('AI', SASHIKO_WIDTH),
             fit('Author', AUTHOR_WIDTH),
         )
     )
-    tail = [pad_display('Ver', VERSION_WIDTH)]
+    tail = [pad_display('Ver', VERSION_WIDTH), pad_display('Patch', PATCHES_WIDTH)]
     if project_width:
         tail.append(fit('Project', project_width))
     tail.append('Subject')
@@ -164,10 +136,13 @@ def row_segments(
             pad_display(sym.tracked if state.to_review or item.watched else '', 1),
         )
     )
-    head = ' '.join((flags, cart_field(item, sym), tree_field(state.tree, sym))) + ' '
+    # No tree or trailer columns: ref views list series by the tree they reached, and the
+    # summary shows completeness and trailers.
+    head = flags + ' '
     mark, severity = sashiko_field(item.sashiko, sym)
     version = '' if item.series.discussion else f'v{item.series.revision}'
-    tail = [pad_display(version, VERSION_WIDTH)]
+    patches, completeness = patches_field(item.series, sym)
+    tail = []
     if project_width:
         label = item.project_short or (sym.unassigned if item.candidates else '')
         tail.append(pad_display(label, project_width))
@@ -177,6 +152,8 @@ def row_segments(
         (mark, severity),
         (' ', None),
         (fit(author_label(item), AUTHOR_WIDTH), item.author_role),
+        (' ' + pad_display(version, VERSION_WIDTH) + ' ', None),
+        (patches, completeness),
         (' ' + ' '.join(tail), None),
     ]
 

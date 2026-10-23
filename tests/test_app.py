@@ -327,7 +327,7 @@ async def test_series_list_has_a_heading_row():
     async with app.run_test(size=(180, 30)) as pilot:
         series_list = await loaded(pilot)
         head = screen_line(series_list, 0)
-        assert 'CART' in head and 'AI' in head and 'Author' in head and 'Subject' in head
+        assert 'Patch' in head and 'AI' in head and 'Author' in head and 'Subject' in head
         assert 'mm: reviewed' in screen_line(series_list, 1)
         await pilot.press('end')
         await pilot.pause()

@@ -7,10 +7,10 @@ from b4_maintainer.rows import (
     DEFAULT_SYMBOLS,
     Symbols,
     heading,
+    patches_field,
     render_row,
     row_segments,
     sashiko_field,
-    tree_field,
 )
 
 ACC = Authority.ACCEPTANCE
@@ -29,12 +29,12 @@ def test_row_matches_documented_example():
         draft=True,
         tree=[('n', ACC, Coverage.PARTIAL)],
     )
-    assert render_row(item) == '●⚠✎  CAR· n≈ ·   Synthetic Author v3  mm: fix foo leak'
+    assert render_row(item) == '●⚠✎  ·   Synthetic Author v3    1/1  mm: fix foo leak'
 
 
 def test_quiet_incomplete_unchecked_row():
     item = make_item(subject='ndctl: baz cleanup', complete=False)
-    assert render_row(item) == '     I···  ? ·   Synthetic Author v1  ndctl: baz cleanup'
+    assert render_row(item) == '     ·   Synthetic Author v1    1/1  ndctl: baz cleanup'
 
 
 def test_progress_symbols():
@@ -42,23 +42,6 @@ def test_progress_symbols():
     assert render_row(make_item(progress=Progress.DONE))[2] == '✓'
     # A pending draft outranks local completion in the single progress column.
     assert render_row(make_item(progress=Progress.DONE, draft=True))[2] == '✎'
-
-
-def test_tree_field_prefers_highest_authority_match():
-    ev = [('m', MAIN, Coverage.PARTIAL), ('n', ACC, Coverage.FULL)]
-    assert tree_field(make_item(tree=ev).state.tree, DEFAULT_SYMBOLS) == 'm≈'
-    ev = [('m', MAIN, Coverage.NONE), ('p', PRE, Coverage.FULL)]
-    assert tree_field(make_item(tree=ev).state.tree, DEFAULT_SYMBOLS) == 'p≡'
-
-
-def test_tree_field_unknown_is_not_absent():
-    def field(ev):
-        return tree_field(make_item(tree=ev).state.tree, DEFAULT_SYMBOLS)
-
-    assert field([]) == ' ?'
-    assert field([('m', MAIN, Coverage.NONE), ('n', ACC, Coverage.UNCHECKED)]) == ' ?'
-    assert field([('m', MAIN, Coverage.NONE), ('n', ACC, Coverage.STALE)]) == ' ~'
-    assert field([('m', MAIN, Coverage.NONE), ('n', ACC, Coverage.NONE)]) == ' ·'
 
 
 def test_subject_column_aligns_across_symbol_combinations():
@@ -82,10 +65,12 @@ def test_project_column_when_requested():
     assert ' ?    ' in render_row(make_item(candidates=('linux', 'qemu')), project_width=5)
 
 
-def test_carried_commit_tags_show_in_row():
+def test_no_cart_column_the_summary_carries_trailers_and_completeness():
     from b4_maintainer.model import Trailers
 
-    assert ' C·R· ' in render_row(make_item(carried=Trailers(reviewed=1)))
+    row = render_row(make_item(carried=Trailers(reviewed=1)))
+    assert ' C·R· ' not in row
+    assert 'CART' not in heading()
 
 
 def test_author_column_fits_names_by_display_width():
@@ -146,10 +131,55 @@ def test_heading_names_fields_over_their_columns():
         assert column(head, 'Author') == column(row, 'Synthetic')
         assert column(head, 'Subject') == column(row, 'mm: x')
         assert column(head, 'AI') == column(row, '1!')
-        assert column(head, 'CART') == column(row, 'C···')
 
 
 def test_tracked_series_show_dollar():
     assert render_row(make_item(to_review=True))[3] == '$'
     assert render_row(make_item())[3] == ' '
     assert render_row(make_item(to_review=True), Symbols(tracked='T'))[3] == 'T'
+
+
+def with_patches(count, expected, cover):
+    import dataclasses
+
+    from b4_maintainer.model import Patch
+
+    item = make_item(subject='mm: x')
+    patches = tuple(Patch(n, f'p{n}@example.org', f'p{n}') for n in range(1, count + 1))
+    series = dataclasses.replace(
+        item.series, patches=patches, expected=expected, has_cover=cover, complete=count == expected
+    )
+    return dataclasses.replace(item, series=series)
+
+
+def test_patch_count_shows_received_of_expected_and_the_cover():
+    assert patches_field(with_patches(5, 5, True).series, DEFAULT_SYMBOLS) == (' +5/5 ', None)
+    assert patches_field(with_patches(1, 1, False).series, DEFAULT_SYMBOLS) == ('  1/1 ', None)
+    assert patches_field(with_patches(3, 12, True).series, DEFAULT_SYMBOLS) == (
+        ' +3/12',
+        'incomplete',
+    )
+    assert patches_field(with_patches(5, 5, True).series, Symbols(cover='c'))[0] == ' c5/5 '
+
+
+def test_patch_count_slashes_align_and_discussions_leave_it_blank():
+    import dataclasses
+
+    rows = [render_row(with_patches(n, m, c)) for n, m, c in ((1, 1, False), (12, 12, True))]
+    assert len({row.index('/') for row in rows}) == 1
+    talk = make_item(subject='Path forward?')
+    talk = dataclasses.replace(talk, series=dataclasses.replace(talk.series, discussion=True))
+    assert '/' not in render_row(talk)
+    assert patches_field(talk.series, DEFAULT_SYMBOLS) == ('disc  ', None)
+
+
+def test_heading_names_the_patch_column():
+    row = render_row(with_patches(5, 5, True))
+    head = heading()
+    assert display_width(head.split('Patch', 1)[0]) == display_width(row.split(' +5/5', 1)[0])
+
+
+def test_no_tree_column_ref_views_list_landed_series():
+    item = make_item(subject='mm: x', tree=[('n', ACC, Coverage.FULL)])
+    assert 'n≡' not in render_row(item)
+    assert 'Tr' not in heading().split()

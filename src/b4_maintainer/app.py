@@ -60,7 +60,7 @@ FIXES_STYLE = Style(color='dark_orange')
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
-# Author names by MAINTAINERS role; Sashiko findings by worst severity.
+# Author names by MAINTAINERS role; Sashiko findings by worst severity; missing patches.
 ROLE_STYLES = {
     'maintainer': Style(color='green'),
     'reviewer': Style(color='blue'),
@@ -68,6 +68,7 @@ ROLE_STYLES = {
     'sev-high': Style(color='red'),
     'sev-medium': Style(color='yellow'),
     'sev-low': Style(dim=True),
+    'incomplete': Style(color='yellow'),
 }
 
 
