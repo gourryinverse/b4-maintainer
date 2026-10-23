@@ -17,7 +17,6 @@ import json
 import os
 import pathlib
 import re
-import socket
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -44,6 +43,9 @@ class SyncError(RuntimeError):
 def is_exported(path: str) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in EXPORTED)
 
+
+# Commit messages name no machine: hostnames are private (see docs/design/projects.md).
+SYNC_MESSAGE = 'b4-maintainer sync'
 
 # Flags: one line per message: msgid, date, flags, and the tracked or watched
 # message-id anchoring its thread (empty if none), so pruning is decided from
@@ -417,7 +419,7 @@ class StateRepo:
         ours.update(export(current))
         # This machine's export, committed before any network step: kept if that fails.
         self._write_tree(current, {**{p: d for p, d in current.items() if is_exported(p)}, **ours})
-        self._commit(self._rev('HEAD'), f'b4-maintainer sync on {socket.gethostname()}')
+        self._commit(self._rev('HEAD'), SYNC_MESSAGE)
         remote = self.has_remote()
         notes: list[str] = []
         for _ in range(2):
@@ -439,7 +441,7 @@ class StateRepo:
             if changes:
                 import_(changes)
             ours = merged
-            self._commit(theirs_rev or head, f'b4-maintainer sync on {socket.gethostname()}')
+            self._commit(theirs_rev or head, SYNC_MESSAGE)
             if not remote:
                 return notes
             if self._rev('HEAD') == theirs_rev:

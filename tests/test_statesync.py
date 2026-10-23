@@ -279,3 +279,23 @@ def test_sync_commits_are_attributed_without_a_global_identity(remote, tmp_path,
         ['git', 'log', '-1', '--format=%an', 'main'], cwd=remote, capture_output=True, text=True
     ).stdout.strip()
     assert author == 'b4-maintainer'
+
+
+def test_pushed_commits_name_no_machine(remote, tmp_path, monkeypatch):
+    import socket
+
+    monkeypatch.setattr(socket, 'gethostname', lambda: 'devbox42.corp.example')
+    a = Machine(clone(remote, tmp_path / 'a'))
+    a.records[S + 'x.json'] = record('x')
+    a.sync()
+    b = Machine(clone(remote, tmp_path / 'b'))
+    b.records[S + 'y.json'] = record('y')
+    b.sync()
+    log = subprocess.run(
+        ['git', 'log', '--format=%an%n%ae%n%cn%n%ce%n%B', 'main'],
+        cwd=remote,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert 'b4-maintainer sync' in log
+    assert 'devbox42' not in log and 'example' not in log
