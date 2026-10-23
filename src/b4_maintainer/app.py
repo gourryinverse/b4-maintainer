@@ -824,11 +824,23 @@ class MaintainerApp(App[None]):
         return self._draft.msgid if self._draft else None
 
     def _set_reader_pane(self, pane: str) -> None:
+        self._mark_reader_pane(pane)
+        {'tree': self._tree, 'content': self._content, 'draft': self._draft_area}[pane].focus()
+        self.refresh_bindings()
+
+    def _mark_reader_pane(self, pane: str) -> None:
         self._reader_pane = pane
         for name in ('tree', 'content', 'draft'):
             self.screen.set_class(name == pane, f'-rpane-{name}')
-        {'tree': self._tree, 'content': self._content, 'draft': self._draft_area}[pane].focus()
-        self.refresh_bindings()
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        # Tab and clicks move focus too; Escape steps back from the pane actually focused.
+        if self._reading is None:
+            return
+        panes = {self._tree: 'tree', self._content: 'content', self._draft_area: 'draft'}
+        pane = panes.get(event.widget)
+        if pane is not None and pane != self._reader_pane:
+            self._mark_reader_pane(pane)
 
     def action_open_reader(self) -> None:
         item = self._item

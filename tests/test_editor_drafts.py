@@ -236,3 +236,27 @@ async def test_editor_failure_falls_back_to_the_in_app_draft(demo_root, tmp_path
         await start(pilot)
         assert app.reader_panes() == ('tree', 'content', 'draft')
         assert 'no server' in app.status_text()
+
+
+async def test_after_the_preview_one_escape_closes_the_reader(demo_root, tmp_path):
+    app, _, store, editor = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await start(pilot)
+        editor.write('On , Contributor One wrote:\n> The patch body.\n\nLater.\n')
+        editor.exit()
+        await watched(pilot)
+        await pilot.press('escape')  # Leaves b4's preview; the draft is kept.
+        await settle(pilot)
+        assert app.reading is not None
+        await pilot.press('escape')
+        await settle(pilot)
+        assert app.reading is None
+
+
+async def test_with_the_editor_open_one_escape_closes_the_reader(demo_root, tmp_path):
+    app, _, store, editor = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await start(pilot)
+        await pilot.press('escape')
+        await settle(pilot)
+        assert app.reading is None and editor.alive(editor.opened[-1][0])

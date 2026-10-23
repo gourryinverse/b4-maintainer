@@ -52,6 +52,43 @@ async def test_enter_opens_reader_on_cover_and_escape_returns(demo_root):
         assert series_list.highlighted_item is item
 
 
+async def test_one_escape_closes_from_the_thread_however_focus_got_there(demo_root):
+    """Escape goes content -> thread -> series: one press per step, even after Tab or a click."""
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        await pilot.press('enter')  # Into the content.
+        await pilot.pause()
+        assert app.focused is app._content
+        await pilot.press('shift+tab')  # Back to the thread by Tab, not Escape.
+        await pilot.pause()
+        assert app.focused is app._tree
+        await pilot.press('escape')
+        await pilot.pause()
+        assert app.reading is None
+
+        await open_reader(pilot)
+        await pilot.press('enter')
+        await pilot.pause()
+        await pilot.click('#tree')  # Back to the thread by mouse.
+        await pilot.pause()
+        assert app.focused is app._tree
+        await pilot.press('escape')
+        await pilot.pause()
+        assert app.reading is None
+
+        await open_reader(pilot)
+        await pilot.click('#content')  # Into the content by mouse: Escape returns to the thread.
+        await pilot.pause()
+        await pilot.press('escape')
+        await pilot.pause()
+        assert app.reading is not None and app.focused is app._tree
+        await pilot.press('escape')
+        await pilot.pause()
+        assert app.reading is None
+
+
 async def select_row(pilot, index):
     pilot.app.query_one('#tree').highlighted = index
     await pilot.pause()
