@@ -105,6 +105,9 @@ def _clone(project: pathlib.Path, dest: pathlib.Path) -> None:
     if promisors:
         _git(dest, 'config', 'extensions.partialClone', promisors[0])
     settings = {'commit.gpgSign': 'false', 'tag.gpgSign': 'false', 'gc.auto': '0'}
+    # Files belong to another uid inside the sandbox: without this git re-hashes the whole
+    # tree on its first command there (18 s for a kernel tree).
+    settings['core.checkStat'] = 'minimal'
     settings['checkout.workers'] = '0'  # Parallel: a kernel tree checks out in about 20 s.
     for key, value in settings.items():
         _git(dest, 'config', key, value)
@@ -212,6 +215,9 @@ def prepare_tree(
         else:
             start, applied = _apply(project, dest, source, revision, base)
         _git(dest, 'checkout', '--quiet', '-b', branch, applied)
+        for other in _git(dest, 'branch', '--format=%(refname:short)').splitlines():
+            if other != branch:  # The clone's default branch: the project's, not the session's.
+                _git(dest, 'branch', '--quiet', '-D', other)
         _agent(dest, identity)
     except BaseException:
         shutil.rmtree(dest, ignore_errors=True)

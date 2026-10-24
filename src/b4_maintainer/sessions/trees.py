@@ -48,13 +48,13 @@ def _git(path: pathlib.Path, *args: str) -> list[str]:
 
 
 def inspect_tree(path: pathlib.Path, applied: str = '') -> TreeState:
-    """Changes in the tree; commits beyond *applied* (the series' last), or, when unknown,
-    beyond every ref the tree was cloned with."""
+    """Changes in the tree; commits on its branches beyond the refs it was cloned with and
+    *applied* (the series' last; without it the series counts too)."""
     if not (path / '.git').is_dir():
         return TreeState(error='not a git tree')
     try:
         changed = _git(path, 'status', '--porcelain')
-        since = ['--not', applied] if applied else ['--not', '--remotes']
+        since = ['--not', '--remotes', *([applied] if applied else [])]
         commits = _git(path, 'log', '--format=%h %s', 'HEAD', '--branches', *since)
     except OSError as ex:
         return TreeState(error=str(ex))

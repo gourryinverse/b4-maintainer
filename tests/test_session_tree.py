@@ -119,8 +119,14 @@ def test_the_series_base_is_used_when_the_project_head_has_moved_on(upstream, tm
     project, base, mbox = upstream
     write(project, 'mm/foo.c', (project / 'mm/foo.c').read_text().replace('line 3\n', 'tres\n'))
     commit(project, 'mm/foo: conflicting change')
-    tree = prepare_tree(project, tmp_path / 'wt', BRANCH, str(mbox), 2, identity=AGENT)
+    dest = tmp_path / 'wt'
+    tree = prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT)
     assert tree.base == base
+    # Only the session branch: the project's moved-on HEAD is not work to lose.
+    assert git('branch', '--format=%(refname:short)', cwd=dest) == BRANCH
+    assert inspect_tree(dest, tree.applied).clean
+    # In the sandbox, files belong to another uid: git must not re-hash the tree for it.
+    assert git('config', 'core.checkStat', cwd=dest) == 'minimal'
 
 
 def test_a_conflict_reports_b4s_output_and_leaves_nothing(upstream, tmp_path):
