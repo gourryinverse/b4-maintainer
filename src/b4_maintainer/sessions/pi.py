@@ -12,8 +12,9 @@ import mailbox
 import pathlib
 import shutil
 from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
+from .policy import ContextItem
 from .profiles import Request
 from .records import SessionRecord, session_label
 from .store import EVENTS, SessionStore
@@ -128,14 +129,20 @@ TREE_TEXT = (
 
 
 def system_prompt(
-    record: SessionRecord, request: Request, work: pathlib.Path, sandboxed: bool = False
+    record: SessionRecord,
+    request: Request,
+    work: pathlib.Path,
+    sandboxed: bool = False,
+    files: Sequence[tuple[str, str]] = (),
 ) -> str:
+    """*files*: (name, what it holds) in context/, besides the task."""
     permissions = PERMISSION_TEXT.get(record.permissions, record.permissions)
     if sandboxed:
         permissions = record.permissions
+    listed = ', '.join(f'{name} ({what})' for name, what in (('task.md', 'the task'), *files))
     facts = [
         f'This session: {session_label(record)}.',
-        f'Context (the series thread as an mbox, the task): {work / "context"}.',
+        f'Context in {work / "context"}: {listed}.',
         f'Write output files only under {work / "out"}.',
         f'Permissions: {permissions}.',
     ]
@@ -158,17 +165,28 @@ def prepare_session(
     request: Request,
     source: Optional[str],
     sandboxed: bool = False,
+    items: Optional[Sequence[ContextItem]] = None,
 ) -> None:
-    """system.md, and work/ with context/ (task, thread mbox) and out/, for a new session."""
+    """system.md, and work/ with context/ (the task and the prompt package's *items*;
+    None: the thread mbox from *source*) and out/, for a new session."""
     directory = store.directory(record.id)
     work = directory / WORK
     context = work / 'context'
     context.mkdir(parents=True, exist_ok=True)
     (work / 'out').mkdir(exist_ok=True)
-    (directory / 'system.md').write_text(system_prompt(record, request, work, sandboxed))
     (context / 'task.md').write_text(request.prompt + '\n')
-    if source:
-        write_thread(pathlib.Path(source), context / 'thread.mbx')
+    if items is None:
+        items = [ContextItem('mbox', 'the series thread')] if source else []
+    files = []
+    for item in items:
+        if item.id == 'mbox':
+            if source and write_thread(pathlib.Path(source), context / 'thread.mbx'):
+                files.append(('thread.mbx', 'the series thread as an mbox'))
+        elif item.text:
+            (context / f'{item.id}.md').write_text(item.text)
+            files.append((f'{item.id}.md', item.label))
+    prompt = system_prompt(record, request, work, sandboxed, files)
+    (directory / 'system.md').write_text(prompt)
 
 
 def write_thread(source: pathlib.Path, target: pathlib.Path) -> bool:

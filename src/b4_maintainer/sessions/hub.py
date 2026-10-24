@@ -369,7 +369,9 @@ class SessionHub:
                 record = record.replace(worktree=tree, state='')
                 self.store.save(record)
                 self._preparing.discard(record.id)
-            prepare_session(self.store, record, planned.request, target.source, sandboxed)
+            prepare_session(
+                self.store, record, planned.request, target.source, sandboxed, planned.included
+            )
             self.runner.launch(record, spec)
         except TreeError as exc:
             self._preparing.discard(record.id)

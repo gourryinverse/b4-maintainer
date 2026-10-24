@@ -44,6 +44,8 @@ class LaunchChoice:
     # The maintainer's adjustments to the suggested skills (the dialog's Advanced section).
     skills_on: frozenset[str] = frozenset()
     skills_off: frozenset[str] = frozenset()
+    # Prompt package sources the maintainer unticked (available ones start ticked).
+    context_off: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -120,7 +122,7 @@ def plan(
         permissions,
         model,
         thinking,
-        tuple(items),
+        tuple(i for i in items if i.available and i.id not in choice.context_off),
         tuple(s for s in wanted if s in installed),
         tuple(blockers),
         tuple(warnings),

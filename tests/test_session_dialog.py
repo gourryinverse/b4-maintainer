@@ -331,6 +331,7 @@ async def test_tab_moves_between_sections_and_shift_tab_back(demo_root, store, r
             'artifacts',
             'artifacts:text',
             'apparatus',
+            'package',
             'mode',
             'model',
             'advanced',
@@ -429,16 +430,24 @@ async def test_dry_run_is_always_offered(demo_root, store, runner):
         assert store.record(sid).model == 'b4m/dry-run'
 
 
-def test_the_series_mbox_is_offered_only_when_its_mail_exists(demo_root, tmp_path):
-    import dataclasses
-
-    from b4_maintainer.adapters.fixture import FixtureSource
-    from b4_maintainer.app import series_context
-
-    item = FixtureSource(demo_root).load().items[0]
-    assert [i.id for i in series_context(item)] == ['mbox']
-    gone = dataclasses.replace(item.series, source=str(tmp_path / 'missing'))
-    assert series_context(dataclasses.replace(item, series=gone)) == ()
+async def test_the_prompt_package_lists_sources_and_launches_the_ticked_ones(
+    demo_root, store, runner
+):
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        assert 'Prompt package' in dialog.labels()
+        assert dialog.ticked('package') == ['mbox']  # Available sources start ticked.
+        assert dialog.option_disabled('package', 'sashiko')  # The demo has no review.
+        await act(pilot, dialog.pick, 'goal', 'review')
+        assert 'Series mbox and thread' in dialog.summary_text()
+        await act(pilot, dialog.pick, 'package', 'mbox')
+        assert 'the task prompt only' in dialog.summary_text()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        assert store.record(sid).context == ()
+        assert not (store.directory(sid) / 'work' / 'context' / 'thread.mbx').exists()
 
 
 async def test_pis_model_list_is_read_in_the_background_at_startup(demo_root, store, runner):

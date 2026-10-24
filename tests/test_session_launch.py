@@ -263,3 +263,25 @@ def test_limits_count_a_session_still_being_prepared(store):
     preparing = SessionView(make_record('p', mode='worktree', state='preparing'), 'preparing')
     found = _situation(hub, Workspace(), Overview((preparing,)), [], 'linux')
     assert (found.live, found.live_builds) == (1, 1)
+
+
+def test_the_package_holds_the_ticked_available_sources(profile):
+    items = (
+        ContextItem('mbox', 'Series mbox and thread'),
+        ContextItem('sashiko', 'Sashiko review', text='x'),
+        ContextItem('other', 'Not here', available=False, reason='none'),
+    )
+    p = plan(profile, choice(), situation(), items)
+    assert [i.id for i in p.included] == ['mbox', 'sashiko']
+    p = plan(profile, choice(context_off=frozenset({'sashiko'})), situation(), items)
+    assert [i.id for i in p.included] == ['mbox']
+
+
+def test_a_launch_writes_its_package(store, profile):
+    runner = FakeSessionRunner(store)
+    hub = SessionHub(store, runner, FakeWorktrees())
+    items = (ContextItem('sashiko', 'Sashiko review', text='# Sashiko review\n'),)
+    record = hub.launch(TARGET, profile, choice(), situation(), items)
+    context = store.directory(record.id) / 'work' / 'context'
+    assert (context / 'sashiko.md').read_text() == '# Sashiko review\n'
+    assert record.context == ('sashiko',)

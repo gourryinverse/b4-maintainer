@@ -33,6 +33,7 @@ from .drawer import drawer_line, session_label, session_rows, tabs_line, worktre
 from .launchdialog import LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
+from .package import series_context
 from .reader import (
     SASHIKO_PREFIX,
     SEVERITY_STYLES,
@@ -2502,14 +2503,6 @@ def _situation(
 def _target(item: WorkItem) -> Target:
     s = item.series
     return Target('series', item.project or '', item.identity, s.revision, s.subject, s.source)
-
-
-def series_context(item: WorkItem) -> tuple[ContextItem, ...]:
-    """What a series session receives: its thread's mail, when the mail is here."""
-    source = item.series.source
-    if source and pathlib.Path(source).exists():
-        return (ContextItem('mbox', 'Series mbox and thread'),)
-    return ()
 
 
 def _replace_rows(rows: OptionList, entries: list[tuple[str, str]], empty: str) -> None:

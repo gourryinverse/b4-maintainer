@@ -198,6 +198,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 placeholder = placeholder or f'Custom {field.label.lower()}'
                 section = field.id if field.kind == 'text' else f'{field.id}:text'
                 widgets.append(self._input(field.id, section, placeholder))
+        widgets += self._package()
         modes = [(m, MODE_LABELS[m], False) for m in MODES]
         widgets += self._group('Mode', 'mode', modes, 0)
         bases = self.situation.bases
@@ -212,6 +213,19 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         widgets += self._group('Model', 'model', models, default)
         widgets.append(self._advanced())
         return widgets
+
+    def _package(self) -> list[Widget]:
+        """The prompt package: the scope's sources, available ones ticked, others disabled
+        with the reason."""
+        items = self.items.get(self.scope, ())
+        if not items:
+            return []
+        options = [
+            (i.id, i.label if i.available else f'{i.label} — {i.reason}', not i.available)
+            for i in items
+        ]
+        ticked = frozenset(i.id for i in items if i.available)
+        return self._checks('Prompt package', 'package', options, ticked)
 
     def _advanced(self) -> Collapsible:
         """Skills (ticked from the other choices), any model in pi's catalog, and thinking:
@@ -295,9 +309,18 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         old.remove()
         self._mode_shown = mode
 
-    def _checks(self, title: str, group: str, options: list[tuple[str, str, bool]]) -> list[Widget]:
+    def _checks(
+        self,
+        title: str,
+        group: str,
+        options: list[tuple[str, str, bool]],
+        ticked: frozenset[str] = frozenset(),
+    ) -> list[Widget]:
         """Any of several: one list (a single Tab stop), Space toggles the highlighted one."""
-        selections = [Selection(label, key, False, disabled=off) for key, label, off in options]
+        selections = [
+            Selection(label, key, key in ticked, id=key, disabled=off)
+            for key, label, off in options
+        ]
         widget: SelectionList[str] = SelectionList(*selections, id=self._new_id())
         self._lists[group] = widget
         self._keys[id(widget)] = (group, '')
@@ -352,7 +375,16 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             self._inputs['base'].value.strip() if 'base' in self._inputs else '',
             frozenset(self._skills_on),
             frozenset(self._skills_off),
+            self._context_off(),
         )
+
+    def _context_off(self) -> frozenset[str]:
+        """Available sources the maintainer unticked."""
+        if 'package' not in self._lists:
+            return frozenset()
+        ticked = set(self.ticked('package'))
+        items = self.items.get(self.scope, ())
+        return frozenset(i.id for i in items if i.available and i.id not in ticked)
 
     def _target(self) -> Target:
         return self.target if self.scope == 'series' and self.target is not None else WORKSPACE

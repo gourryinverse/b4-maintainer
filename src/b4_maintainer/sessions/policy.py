@@ -11,10 +11,14 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True)
 class ContextItem:
-    """Public material given to a session, e.g. the series mbox and thread."""
+    """Public material a session may receive (the dialog's Prompt package), e.g. the
+    series mbox and thread, or Sashiko's review."""
 
     id: str
     label: str
+    text: str = ''  # Written as context/<id>.md; the mailbox is copied from the source.
+    available: bool = True
+    reason: str = ''  # Why it is not available.
 
 
 @dataclass(frozen=True)
