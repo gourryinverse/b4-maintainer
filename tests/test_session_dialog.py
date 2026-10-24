@@ -28,8 +28,8 @@ def runner(store):
     return FakeSessionRunner(store)
 
 
-def make_app(demo_root, store, runner, **kwargs):
-    hub = SessionHub(store, runner, FakeWorktrees(), catalog=catalog, **kwargs)
+def make_app(demo_root, store, runner, worktrees=None, **kwargs):
+    hub = SessionHub(store, runner, worktrees or FakeWorktrees(), catalog=catalog, **kwargs)
     return MaintainerApp(FixtureSource(demo_root).load, sessions=hub)
 
 
@@ -188,15 +188,70 @@ async def test_skills_the_maintainer_unticks_stay_off(demo_root, store, runner):
         assert dialog.ticked('skills') == []
 
 
-async def test_worktree_sessions_are_refused_until_available(demo_root, store, runner):
-    app = make_app(demo_root, store, runner)
+async def test_worktree_sessions_are_refused_without_a_sandbox(demo_root, store, runner):
+    app = make_app(demo_root, store, runner, sandbox=lambda: False)
     async with app.run_test(size=(180, 50)) as pilot:
         dialog = await open_dialog(pilot)
         assert 'Permissions' not in dialog.labels()  # The mode decides.
         await act(pilot, dialog.pick, 'goal', 'reproduce')
         assert dialog.selected('mode') == 'worktree'
         assert 'worktree sessions unavailable' in dialog.summary_text()
+        assert 'sandbox' in dialog.summary_text()
         assert not dialog.can_launch()
+
+
+async def test_worktree_sessions_are_refused_without_a_checkout(demo_root, store, runner):
+    trees = FakeWorktrees()
+    trees.why = 'project linux has no checkout'
+    app = make_app(demo_root, store, runner, trees, sandbox=lambda: True)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'reproduce')
+        assert 'has no checkout' in dialog.summary_text() and not dialog.can_launch()
+
+
+async def test_a_worktree_session_applies_the_series_on_the_chosen_base(demo_root, store, runner):
+    trees = FakeWorktrees()
+    app = make_app(demo_root, store, runner, trees, sandbox=lambda: True)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        assert not dialog.base_shown()
+        await act(pilot, dialog.pick, 'goal', 'reproduce')
+        assert dialog.base_shown() and 'the base b4 chooses' in dialog.summary_text()
+        await act(pilot, dialog.write, 'base', 'v6.18')
+        assert 'applied on v6.18' in dialog.summary_text()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        assert [(p[0], p[2]) for p in trees.prepared] == [(sid, 'v6.18')]
+        record = store.record(sid)
+        assert record.mode == 'worktree' and record.permissions == 'execute'
+        assert record.worktree is not None
+
+
+async def test_a_series_that_does_not_apply_shows_b4s_output(demo_root, store, runner):
+    trees = FakeWorktrees()
+    trees.fail = ('v3 does not apply at HEAD', 'error: patch failed: mm/foo.c:3')
+    app = make_app(demo_root, store, runner, trees, sandbox=lambda: True)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'reproduce')
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        assert runner.launches == []
+        assert isinstance(app.screen, Notice)
+        text = app.screen.prompt
+        assert 'does not apply' in text and 'patch failed: mm/foo.c:3' in text
+        assert 'lightweight' in text
+
+
+async def test_workspace_sessions_cannot_use_a_worktree(demo_root, store, runner):
+    app = make_app(demo_root, store, runner, sandbox=lambda: True)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'scope', 'workspace')
+        await act(pilot, dialog.pick, 'mode', 'worktree')
+        assert 'no series to apply' in dialog.summary_text() and not dialog.can_launch()
 
 
 async def test_a_workspace_session_uses_the_workspace_profile(demo_root, store, runner):

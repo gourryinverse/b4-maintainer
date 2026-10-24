@@ -21,7 +21,7 @@ from .models import ModelChoice, model_choices, parse_catalog
 from .pi import LaunchSpec, prepare_session
 from .policy import ContextItem
 from .profiles import BUILTIN_DIR, Profile, load_profiles
-from .records import SessionRecord
+from .records import SessionRecord, Worktree
 from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
@@ -31,7 +31,17 @@ RESUMABLE = frozenset({'stopped', 'gone'})
 
 
 class SessionError(Exception):
-    pass
+    def __init__(self, message: str, detail: str = '') -> None:
+        super().__init__(message)
+        self.detail = detail  # Tool output behind the message (b4's, for a tree).
+
+
+class TreeError(Exception):
+    """A session tree could not be prepared; *output* is what b4 or git said."""
+
+    def __init__(self, message: str, output: str = '') -> None:
+        super().__init__(message)
+        self.output = output
 
 
 class SessionRunner(Protocol):
@@ -80,6 +90,14 @@ class WorktreeInfo:
 class Worktrees(Protocol):
     def list(self, records: Sequence[SessionRecord]) -> list[WorktreeInfo]: ...
 
+    def reason(self, project: str) -> str:
+        """Why no tree can be prepared for the project's series; empty if one can."""
+        ...
+
+    def prepare(self, record: SessionRecord, source: str, base: str) -> Worktree:
+        """The series applied in the session's own tree (*base* empty: b4 detects it)."""
+        ...
+
 
 @dataclass(frozen=True)
 class Overview:
@@ -103,12 +121,50 @@ def disk_usage(path: pathlib.Path) -> int:
     return total
 
 
-class RecordWorktrees:
-    """Worktrees named by session records, measured at most every *ttl* seconds."""
+AGENT_NAME = 'b4-maintainer agent ({model})'
+AGENT_EMAIL = 'agent@b4-maintainer.invalid'
 
-    def __init__(self, ttl: float = 300.0) -> None:
+
+class RecordWorktrees:
+    """Session trees under *directory*, prepared through b4 from the project checkouts;
+    listed from session records, measured at most every *ttl* seconds."""
+
+    def __init__(
+        self,
+        directory: Optional[pathlib.Path] = None,
+        checkouts: Optional[Mapping[str, str]] = None,
+        agent: tuple[str, str] = (AGENT_NAME, AGENT_EMAIL),
+        ttl: float = 300.0,
+    ) -> None:
+        self.directory = directory
+        self.checkouts = dict(checkouts or {})
+        self.agent = agent  # Commit identity; the name may use {model}.
         self.ttl = ttl
         self._sizes: dict[str, tuple[float, int]] = {}
+
+    def reason(self, project: str) -> str:
+        if self.directory is None or not self.checkouts.get(project):
+            return f'project {project or "(none)"} has no checkout'
+        return ''
+
+    def prepare(self, record: SessionRecord, source: str, base: str) -> Worktree:
+        from ..adapters.sessiontree import prepare_tree  # b4: only when preparing.
+
+        checkout, directory = self.checkouts.get(record.project), self.directory
+        if not checkout or directory is None:
+            raise TreeError(self.reason(record.project))
+        change_id = record.series.removeprefix('change-id:')
+        name = self.agent[0].format(model=record.model or record.preset)
+        return prepare_tree(
+            pathlib.Path(checkout),
+            directory / record.id,
+            f'b4m/session/{record.id}',
+            source,
+            record.revision,
+            change_id=change_id if change_id != record.series else '',
+            base=base or None,
+            identity=(name, self.agent[1]),
+        )
 
     def list(self, records: Sequence[SessionRecord]) -> list[WorktreeInfo]:
         infos = []
@@ -154,7 +210,7 @@ class SessionHub:
         profiles_dir: Optional[pathlib.Path] = None,
         skills_dir: Optional[pathlib.Path] = None,
         catalog: Optional[Callable[[], Optional[str]]] = None,
-        sandbox: Optional[Callable[[], bool]] = None,
+        sandbox: Optional[Callable[[], Any]] = None,  # Truthy where the sandbox works.
     ) -> None:
         self.store = store
         self.runner = runner
@@ -162,7 +218,7 @@ class SessionHub:
         self.profiles_dir = profiles_dir  # The maintainer's own (state/profiles/).
         self.skills_dir = skills_dir  # The maintainer's own (state/skills/).
         self._catalog = catalog or pi_catalog
-        self._sandbox = sandbox or (lambda: bool(available()))
+        self._sandbox = sandbox or available
         self._catalog_text: Optional[str] = None
         self._catalog_read = False
         self._catalog_lock = threading.Lock()
@@ -183,6 +239,17 @@ class SessionHub:
 
     def skills(self) -> tuple[list[Skill], list[str]]:
         return load_skills(BUILTIN_SKILLS, self.skills_dir)
+
+    def worktree_reason(self, project: str) -> str:
+        """Why a worktree session for the project's series cannot launch; empty if it can.
+        Blocking (checks the sandbox once)."""
+        sandbox = self._sandbox()
+        if not sandbox:
+            why = getattr(sandbox, 'reason', '')
+            return 'they build and run in a sandbox, and none works here' + (
+                f' ({why})' if why else ''
+            )
+        return self.worktrees.reason(project)
 
     def read_catalog(self) -> None:
         """Read pi's model list once (about a second: pi starts); later calls wait for it."""
@@ -213,7 +280,7 @@ class SessionHub:
         record = new_record(target, profile, choice, planned, now)
         assert planned.request is not None and planned.model is not None
         installed = {s.id: s.path for s in situation.skills}
-        sandboxed = self._sandbox()
+        sandboxed = bool(self._sandbox())
         spec = LaunchSpec(
             planned.request,
             tuple(p for s in planned.skills if (p := installed.get(s)) is not None),
@@ -221,10 +288,19 @@ class SessionHub:
             planned.model.env,
             sandboxed,
         )
+        if planned.mode == 'worktree' and target.scope != 'series':
+            raise SessionError('worktree sessions apply a series; this session has none')
         self.store.create(record)
         try:
+            if planned.mode == 'worktree':
+                tree = self.worktrees.prepare(record, target.source, choice.base)
+                record = record.replace(worktree=tree)
+                self.store.save(record)
             prepare_session(self.store, record, planned.request, target.source, sandboxed)
             self.runner.launch(record, spec)
+        except TreeError as exc:
+            self.store.set_state(record.id, 'failed')
+            raise SessionError(f'Session {record.id}: {exc}', exc.output) from exc
         except Exception as exc:
             self.store.set_state(record.id, 'failed')
             raise SessionError(f'Session {record.id} failed to start: {exc}') from exc

@@ -187,3 +187,38 @@ def test_the_runner_blocker_is_reported(store):
     runner = FakeSessionRunner(store)
     runner.blocker_reason = 'phase 1 sessions need tmux'
     assert SessionHub(store, runner, FakeWorktrees()).blocker() == 'phase 1 sessions need tmux'
+
+
+def test_a_worktree_launch_prepares_the_tree_before_the_agent_starts(store, profile):
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees)
+    target = Target(**{**TARGET.__dict__, 'source': '/mail/thread'})
+    tree_choice = choice(mode='worktree', base='v6.18')
+    record = hub.launch(target, profile, tree_choice, situation(worktree_reason=''), ITEMS)
+    assert trees.prepared == [(record.id, '/mail/thread', 'v6.18')]
+    assert record.worktree is not None and record.worktree.branch == f'b4m/session/{record.id}'
+    assert store.record(record.id) == record and record.permissions == 'execute'
+    [(sid, _request)] = runner.launches
+    assert sid == record.id
+
+
+def test_a_tree_that_cannot_be_prepared_fails_the_session_with_b4s_output(store, profile):
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    trees.fail = ('v3 does not apply at HEAD', 'Patch failed at 0001 mm: fix foo')
+    hub = SessionHub(store, runner, trees)
+    with pytest.raises(SessionError, match='does not apply') as raised:
+        hub.launch(TARGET, profile, choice(mode='worktree'), situation(worktree_reason=''), ITEMS)
+    assert raised.value.detail == 'Patch failed at 0001 mm: fix foo'
+    assert runner.launches == []
+    [view] = store.poll(runner.alive)
+    assert view.state == 'failed' and view.record.worktree is None
+
+
+def test_workspace_sessions_have_no_series_to_apply(store, profile):
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees)
+    with pytest.raises(SessionError, match='series'):
+        hub.launch(
+            Target('workspace'), profile, choice(mode='worktree'), situation(worktree_reason=''), ()
+        )
+    assert trees.prepared == [] and runner.launches == []

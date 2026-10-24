@@ -40,6 +40,7 @@ class LaunchChoice:
     mode: Optional[str] = None  # Chosen explicitly; else the profile's suggestion.
     model: str = ''  # A ModelChoice id.
     thinking: str = ''  # Empty: the model choice's.
+    base: str = ''  # Worktree sessions: where the series applies; empty: b4 detects it.
     # The maintainer's adjustments to the suggested skills (the dialog's Advanced section).
     skills_on: frozenset[str] = frozenset()
     skills_off: frozenset[str] = frozenset()

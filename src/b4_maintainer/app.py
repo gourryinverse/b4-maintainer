@@ -54,13 +54,12 @@ from .reader import (
 )
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
-from .sessions.hub import Overview, SessionHub
-from .sessions.launch import Situation, Target
+from .sessions.hub import Overview, SessionError, SessionHub
+from .sessions.launch import Situation, Target, plan
 from .sessions.pane import pane_for
 from .sessions.policy import ContextItem
 from .sessions.profiles import Profile
 from .sessions.records import SessionRecord
-from .sessions.sandbox import available
 from .sessions.skills import Skill
 from .sessions.store import SessionView
 from .views import ViewIndex
@@ -1945,7 +1944,8 @@ class MaintainerApp(App[None]):
                     return
                 profiles, problems = hub.profiles()
                 skills, skill_problems = hub.skills()
-                situation = _situation(hub, workspace, overview, skills)
+                project = item.project or '' if item is not None else ''
+                situation = _situation(hub, workspace, overview, skills, project)
                 problems += skill_problems
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot open the session dialog: {exc}')
@@ -1973,12 +1973,22 @@ class MaintainerApp(App[None]):
             return
         workspace, label = snapshot.workspace, session_label(result.target)
 
-        def launch() -> str:
+        def launch() -> Optional[str]:
             # Checked again with fresh counts: the dialog may have been open a while.
-            situation = _situation(hub, workspace, hub.overview(), hub.skills()[0])
-            record = hub.launch(
-                result.target, result.profile, result.choice, situation, result.items
-            )
+            target = result.target
+            skills = hub.skills()[0]
+            situation = _situation(hub, workspace, hub.overview(), skills, target.project)
+            if plan(result.profile, result.choice, situation, result.items).mode == 'worktree':
+                note = f'Preparing a worktree for {label} (b4 applies the series)…'
+                self.call_from_thread(self._set_notice, note)
+            try:
+                record = hub.launch(target, result.profile, result.choice, situation, result.items)
+            except SessionError as exc:
+                if not exc.detail:
+                    raise
+                text = f'{exc}\n\n{exc.detail.strip()}\n\nA lightweight session needs no tree.'
+                self.call_from_thread(self.push_screen, Notice(text))
+                return None
             self.call_from_thread(self._after_launch, record)
             return f'Launched session {record.id}: {label}'
 
@@ -2356,25 +2366,18 @@ def _action_names(bindings: Iterable[Any]) -> Iterable[str]:
 
 
 def _situation(
-    hub: SessionHub, workspace: Workspace, overview: Overview, skills: list[Skill]
+    hub: SessionHub, workspace: Workspace, overview: Overview, skills: list[Skill], project: str
 ) -> Situation:
+    """What a launch for *project*'s series is checked against (blocking: off the UI thread)."""
     return Situation(
         hub.models(workspace.models),
         workspace.session_limits,
         live=sum(v.state in LIVE_STATES for v in overview.sessions),
         worktrees=len(overview.worktrees),
         worktree_bytes=overview.worktree_bytes,
-        worktree_reason=_worktree_reason(),
+        worktree_reason=hub.worktree_reason(project),
         skills=skills,
     )
-
-
-def _worktree_reason() -> str:
-    """Why worktree sessions cannot launch (blocking: call off the UI thread)."""
-    sandbox = available()
-    if not sandbox:
-        return f'they build and run in a sandbox, and none works here ({sandbox.reason})'
-    return 'not built yet'
 
 
 def _target(item: WorkItem) -> Target:

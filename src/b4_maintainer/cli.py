@@ -116,7 +116,7 @@ def _sessions(
 ) -> 'SessionHub':
     """Sessions under var/sessions/, run as pi in tmux windows. Live workspaces add the
     maintainer's own profiles and skills from state/ (*private*)."""
-    from .sessions.hub import SessionHub
+    from .sessions.hub import AGENT_EMAIL, AGENT_NAME, RecordWorktrees, SessionHub
     from .sessions.pi import Site
     from .sessions.store import SessionStore
     from .sessions.tmuxrunner import TmuxRunner
@@ -131,9 +131,13 @@ def _sessions(
         {p.id: str(root / p.path) for p in projects if p.path},
     )
     store = SessionStore(root / 'var' / 'sessions')
+    agent = (
+        (workspace.agent_name, workspace.agent_email) if workspace else (AGENT_NAME, AGENT_EMAIL)
+    )
     return SessionHub(
         store,
         TmuxRunner(store, site),
+        RecordWorktrees(root / 'var' / 'worktrees', site.checkouts, agent),
         profiles_dir=root / 'state' / 'profiles' if private else None,
         skills_dir=root / 'state' / 'skills' if private else None,
     )

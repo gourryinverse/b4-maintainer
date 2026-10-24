@@ -177,10 +177,25 @@ class FakeSessionRunner:
 
 
 class FakeWorktrees:
-    """Session worktrees with scripted sizes."""
+    """Session worktrees with scripted sizes; prepares by recording the request."""
 
     def __init__(self, *infos):
         self.infos = list(infos)
+        self.prepared = []  # (session id, source, base)
+        self.fail = None  # (message, output) for prepare to fail with.
+        self.why = ''  # Why trees cannot be prepared.
 
     def list(self, records):
         return list(self.infos)
+
+    def reason(self, project):
+        return self.why
+
+    def prepare(self, record, source, base):
+        from b4_maintainer.sessions.hub import TreeError
+        from b4_maintainer.sessions.records import Worktree
+
+        if self.fail is not None:
+            raise TreeError(*self.fail)
+        self.prepared.append((record.id, source, base))
+        return Worktree(f'/w/var/worktrees/{record.id}', f'b4m/session/{record.id}', 'b', 'a')

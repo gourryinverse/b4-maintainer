@@ -100,6 +100,9 @@ class Workspace:
     pi: str = 'pi'
     pi_args: tuple[str, ...] = ()
     pane_width: int = 90  # Columns of the session pane beside the app ([sessions]).
+    # Commit identity in session worktrees ([sessions] agent_name may use {model}).
+    agent_name: str = 'b4-maintainer agent ({model})'
+    agent_email: str = 'agent@b4-maintainer.invalid'
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -148,6 +151,8 @@ class Workspace:
             pi=str(config.get('sessions', {}).get('pi', 'pi')),
             pi_args=tuple(str(a) for a in config.get('sessions', {}).get('pi_args', [])),
             pane_width=int(config.get('sessions', {}).get('pane_width', 90)),
+            agent_name=str(config.get('sessions', {}).get('agent_name', cls.agent_name)),
+            agent_email=str(config.get('sessions', {}).get('agent_email', cls.agent_email)),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

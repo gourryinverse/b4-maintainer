@@ -7,6 +7,7 @@ reason it cannot launch. Skills follow the other choices; the Advanced section a
 Each section is one Tab stop: arrows move within it, Enter or Space picks.
 """
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -40,6 +41,8 @@ PERMISSION_LABELS = {
     'read-only': 'reads and searches the series, the checkout, and its notes; writes only out/',
     'execute': 'also edits, builds, and runs in its own worktree, in the sandbox',
 }
+BASE_PLACEHOLDER = 'Base: empty lets b4 choose (HEAD if it applies, the series base, a guess)'
+NO_SERIES = 'a workspace session has no series to apply'
 MODE_LABELS = {
     'lightweight': 'lightweight: analyze the series mail and the checkout; writes only out/',
     'worktree': 'worktree: the series applied in its own tree, to edit, build, run, and test',
@@ -196,6 +199,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 widgets.append(self._input(field.id, section, placeholder))
         modes = [(m, MODE_LABELS[m], False) for m in MODES]
         widgets += self._group('Mode', 'mode', modes, 0)
+        base = self._input('base', 'base', BASE_PLACEHOLDER)
+        base.display = False  # Worktree mode only.
+        widgets.append(base)
         self._mode_shown = 'lightweight'
         shown = [m for m in self.situation.models if m.kind != 'catalog']
         models = [(m.id, _model_label(m), not m.available) for m in shown]
@@ -337,6 +343,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             mode,
             self._selected_value('other-model') or self.selected('model') or '',
             self._selected_value('thinking'),
+            self._inputs['base'].value.strip() if 'base' in self._inputs else '',
             frozenset(self._skills_on),
             frozenset(self._skills_off),
         )
@@ -351,10 +358,15 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             self.query_one('#launch-go', Button).disabled = True
             return
         items = self.items.get(self.scope, ())
-        self._suggested_mode = plan(self.profile, self._choice(None), self.situation, items).mode
-        self.plan = plan(self.profile, self._choice(self._explicit_mode), self.situation, items)
+        situation = self.situation
+        if self.scope != 'series' and not situation.worktree_reason:
+            situation = dataclasses.replace(situation, worktree_reason=NO_SERIES)
+        self._suggested_mode = plan(self.profile, self._choice(None), situation, items).mode
+        self.plan = plan(self.profile, self._choice(self._explicit_mode), situation, items)
         if self._explicit_mode is None and self._mode_shown != self.plan.mode:
             self._show_mode(self.plan.mode)
+        if 'base' in self._inputs:
+            self._inputs['base'].display = self.plan.mode == 'worktree'
         skills = self._lists.get('skills')
         if skills is not None and set(self.ticked('skills')) != set(self.plan.skills):
             with self.prevent(SelectionList.SelectedChanged):  # Suggested, not chosen.
@@ -441,6 +453,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             return {'launch-go': 'launch', 'launch-cancel': 'cancel'}.get(focused.id or '')
         return self._sections.get(id(focused))
 
+    def base_shown(self) -> bool:
+        return 'base' in self._inputs and bool(self._inputs['base'].display)
+
     def advanced_open(self) -> bool:
         return not self.query_one(Collapsible).collapsed
 
@@ -474,7 +489,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             lines.append(f'Skills:   {", ".join(p.skills)}')
         lines.append(f'May:      {PERMISSION_LABELS.get(p.permissions, p.permissions)}')
         if p.mode == 'worktree':
-            lines.append('Worktree: the series applied on its base, on its own branch')
+            base = self._inputs['base'].value.strip() if 'base' in self._inputs else ''
+            where = base or 'the base b4 chooses'
+            lines.append(f'Worktree: the series applied on {where}, on its own branch')
         lines += [f'Note:     {n}' for n in p.notes]
         lines += [f'Warning:  {w}' for w in (*p.warnings, *self.problems)]
         lines += [f'Cannot launch: {b}' for b in p.blockers]
