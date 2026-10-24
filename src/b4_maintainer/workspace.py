@@ -44,6 +44,15 @@ def _ref(r: Mapping[str, Any]) -> Ref:
 
 
 @dataclass(frozen=True)
+class MaintainerBase:
+    """The maintainer's integration branch on top of an upstream branch (e.g. a local
+    branch on `mm/mm-stable`): pulled-ahead work waits there until it lands upstream."""
+
+    branch: str
+    upstream: str
+
+
+@dataclass(frozen=True)
 class Project:
     id: str
     label: str
@@ -55,6 +64,7 @@ class Project:
     # (default: scripts/get_maintainer.pl when present; empty disables).
     maintainers: str = 'MAINTAINERS'
     get_maintainer: Optional[tuple[str, ...]] = None
+    bases: tuple[MaintainerBase, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -117,6 +127,9 @@ class Workspace:
                 maintainers=p.get('maintainers', 'MAINTAINERS'),
                 get_maintainer=(
                     tuple(p['get_maintainer']) if p.get('get_maintainer') is not None else None
+                ),
+                bases=tuple(
+                    MaintainerBase(str(b['branch']), str(b['upstream'])) for b in p.get('bases', [])
                 ),
             )
             for p in config.get('projects', [])

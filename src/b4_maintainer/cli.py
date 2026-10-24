@@ -269,6 +269,60 @@ def sync_main(argv: Sequence[str]) -> int:
     return 0
 
 
+def bases_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog='b4-maintainer bases',
+        description="Show each project's maintainer bases: how far behind their upstream, "
+        'and which of their commits have landed there; or rebase one onto its upstream.',
+    )
+    parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
+    parser.add_argument('--rebase', metavar='BRANCH', help='rebase this base onto its upstream')
+    args = parser.parse_args(argv)
+    import tomllib
+
+    from .adapters.bases import base_status, rebase_base
+    from .projectsetup import config_path
+
+    try:
+        workspace = Workspace.from_config(tomllib.loads(config_path(args.root).read_text()))
+    except (OSError, ValueError) as e:
+        print(f'b4-maintainer: {e}', file=sys.stderr)
+        return 2
+    found = [(p, b) for p in workspace.projects for b in p.bases]
+    if args.rebase:
+        match = [(p, b) for p, b in found if b.branch == args.rebase]
+        if not match:
+            print(f'b4-maintainer: no maintainer base {args.rebase}', file=sys.stderr)
+            return 2
+        project, base = match[0]
+        result = rebase_base(args.root / project.path, base)
+        if not result.ok:
+            why = f'did not replay: {result.failed.subject}' if result.failed else ''
+            print(f'b4-maintainer: {base.branch}: {why or result.error}', file=sys.stderr)
+            return 1
+        print(f'{base.branch} rebased onto {base.upstream} ({result.tip[:12]})')
+        for subject in result.dropped:
+            print(f'  dropped: {subject}')
+        return 0
+    for project, base in found:
+        status = base_status(args.root / project.path, base)
+        head = f'{project.id} {base.branch} on {base.upstream}'
+        if not status.exists:
+            print(f'{head}: no such branch')
+            continue
+        landed = sum(c.landed for c in status.commits)
+        print(
+            f'{head}: {status.behind} behind, {len(status.commits)} commits ({landed} landed)'
+            + (f'; checked out in {status.checked_out}' if status.checked_out else '')
+            + (f'; {status.error}' if status.error else '')
+        )
+        for commit in status.commits:
+            print(
+                f'  {commit.sha[:12]}  {commit.subject}' + ('  (landed)' if commit.landed else '')
+            )
+    return 0
+
+
 def hook_main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(
         prog='b4-maintainer hook',
@@ -335,6 +389,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         sys.exit(setup_main(args[1:]))
     if args[:1] == ['sync']:
         sys.exit(sync_main(args[1:]))
+    if args[:1] == ['bases']:
+        sys.exit(bases_main(args[1:]))
     if args[:1] == ['hook']:
         sys.exit(hook_main(args[1:]))
     if args[:1] == ['sandbox']:

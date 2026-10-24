@@ -252,3 +252,26 @@ def test_landed_series_leave_every_queue_but_cached_and_responses():
         assert landed not in idx.items(view), view
     assert landed in idx.items('cached')
     assert landed in idx.items('responses')
+
+
+def test_projects_carry_their_maintainer_bases():
+    from b4_maintainer.workspace import MaintainerBase
+
+    config = {
+        'projects': [
+            {
+                'id': 'linux',
+                'bases': [
+                    {'branch': 'me/base', 'upstream': 'mm/mm-stable'},
+                    {'branch': 'me/linus', 'upstream': 'mainline/master'},
+                ],
+            },
+            {'id': 'qemu'},
+        ]
+    }
+    ws = Workspace.from_config(config)
+    assert ws.projects[0].bases == (
+        MaintainerBase('me/base', 'mm/mm-stable'),
+        MaintainerBase('me/linus', 'mainline/master'),
+    )
+    assert ws.projects[1].bases == ()

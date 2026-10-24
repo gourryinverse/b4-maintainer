@@ -78,6 +78,11 @@ Python 3.11 or newer.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
+- Maintainer bases: a project's `bases = [{ branch = "BRANCH", upstream = "REMOTE/BRANCH" }]`
+  in `workspace.toml` names integration branches on top of upstream branches.
+  `b4-maintainer bases` shows how far behind each is and which of its commits have landed
+  upstream; `--rebase BRANCH` replays the rest onto the upstream (never in a checkout; a
+  conflict changes nothing).
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

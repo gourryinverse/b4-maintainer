@@ -33,7 +33,8 @@ def message_ids(body: str) -> set[str]:
     return found
 
 
-def _subject(text: str) -> str:
+def subject_key(text: str) -> str:
+    """A subject as matched: whitespace collapsed, lower case."""
     return ' '.join(text.split()).lower()
 
 
@@ -85,7 +86,7 @@ class RefCache:
             subjects: set[str] = set()
             for record in log.stdout.split('\x1e')[1:]:
                 subject, _, body = record.partition('\x00')
-                subjects.add(_subject(subject))
+                subjects.add(subject_key(subject))
                 msgids |= message_ids(body)
             self._refs[ref.name] = {
                 'key': key,
@@ -111,7 +112,7 @@ class RefCache:
             self._sets[ref.name] = (frozenset(entry['msgids']), frozenset(entry['subjects']))
         msgids, subjects = self._sets[ref.name]
         found = sum(
-            1 for p in series.patches if p.msgid in msgids or _subject(p.subject) in subjects
+            1 for p in series.patches if p.msgid in msgids or subject_key(p.subject) in subjects
         )
         if found == len(series.patches):
             return Coverage.FULL
