@@ -277,6 +277,32 @@ def hook_main(argv: Sequence[str]) -> int:
     return code
 
 
+def sandbox_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog='b4-maintainer sandbox',
+        description="Run a session's shell command confined to the session (no network, "
+        'only its directories); the command comes from B4M_SANDBOX_COMMAND or after --.',
+    )
+    parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
+    parser.add_argument('id', help='session id')
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+    from .sessions.sandbox import SandboxError, exec_sandboxed
+    from .sessions.store import SessionStore
+
+    words = args.command[1:] if args.command[:1] == ['--'] else args.command
+    command = os.environ.get('B4M_SANDBOX_COMMAND') or ' '.join(words)
+    if not command:
+        print('b4-maintainer sandbox: no command', file=sys.stderr)
+        return 2
+    try:
+        exec_sandboxed(SessionStore(args.root / 'var' / 'sessions'), args.id, command)
+    except (SandboxError, ValueError, OSError) as ex:
+        print(f'b4-maintainer sandbox: {ex}', file=sys.stderr)
+        return 2
+    return 0  # Not reached: the command replaced this process.
+
+
 def enable_stack_dumps(directory: Optional[pathlib.Path] = None) -> pathlib.Path:
     """Let `kill -USR1 <pid>` write every thread's stack to a file, to diagnose hangs."""
     directory = directory or pathlib.Path(tempfile.gettempdir())
@@ -297,5 +323,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         sys.exit(sync_main(args[1:]))
     if args[:1] == ['hook']:
         sys.exit(hook_main(args[1:]))
+    if args[:1] == ['sandbox']:
+        sys.exit(sandbox_main(args[1:]))
     enable_stack_dumps()
     build_app(args).run()

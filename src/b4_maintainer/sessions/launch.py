@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from .models import THINKING, ModelChoice
 from .policy import ContextItem, SessionLimits, launch_check
-from .profiles import PERMISSIONS, Profile, ProfileError, Request, compose, suggested_skills
+from .profiles import MODE_PERMISSIONS, Profile, ProfileError, Request, compose, suggested_skills
 from .records import SessionRecord
 from .skills import Skill
 
@@ -40,7 +40,6 @@ class LaunchChoice:
     mode: Optional[str] = None  # Chosen explicitly; else the profile's suggestion.
     model: str = ''  # A ModelChoice id.
     thinking: str = ''  # Empty: the model choice's.
-    permissions: str = ''  # Empty: the profile's default.
     # The maintainer's adjustments to the suggested skills (the dialog's Advanced section).
     skills_on: frozenset[str] = frozenset()
     skills_off: frozenset[str] = frozenset()
@@ -55,7 +54,7 @@ class Situation:
     live: int = 0
     worktrees: int = 0
     worktree_bytes: int = 0
-    execute_reason: str = ''  # Why sandboxed execution is unavailable; empty if it is.
+    worktree_reason: str = ''  # Why worktree sessions cannot launch here; empty if they can.
     skills: Sequence[Skill] = ()  # Installed skills.
 
 
@@ -88,9 +87,7 @@ def plan(
     except ProfileError as ex:
         blockers.append(str(ex))
     mode = request.mode if request else (choice.mode or 'lightweight')
-    permissions = choice.permissions or profile.permissions
-    if permissions not in PERMISSIONS:
-        blockers.append(f'unknown permission profile {permissions!r}')
+    permissions = MODE_PERMISSIONS.get(mode, 'read-only')
     model = next((m for m in situation.models if m.id == choice.model), None)
     if model is None:
         blockers.append('Choose a model')
@@ -99,11 +96,8 @@ def plan(
     thinking = choice.thinking or (model.thinking if model else '')
     if thinking and thinking not in THINKING:
         blockers.append(f'thinking must be one of {", ".join(THINKING)}')
-    if permissions == 'execute':
-        if mode != 'worktree':
-            blockers.append('execute needs a worktree session')
-        elif situation.execute_reason:
-            blockers.append(f'execute unavailable: {situation.execute_reason}')
+    if mode == 'worktree' and situation.worktree_reason:
+        blockers.append(f'worktree sessions unavailable: {situation.worktree_reason}')
     limit_blockers, limit_warnings = launch_check(
         situation.limits, situation.live, situation.worktrees, situation.worktree_bytes, mode
     )

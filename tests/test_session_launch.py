@@ -41,7 +41,7 @@ def situation(**changes):
     base = dict(
         models=MODELS,
         limits=SessionLimits(),
-        execute_reason='no sandbox here',
+        worktree_reason='no sandbox here',
         skills=SKILLS,
     )
     return Situation(**{**base, **changes})
@@ -96,15 +96,15 @@ def test_choices_needing_a_tree_suggest_a_worktree_unless_chosen(profile):
     assert p.mode == 'lightweight' and p.ok
 
 
-def test_execute_needs_a_worktree_and_a_sandbox(profile):
-    p = plan(profile, choice(permissions='execute'), situation(), ITEMS)
-    assert 'execute needs a worktree session' in p.blockers
-    p = plan(profile, choice(permissions='execute', mode='worktree'), situation(), ITEMS)
-    assert p.blockers == ('execute unavailable: no sandbox here',)
-    p = plan(
-        profile, choice(permissions='execute', mode='worktree'), situation(execute_reason=''), ITEMS
-    )
-    assert p.ok
+def test_the_mode_decides_the_permissions(profile):
+    assert plan(profile, choice(), situation(), ITEMS).permissions == 'read-only'
+    p = plan(profile, choice(mode='worktree'), situation(worktree_reason=''), ITEMS)
+    assert p.ok and p.permissions == 'execute'  # Edit, build, and run in the sandbox.
+
+
+def test_worktree_sessions_wait_for_what_they_need(profile):
+    p = plan(profile, choice(mode='worktree'), situation(), ITEMS)
+    assert p.blockers == ('worktree sessions unavailable: no sandbox here',)
 
 
 def test_choices_select_their_skills_and_the_maintainer_adjusts_them(profile):
@@ -119,7 +119,7 @@ def test_choices_select_their_skills_and_the_maintainer_adjusts_them(profile):
 
 def test_skills_not_installed_are_dropped_with_a_warning(profile):
     picked = {'goal': 'reproduce'}
-    p = plan(profile, choice(choices=picked), situation(skills=()), ITEMS)
+    p = plan(profile, choice(choices=picked, mode='lightweight'), situation(skills=()), ITEMS)
     assert p.skills == () and p.ok
     assert any("skill 'vng' is not installed" in w for w in p.warnings)
 
@@ -128,7 +128,7 @@ def test_limits_block_and_warn(profile):
     p = plan(profile, choice(), situation(live=4), ITEMS)
     assert any('max_live' in b for b in p.blockers)
     tree = choice(mode='worktree')
-    p = plan(profile, tree, situation(worktrees=5, worktree_bytes=0), ITEMS)
+    p = plan(profile, tree, situation(worktrees=5, worktree_bytes=0, worktree_reason=''), ITEMS)
     assert p.ok and any('worktree_warn' in w for w in p.warnings)
 
 

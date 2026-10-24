@@ -8,7 +8,6 @@ version = 1
 label = "Series session"
 scope = "series"
 system_prompt = "You assist a Linux kernel maintainer."
-permissions = "read-only"
 
 [[fields]]
 id = "goal"

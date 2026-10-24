@@ -14,7 +14,10 @@ from typing import Any, Mapping, Optional, Sequence
 
 BUILTIN_DIR = pathlib.Path(__file__).parent / 'profiles'
 KINDS = ('choice', 'multi', 'text')
-PERMISSIONS = ('read-only', 'proposals', 'execute')
+# Decided by the mode: lightweight sessions analyze (read-only), worktree sessions also
+# edit, build, and run in their sandbox (execute).
+PERMISSIONS = ('read-only', 'execute')
+MODE_PERMISSIONS = {'lightweight': 'read-only', 'worktree': 'execute'}
 SCOPES = ('series', 'workspace')
 MODES = ('lightweight', 'worktree')
 
@@ -53,7 +56,6 @@ class Profile:
     label: str
     scope: str
     system_prompt: str
-    permissions: str
     fields: tuple[Field, ...]
     hash: str
     skills: tuple[str, ...] = ()  # Skills suggested for every session of this profile.
@@ -141,9 +143,6 @@ def parse_profile(text: str) -> Profile:
     scope = _str(data, 'scope', pid, 'series')
     if scope not in SCOPES:
         raise ProfileError(f'{pid}: scope must be one of {", ".join(SCOPES)}')
-    permissions = _str(data, 'permissions', pid, 'read-only')
-    if permissions not in PERMISSIONS:
-        raise ProfileError(f'{pid}: permissions must be one of {", ".join(PERMISSIONS)}')
     fields = tuple(_field(f) for f in data.get('fields', []))
     if len({f.id for f in fields}) != len(fields):
         raise ProfileError(f'{pid}: duplicate field ids')
@@ -153,7 +152,6 @@ def parse_profile(text: str) -> Profile:
         _str(data, 'label', pid),
         scope,
         _str(data, 'system_prompt', pid, ''),
-        permissions,
         fields,
         hashlib.sha256(text.encode()).hexdigest(),
         _strings(data, 'skills', pid),

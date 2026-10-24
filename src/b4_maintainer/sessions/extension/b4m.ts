@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createBashTool } from "@earendil-works/pi-coding-agent";
 import {
 	type Api,
 	type AssistantMessage,
@@ -35,6 +36,8 @@ const env = process.env;
 const SESSION = env.B4M_SESSION ?? "";
 const EVENTS = env.B4M_EVENTS ?? "";
 const PERMISSIONS = env.B4M_PERMISSIONS ?? "read-only";
+// The client found the sandbox usable at launch: every shell command runs in it.
+const SANDBOXED = env.B4M_SANDBOX === "1";
 const lines = (value: string | undefined) => (value ?? "").split("\n").filter((v) => v);
 
 // ---------------------------------------------------------------------------------------
@@ -92,7 +95,7 @@ const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const WRITE_TOOLS = new Set(["write", "edit"]);
 
 function writable(): string[] {
-	// Artifacts go under out/ in every session; only proposals and execute edit the worktree.
+	// Artifacts go under out/ in every session; worktree (execute) sessions also edit their tree.
 	const worktree = PERMISSIONS === "read-only" ? "" : (env.B4M_WORKTREE ?? "");
 	return [env.B4M_OUT ?? "", worktree].filter((v) => v);
 }
@@ -126,7 +129,7 @@ function guardShell(command: string): string | undefined {
 }
 
 function check(tool: string, input: any, cwd: string): string | undefined {
-	if (tool === "bash") return guardShell(String(input?.command ?? ""));
+	if (tool === "bash") return SANDBOXED ? undefined : guardShell(String(input?.command ?? ""));
 	if (READ_TOOLS.has(tool)) {
 		const path = absolute(input?.path, cwd);
 		if (!within(path, lines(env.B4M_READABLE))) {
@@ -279,6 +282,24 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	if (SANDBOXED) {
+		// pi's bash, with each command run by `b4-maintainer sandbox`: the command travels in
+		// the environment, so no shell quoting stands between the model and the sandbox.
+		const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+		const wrapper = [env.B4M_HOOK || "b4-maintainer", "sandbox", "-C", env.B4M_ROOT ?? ".", SESSION];
+		const bash = createBashTool(process.cwd(), {
+			spawnHook: ({ command, cwd, env: commandEnv }: any) => ({
+				command: `exec ${wrapper.map(quote).join(" ")}`,
+				cwd,
+				env: { ...commandEnv, B4M_SANDBOX_COMMAND: command },
+			}),
+		});
+		pi.registerTool({
+			...bash,
+			execute: async (id: string, params: any, signal: any, onUpdate: any) => bash.execute(id, params, signal, onUpdate),
+		} as any);
+	}
+
 	pi.on("session_start", () => record("start"));
 	pi.on("input", () => record("working"));
 	pi.on("agent_start", () => record("working"));
@@ -292,7 +313,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event: any, ctx: any) => {
 		const tool = String(event.toolName ?? "");
-		if (tool !== "bash") record("tool", tool); // The hook records shell commands.
+		if (tool !== "bash" || SANDBOXED) record("tool", tool); // Else the hook records it.
 		const reason = check(tool, event.input, ctx?.cwd ?? process.cwd());
 		return reason ? { block: true, reason } : undefined;
 	});

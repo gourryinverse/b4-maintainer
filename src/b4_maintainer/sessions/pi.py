@@ -22,20 +22,14 @@ EXTENSION = pathlib.Path(__file__).parent / 'extension' / 'b4m.ts'
 # The agent's own directory (its working directory in lightweight sessions): context/ and
 # out/, apart from the session's internals (record, events, launch, pi's transcript).
 WORK = 'work'
-# Every session writes its artifacts under out/; the extension decides where writes go.
-TOOLS = {
-    'read-only': ('read', 'grep', 'find', 'ls', 'bash', 'edit', 'write'),
-    'proposals': ('read', 'grep', 'find', 'ls', 'bash', 'edit', 'write'),
-    'execute': ('read', 'grep', 'find', 'ls', 'bash', 'edit', 'write'),
-}
+# Every session writes its artifacts under out/; the extension and the sandbox decide
+# where writes go (out/ only, or also the worktree for execute).
+TOOLS = ('read', 'grep', 'find', 'ls', 'bash', 'edit', 'write')
 PERMISSION_TEXT = {
-    'read-only': 'read-only: inspect files with the read, grep, find, and ls tools (not shell '
+    'read-only': 'analysis: inspect files with the read, grep, find, and ls tools (not shell '
     'pipelines); write files only under the output directory; the shell runs only read-only '
     'git commands',
-    'proposals': 'proposals: inspect files with the read, grep, find, and ls tools; also '
-    'edit files under the output directory and the worktree; the shell runs only read-only '
-    'git commands',
-    'execute': 'execute: also run commands; they run in a sandbox without network',
+    'execute': 'build: also edit, build, and run in the worktree',
 }
 
 
@@ -47,6 +41,7 @@ class LaunchSpec:
     skills: tuple[pathlib.Path, ...] = ()
     args: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
+    sandboxed: bool = False  # Shell commands run in `b4-maintainer sandbox`.
 
 
 @dataclass(frozen=True)
@@ -93,7 +88,7 @@ def pi_command(
         '--no-mcp',
         '--no-approve',
         '--tools',
-        ','.join(TOOLS.get(record.permissions, TOOLS['read-only'])),
+        ','.join(TOOLS),
         *site.args,
         *spec.args,
     ]
@@ -114,25 +109,44 @@ def pi_command(
         'B4M_READABLE': '\n'.join(r for r in readable if r),
         # git must not find a repository around the session (e.g. the workspace's own).
         'GIT_CEILING_DIRECTORIES': str(directory),
+        'B4M_SANDBOX': '1' if spec.sandboxed else '',
         **spec.env,
     }
     return PiCommand(argv, worktree or str(work), env)
 
 
-def system_prompt(record: SessionRecord, request: Request, work: pathlib.Path) -> str:
+SANDBOXED_TEXT = (
+    "Shell commands run in a sandbox without network that sees only this session's "
+    'directories (this one, the project checkout, the worktree), read-only except the '
+    'output directory'
+)
+
+
+def system_prompt(
+    record: SessionRecord, request: Request, work: pathlib.Path, sandboxed: bool = False
+) -> str:
+    permissions = PERMISSION_TEXT.get(record.permissions, record.permissions)
+    if sandboxed:
+        permissions = record.permissions
     facts = [
         f'This session: {session_label(record)}.',
         f'Context (the series thread as an mbox, the task): {work / "context"}.',
         f'Write output files only under {work / "out"}.',
-        f'Permissions: {PERMISSION_TEXT.get(record.permissions, record.permissions)}.',
+        f'Permissions: {permissions}.',
     ]
+    if sandboxed:
+        facts.append(f'{SANDBOXED_TEXT}.')
     if record.worktree:
         facts.append(f'Worktree with the series applied: {record.worktree.path}.')
     return '\n\n'.join(p for p in (request.system_prompt, '\n'.join(facts)) if p) + '\n'
 
 
 def prepare_session(
-    store: SessionStore, record: SessionRecord, request: Request, source: Optional[str]
+    store: SessionStore,
+    record: SessionRecord,
+    request: Request,
+    source: Optional[str],
+    sandboxed: bool = False,
 ) -> None:
     """system.md, and work/ with context/ (task, thread mbox) and out/, for a new session."""
     directory = store.directory(record.id)
@@ -140,7 +154,7 @@ def prepare_session(
     context = work / 'context'
     context.mkdir(parents=True, exist_ok=True)
     (work / 'out').mkdir(exist_ok=True)
-    (directory / 'system.md').write_text(system_prompt(record, request, work))
+    (directory / 'system.md').write_text(system_prompt(record, request, work, sandboxed))
     (context / 'task.md').write_text(request.prompt + '\n')
     if source:
         write_thread(pathlib.Path(source), context / 'thread.mbx')

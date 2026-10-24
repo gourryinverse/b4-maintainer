@@ -33,16 +33,16 @@ from .drawer import session_label
 from .sessions.launch import WORKSPACE, LaunchChoice, Plan, Situation, Target, plan
 from .sessions.models import THINKING, ModelChoice
 from .sessions.policy import ContextItem
-from .sessions.profiles import MODES, PERMISSIONS, Profile, suggested_skills
+from .sessions.profiles import MODES, Profile, suggested_skills
 
+# What each mode's session may do (the mode decides its permissions).
 PERMISSION_LABELS = {
-    'read-only': 'read-only: reads and searches; writes nothing',
-    'proposals': 'proposals: also writes under out/ and edits its worktree',
-    'execute': 'execute: also runs commands in the sandbox (worktree sessions)',
+    'read-only': 'reads and searches the series, the checkout, and its notes; writes only out/',
+    'execute': 'also edits, builds, and runs in its own worktree, in the sandbox',
 }
 MODE_LABELS = {
-    'lightweight': 'lightweight: series mail and thread, read-only analysis',
-    'worktree': 'worktree: the series applied in its own tree, to build, run, and test',
+    'lightweight': 'lightweight: analyze the series mail and the checkout; writes only out/',
+    'worktree': 'worktree: the series applied in its own tree, to edit, build, run, and test',
 }
 
 
@@ -201,10 +201,6 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         models = [(m.id, _model_label(m), not m.available) for m in shown]
         default = next((n for n, m in enumerate(shown) if m.available), None)
         widgets += self._group('Model', 'model', models, default)
-        permissions = [(p, PERMISSION_LABELS[p], False) for p in PERMISSIONS]
-        widgets += self._group(
-            'Permissions', 'permissions', permissions, PERMISSIONS.index(self.profile.permissions)
-        )
         widgets.append(self._advanced())
         return widgets
 
@@ -341,7 +337,6 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             mode,
             self._selected_value('other-model') or self.selected('model') or '',
             self._selected_value('thinking'),
-            self.selected('permissions') or '',
             frozenset(self._skills_on),
             frozenset(self._skills_off),
         )
@@ -469,7 +464,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         if p is None:
             return ''
         lines = [
-            f'Session:  {session_label(self._target())} · {p.permissions} · {p.mode}',
+            f'Session:  {session_label(self._target())} · {p.mode}',
             f'Model:    {_model_text(p.model, p.thinking)}',
             f'Receives: {", ".join(i.label for i in p.included) or "the task prompt only"}',
         ]

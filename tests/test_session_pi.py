@@ -58,8 +58,8 @@ def test_a_read_only_session_runs_pi_with_its_own_session_and_nothing_discovered
     assert cmd.cwd == str(directory / 'work')
 
 
-def test_proposals_add_edits_and_the_model_and_skills_are_passed(tmp_path):
-    record = make_record('s1', permissions='proposals', model='alpha/alpha-large', thinking='high')
+def test_the_model_and_skills_are_passed(tmp_path):
+    record = make_record('s1', permissions='execute', model='alpha/alpha-large', thinking='high')
     skill = tmp_path / 'skills' / 'vng'
     spec = LaunchSpec(REQUEST, skills=(skill,), args=('--preset-y',), env={'K': 'v'})
     _store, cmd = command(tmp_path, record, spec)
@@ -73,7 +73,7 @@ def test_proposals_add_edits_and_the_model_and_skills_are_passed(tmp_path):
 
 def test_the_extension_learns_the_session_through_its_environment(tmp_path):
     wt = Worktree(str(tmp_path / 'wt'), 'b4m/session/s1', 'v6.18', 'abc')
-    record = make_record('s1', mode='worktree', worktree=wt, permissions='proposals')
+    record = make_record('s1', mode='worktree', worktree=wt, permissions='execute')
     skill = tmp_path / 'skills' / 'vng'
     store, cmd = command(tmp_path, record, LaunchSpec(REQUEST, skills=(skill,)))
     directory = store.directory('s1')
@@ -82,7 +82,7 @@ def test_the_extension_learns_the_session_through_its_environment(tmp_path):
         'B4M_SESSION': 's1',
         'B4M_ROOT': str(tmp_path),
         'B4M_HOOK': '/opt/b4m/bin/b4-maintainer',
-        'B4M_PERMISSIONS': 'proposals',
+        'B4M_PERMISSIONS': 'execute',
         'B4M_EVENTS': str(directory / 'events.jsonl'),
         'B4M_OUT': str(directory / 'work' / 'out'),
         'B4M_WORKTREE': wt.path,
@@ -90,6 +90,7 @@ def test_the_extension_learns_the_session_through_its_environment(tmp_path):
         'B4M_READABLE': '\n'.join([str(directory / 'work'), wt.path, '/w/linux', str(skill)]),
         # git must not find a repository around the session (e.g. the workspace's own).
         'GIT_CEILING_DIRECTORIES': str(directory),
+        'B4M_SANDBOX': '',  # This machine's sandbox was not used for the launch.
     }
 
 
@@ -136,3 +137,13 @@ def test_a_maildir_thread_becomes_an_mbox(tmp_path):
         '[PATCH 1/2] synthetic',
         '[PATCH 2/2] synthetic',
     ]
+
+
+def test_sandboxed_sessions_are_told_so(tmp_path):
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    record = make_record('s1')
+    prepare_session(store, record, REQUEST, source='', sandboxed=True)
+    system = (store.directory('s1') / 'system.md').read_text()
+    assert 'sandbox' in system and 'without network' in system
+    _store, cmd = command(tmp_path, record, LaunchSpec(REQUEST, sandboxed=True))
+    assert cmd.env['B4M_SANDBOX'] == '1'

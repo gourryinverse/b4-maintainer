@@ -21,6 +21,7 @@ from .pi import LaunchSpec, prepare_session
 from .policy import ContextItem
 from .profiles import BUILTIN_DIR, Profile, load_profiles
 from .records import SessionRecord
+from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
 from .store import SessionStore, SessionView
@@ -135,6 +136,7 @@ class SessionHub:
         profiles_dir: Optional[pathlib.Path] = None,
         skills_dir: Optional[pathlib.Path] = None,
         catalog: Optional[Callable[[], Optional[str]]] = None,
+        sandbox: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.store = store
         self.runner = runner
@@ -142,6 +144,7 @@ class SessionHub:
         self.profiles_dir = profiles_dir  # The maintainer's own (state/profiles/).
         self.skills_dir = skills_dir  # The maintainer's own (state/skills/).
         self._catalog = catalog or pi_catalog
+        self._sandbox = sandbox or (lambda: bool(available()))
         self._catalog_text: Optional[str] = None
         self._catalog_read = False
         self._states: dict[str, str] = {}
@@ -186,15 +189,17 @@ class SessionHub:
         record = new_record(target, profile, choice, planned, now)
         assert planned.request is not None and planned.model is not None
         installed = {s.id: s.path for s in situation.skills}
+        sandboxed = self._sandbox()
         spec = LaunchSpec(
             planned.request,
             tuple(p for s in planned.skills if (p := installed.get(s)) is not None),
             planned.model.args,
             planned.model.env,
+            sandboxed,
         )
         self.store.create(record)
         try:
-            prepare_session(self.store, record, planned.request, target.source)
+            prepare_session(self.store, record, planned.request, target.source, sandboxed)
             self.runner.launch(record, spec)
         except Exception as exc:
             self.store.set_state(record.id, 'failed')

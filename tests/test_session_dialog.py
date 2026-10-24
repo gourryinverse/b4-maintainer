@@ -166,6 +166,7 @@ async def test_choices_select_default_skills_under_advanced(demo_root, store, ru
         await act(pilot, dialog.pick, 'apparatus', 'vng')
         assert dialog.ticked('skills') == ['vng']
         assert 'Skills:   vng' in dialog.summary_text()
+        await act(pilot, dialog.pick, 'mode', 'lightweight')  # Worktrees are not built yet.
         await pilot.press('ctrl+s')
         await settle(pilot)
         [(sid, _request)] = runner.launches
@@ -187,13 +188,14 @@ async def test_skills_the_maintainer_unticks_stay_off(demo_root, store, runner):
         assert dialog.ticked('skills') == []
 
 
-async def test_execute_is_refused_without_a_sandbox(demo_root, store, runner):
+async def test_worktree_sessions_are_refused_until_available(demo_root, store, runner):
     app = make_app(demo_root, store, runner)
     async with app.run_test(size=(180, 50)) as pilot:
         dialog = await open_dialog(pilot)
+        assert 'Permissions' not in dialog.labels()  # The mode decides.
         await act(pilot, dialog.pick, 'goal', 'reproduce')
-        await act(pilot, dialog.pick, 'permissions', 'execute')
-        assert 'execute unavailable' in dialog.summary_text()
+        assert dialog.selected('mode') == 'worktree'
+        assert 'worktree sessions unavailable' in dialog.summary_text()
         assert not dialog.can_launch()
 
 
@@ -264,7 +266,6 @@ async def test_tab_moves_between_sections_and_shift_tab_back(demo_root, store, r
             'apparatus',
             'mode',
             'model',
-            'permissions',
             'advanced',
             'launch',
             'cancel',

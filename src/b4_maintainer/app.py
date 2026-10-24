@@ -58,6 +58,7 @@ from .sessions.hub import Overview, SessionHub
 from .sessions.launch import Situation, Target
 from .sessions.policy import ContextItem
 from .sessions.profiles import Profile
+from .sessions.sandbox import available
 from .sessions.skills import Skill
 from .sessions.store import SessionView
 from .views import ViewIndex
@@ -67,8 +68,6 @@ from .workspace import Snapshot, Workspace
 SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
 DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit'})
 LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
-# Until the sandbox exists, sessions may not execute series code.
-EXECUTE_REASON = 'sandboxed execution is not available yet'
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
@@ -2058,9 +2057,17 @@ def _situation(
         live=sum(v.state in LIVE_STATES for v in overview.sessions),
         worktrees=len(overview.worktrees),
         worktree_bytes=overview.worktree_bytes,
-        execute_reason=EXECUTE_REASON,
+        worktree_reason=_worktree_reason(),
         skills=skills,
     )
+
+
+def _worktree_reason() -> str:
+    """Why worktree sessions cannot launch (blocking: call off the UI thread)."""
+    sandbox = available()
+    if not sandbox:
+        return f'they build and run in a sandbox, and none works here ({sandbox.reason})'
+    return 'not built yet'
 
 
 def _target(item: WorkItem) -> Target:

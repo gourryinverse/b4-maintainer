@@ -18,6 +18,7 @@ from sessiondata import FakeSessionRunner, make_record
 from b4_maintainer.sessions.models import DRY_RUN_MODEL
 from b4_maintainer.sessions.pi import LaunchSpec, Site, pi_command, prepare_session
 from b4_maintainer.sessions.profiles import Request
+from b4_maintainer.sessions.sandbox import available
 from b4_maintainer.sessions.store import SessionStore
 
 PI = shutil.which('pi')
@@ -26,7 +27,7 @@ HOOK = str(pathlib.Path(sys.executable).parent / 'b4-maintainer')
 REQUEST = Request('Review the series.', 'You assist a maintainer.', (), 'lightweight', ())
 
 
-def run(tmp_path, steps=None, permissions='read-only', worktree=None):
+def run(tmp_path, steps=None, permissions='read-only', worktree=None, sandboxed=False):
     """One print-mode pi run; returns the session's events and pi's transcript."""
     store = SessionStore(tmp_path / 'var' / 'sessions')
     record = make_record('x1', model=DRY_RUN_MODEL, permissions=permissions)
@@ -35,12 +36,14 @@ def run(tmp_path, steps=None, permissions='read-only', worktree=None):
 
         record = record.replace(worktree=Worktree(str(worktree), 'b4m/session/x1', 'v1', 'a'))
     FakeSessionRunner(store).add(record)
-    prepare_session(store, record, REQUEST, source='')
+    prepare_session(store, record, REQUEST, source='', sandboxed=sandboxed)
     checkout = tmp_path / 'checkout'
     checkout.mkdir(exist_ok=True)
     (checkout / 'README').write_text('synthetic checkout\n')
     site = Site(tmp_path, HOOK, PI, checkouts={'linux': str(checkout)})
-    cmd = pi_command(store, record, LaunchSpec(REQUEST), site)
+    cmd = pi_command(store, record, LaunchSpec(REQUEST, sandboxed=sandboxed), site)
+    launch = {'argv': cmd.argv, 'resume': cmd.argv, 'cwd': cmd.cwd, 'env': cmd.env}
+    (store.directory('x1') / 'launch.json').write_text(json.dumps(launch))
     argv = [cmd.argv[0], '-p', '--offline', *cmd.argv[1:]]
     env = {**os.environ, **cmd.env}
     if steps is not None:
@@ -100,7 +103,7 @@ def test_reads_outside_the_session_are_refused(tmp_path, home):
     assert transcript.count('outside the session') == 2
 
 
-def test_proposals_write_only_to_out_and_the_worktree(tmp_path, home):
+def test_worktree_sessions_write_only_to_out_and_the_worktree(tmp_path, home):
     worktree = tmp_path / 'wt'
     worktree.mkdir()
     out = tmp_path / 'var' / 'sessions' / 'x1' / 'work' / 'out'
@@ -109,7 +112,7 @@ def test_proposals_write_only_to_out_and_the_worktree(tmp_path, home):
         {'tool': 'write', 'args': {'path': str(worktree / 'fix.c'), 'content': 'ok\n'}},
         {'tool': 'write', 'args': {'path': str(home / 'evil'), 'content': 'no\n'}},
     ]
-    _events, transcript, _stdout = run(tmp_path, steps, 'proposals', worktree)
+    _events, transcript, _stdout = run(tmp_path, steps, 'execute', worktree)
     assert (out / 'notes.md').read_text() == 'ok\n'
     assert (worktree / 'fix.c').read_text() == 'ok\n'
     assert not (home / 'evil').exists()
@@ -212,3 +215,22 @@ def test_session_internals_are_out_of_reach_and_git_may_use_the_checkout(tmp_pat
     assert 'not a read-only git command' not in transcript  # -C into the checkout is allowed.
     # The checkout is not a repository here, and git finds none around the session.
     assert transcript.count('not a git repository') == 2
+
+
+@pytest.mark.skipif(not available(), reason='sandbox not usable here')
+def test_sandboxed_sessions_run_shell_commands_confined(tmp_path, home):
+    (home / 'secret').write_text('do not read\n')
+    steps = [
+        {'tool': 'bash', 'args': {'command': 'wc -l context/task.md | cat'}},
+        {'tool': 'bash', 'args': {'command': f'cat {home}/secret || echo no-home'}},
+        {'tool': 'bash', 'args': {'command': 'echo made > out/a.txt && echo wrote'}},
+        {'tool': 'bash', 'args': {'command': 'env | grep -c B4M_ || echo no-b4m-env'}},
+    ]
+    events, transcript, _stdout = run(tmp_path, steps, sandboxed=True)
+    assert '1 context/task.md' in transcript  # Pipes work inside the sandbox.
+    assert 'no-home' in transcript and 'do not read' not in transcript
+    out = tmp_path / 'var' / 'sessions' / 'x1' / 'work' / 'out'
+    assert (out / 'a.txt').read_text() == 'made\n'
+    assert 'no-b4m-env' in transcript  # The agent's environment stays outside.
+    assert 'only read-only git' not in transcript  # Nothing was refused.
+    assert [e['tool'] for e in events if e['event'] == 'tool'] == ['bash'] * 4

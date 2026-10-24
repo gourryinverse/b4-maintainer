@@ -101,7 +101,6 @@ def test_required_fields_and_unknown_choices_are_refused():
             '[[fields]]\nid = "g"\nlabel = "H"\nkind = "text"',
             'duplicate',
         ),
-        ('id = "x"\nversion = 1\nlabel = "X"\npermissions = "root"', 'permissions'),
         ('not toml = = 1', 'TOML'),
         (
             'id = "x"\nversion = 1\nlabel = "X"\n[[fields]]\nid = "g"\nlabel = "G"\n'
