@@ -186,6 +186,7 @@ class FakeWorktrees:
         self.why = ''  # Why trees cannot be prepared.
         self.states = {}  # Path -> TreeState, as inspect finds it.
         self.removed = []
+        self.during = None  # Called with the record while preparing.
 
     def list(self, records):
         return list(self.infos)
@@ -209,6 +210,8 @@ class FakeWorktrees:
         from b4_maintainer.sessions.hub import TreeError
         from b4_maintainer.sessions.records import Worktree
 
+        if self.during is not None:
+            self.during(record)  # While the tree is being prepared.
         if self.fail is not None:
             raise TreeError(*self.fail)
         self.prepared.append((record.id, source, base))

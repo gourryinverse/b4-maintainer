@@ -6,6 +6,7 @@ worktrees are listed with their disk usage. Only the maintainer's actions call t
 runner: polling reads state and never starts, stops, or resumes anything.
 """
 
+import dataclasses
 import datetime
 import os
 import pathlib
@@ -272,9 +273,20 @@ class SessionHub:
         self._catalog_read = False
         self._catalog_lock = threading.Lock()
         self._states: dict[str, str] = {}
+        self._preparing: set[str] = set()  # Sessions this app is preparing a tree for.
+
+    def _poll(self) -> list[SessionView]:
+        """Sessions with their states; a preparation no worker here is running (the app
+        quit during it) shows as failed."""
+        return [
+            dataclasses.replace(v, state='failed')
+            if v.state == 'preparing' and v.record.id not in self._preparing
+            else v
+            for v in self.store.poll(self.runner.alive)
+        ]
 
     def overview(self) -> Overview:
-        views = self.store.poll(self.runner.alive)
+        views = self._poll()
         self._states = {v.record.id: v.state for v in views}
         live = tuple(v for v in views if v.state != 'ended')
         worktrees = self.worktrees.list([v.record for v in views])
@@ -346,25 +358,38 @@ class SessionHub:
         )
         if planned.mode == 'worktree' and target.scope != 'series':
             raise SessionError('worktree sessions apply a series; this session has none')
+        tree_mode = planned.mode == 'worktree'
+        if tree_mode:
+            self._preparing.add(record.id)
+            record = record.replace(state='preparing')
         self.store.create(record)
         try:
-            if planned.mode == 'worktree':
+            if tree_mode:
                 tree = self.worktrees.prepare(record, target.source, choice.base)
-                record = record.replace(worktree=tree)
+                record = record.replace(worktree=tree, state='')
                 self.store.save(record)
+                self._preparing.discard(record.id)
             prepare_session(self.store, record, planned.request, target.source, sandboxed)
             self.runner.launch(record, spec)
         except TreeError as exc:
+            self._preparing.discard(record.id)
             self.store.set_state(record.id, 'failed')
             raise SessionError(f'Session {record.id}: {exc}', exc.output) from exc
         except Exception as exc:
+            self._preparing.discard(record.id)
             self.store.set_state(record.id, 'failed')
             raise SessionError(f'Session {record.id} failed to start: {exc}') from exc
         return record
 
+    def _ready(self, sid: str) -> SessionRecord:
+        """The session's record; refused while its worktree is being prepared."""
+        if sid in self._preparing:
+            raise SessionError(f'Session {sid} is still being prepared (b4 applies the series)')
+        return self.store.record(sid)
+
     def open(self, sid: str) -> None:
         """Switch to the session's window, resuming it first when stopped or gone."""
-        record = self.store.record(sid)
+        record = self._ready(sid)
         state = self._states.get(sid, record.state)
         if state == 'ended':
             raise SessionError(f'Session {sid} has ended')
@@ -384,7 +409,7 @@ class SessionHub:
     ) -> None:
         """Put the session beside the app, resuming it first if it was stopped or gone
         (only ever on the maintainer's request)."""
-        record = self.store.record(sid)
+        record = self._ready(sid)
         state = self._states.get(sid, record.state)
         if state == 'ended':
             raise SessionError(f'Session {sid} has ended')
@@ -411,18 +436,18 @@ class SessionHub:
         return self.runner.pane_of(self.store.record(sid))
 
     def stop(self, sid: str) -> None:
-        self.runner.stop(self.store.record(sid))
+        self.runner.stop(self._ready(sid))
         self.store.set_state(sid, 'stopped')
 
     def end(self, sid: str) -> None:
         """Close the session for good; its worktree stays until removed."""
-        self.runner.end(self.store.record(sid))
+        self.runner.end(self._ready(sid))
         self.store.set_state(sid, 'ended')
 
     def _tree_owners(self, paths: Sequence[str]) -> dict[str, Optional[SessionRecord]]:
         """Each path's session (None for an orphan); refuses live sessions' trees and
         paths that are not listed trees."""
-        views = {v.record.id: v for v in self.store.poll(self.runner.alive)}
+        views = {v.record.id: v for v in self._poll()}
         listed = {
             w.path: w.session for w in self.worktrees.list([v.record for v in views.values()])
         }
@@ -431,7 +456,7 @@ class SessionHub:
             if path not in listed:
                 raise SessionError(f'{path} is not a session tree')
             view = views.get(listed[path])
-            if view is not None and view.state in LIVE:
+            if view is not None and view.state in LIVE | {'preparing'}:
                 raise SessionError(
                     f'{path} belongs to a live session: stop session {view.record.id} first'
                 )

@@ -3,7 +3,7 @@
 import datetime
 
 import pytest
-from sessiondata import PROFILE, FakeSessionRunner, FakeWorktrees
+from sessiondata import PROFILE, FakeSessionRunner, FakeWorktrees, make_record
 
 from b4_maintainer.sessions.hub import SessionError, SessionHub
 from b4_maintainer.sessions.launch import (
@@ -222,3 +222,44 @@ def test_workspace_sessions_have_no_series_to_apply(store, profile):
             Target('workspace'), profile, choice(mode='worktree'), situation(worktree_reason=''), ()
         )
     assert trees.prepared == [] and runner.launches == []
+
+
+def test_a_session_being_prepared_shows_so_and_cannot_be_acted_on(store, profile):
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees)
+    seen = {}
+
+    def during(record):
+        [view] = hub.overview().sessions
+        seen['state'] = view.state
+        for action in (hub.open, hub.stop, hub.end, lambda sid: hub.show(sid, '%1')):
+            with pytest.raises(SessionError, match='being prepared'):
+                action(record.id)
+
+    trees.during = during
+    record = hub.launch(
+        TARGET, profile, choice(mode='worktree'), situation(worktree_reason=''), ITEMS
+    )
+    assert seen['state'] == 'preparing'
+    assert runner.resumes == runner.stops == runner.ends == runner.switches == []
+    assert store.record(record.id).state == '' and len(runner.launches) == 1
+
+
+def test_a_preparation_cut_short_by_a_quit_shows_as_failed(store, profile):
+    runner = FakeSessionRunner(store)
+    runner.add(make_record('p', mode='worktree', state='preparing'), alive=False)
+    hub = SessionHub(store, runner, FakeWorktrees())  # A later app: nothing is preparing.
+    [view] = hub.overview().sessions
+    assert view.state == 'failed'
+
+
+def test_limits_count_a_session_still_being_prepared(store):
+    from b4_maintainer.app import _situation
+    from b4_maintainer.sessions.hub import Overview
+    from b4_maintainer.sessions.store import SessionView
+    from b4_maintainer.workspace import Workspace
+
+    hub = SessionHub(store, FakeSessionRunner(store), FakeWorktrees(), sandbox=lambda: True)
+    preparing = SessionView(make_record('p', mode='worktree', state='preparing'), 'preparing')
+    found = _situation(hub, Workspace(), Overview((preparing,)), [], 'linux')
+    assert (found.live, found.live_builds) == (1, 1)

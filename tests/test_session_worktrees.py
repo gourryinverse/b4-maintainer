@@ -99,3 +99,14 @@ def test_a_session_whose_tree_was_removed_is_not_resumed(setup):
     with pytest.raises(SessionError, match='worktree was removed'):
         hub.show('a', '%1')
     assert runner.resumes == []
+
+
+def test_a_tree_being_prepared_is_not_removed(setup):
+    hub, runner, trees = setup
+    tree = make_tree(trees / 'p')
+    runner.add(make_record('p', mode='worktree', worktree=tree, state='preparing'), alive=False)
+    hub._preparing.add('p')  # This app is preparing it.
+    hub.overview()
+    with pytest.raises(SessionError, match='stop session p first|being prepared'):
+        hub.remove_worktrees([tree.path])
+    assert (trees / 'p').exists()

@@ -18,8 +18,18 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Protocol
 
 # Most urgent first: what the collapsed drawer line names.
-STATES = ('approval', 'waiting', 'failed', 'gone', 'working', 'starting', 'stopped', 'ended')
-APP_STATES = frozenset({'stopped', 'ended', 'failed'})
+STATES = (
+    'approval',
+    'waiting',
+    'failed',
+    'gone',
+    'working',
+    'starting',
+    'preparing',  # The app is preparing its worktree; no agent yet.
+    'stopped',
+    'ended',
+)
+APP_STATES = frozenset({'stopped', 'ended', 'failed', 'preparing'})
 WORKING_EVENTS = frozenset({'working', 'tool', 'tool_done'})
 
 

@@ -417,3 +417,13 @@ async def test_a_live_sessions_worktree_is_refused(demo_root, store, runner):
         assert not isinstance(app.screen, Confirm)
         assert 'stop session a first' in app.status_text()
         assert trees.removed == []
+
+
+def test_a_session_being_prepared_says_so():
+    import datetime
+
+    from b4_maintainer.drawer import session_row
+
+    now = datetime.datetime(2026, 10, 23, 12, 1, tzinfo=datetime.timezone.utc)
+    row = session_row(view('p', 'preparing', mode='worktree'), now)
+    assert 'preparing its worktree' in row

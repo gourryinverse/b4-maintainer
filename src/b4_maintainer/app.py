@@ -71,6 +71,7 @@ SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'ses
 WORKTREE_ACTIONS = frozenset({'mark_worktree', 'remove_worktrees'})
 DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit', 'focus_session'})
 LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
+COUNTED_LIVE = LIVE_STATES | {'preparing'}  # Limits count a session from its preparation.
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
@@ -724,6 +725,8 @@ class MaintainerApp(App[None]):
             if self.selected_draft() is not None:  # Enter resumes it, x discards it.
                 return action in ('open_session', 'end_session')
             view = self._selected_view()
+            if view is not None and view.state == 'preparing':
+                return action == 'session_artifacts'  # Nothing to act on until it starts.
             return view is not None and (action != 'open_session' or view.state != 'ended')
         if self._drawer_focused():
             return action in DRAWER_ACTIONS  # Series keys wait until focus leaves the drawer.
@@ -2484,9 +2487,9 @@ def _situation(
     return Situation(
         hub.models(workspace.models),
         workspace.session_limits,
-        live=sum(v.state in LIVE_STATES for v in overview.sessions),
+        live=sum(v.state in COUNTED_LIVE for v in overview.sessions),
         live_builds=sum(
-            v.state in LIVE_STATES and v.record.mode == 'worktree' for v in overview.sessions
+            v.state in COUNTED_LIVE and v.record.mode == 'worktree' for v in overview.sessions
         ),
         worktrees=len(overview.worktrees),
         worktree_bytes=overview.worktree_bytes,

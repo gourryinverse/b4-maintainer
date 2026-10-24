@@ -18,6 +18,7 @@ STATE_LABELS = {
     'gone': 'window gone',
     'working': 'working',
     'starting': 'starting',
+    'preparing': 'preparing its worktree',
     'stopped': 'stopped',
     'ended': 'ended',
 }
