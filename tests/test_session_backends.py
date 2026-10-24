@@ -13,10 +13,9 @@ def ids(entries):
 
 def test_built_ins_are_listed_and_unsupported_ones_say_why():
     entries = {e.id: e for e in backend_entries([], which=found('claude', 'codex'))}
-    assert list(entries) == ['claude', 'codex', 'other', 'pi', 'dry-run']
+    assert list(entries) == ['claude', 'codex', 'pi', 'dry-run']
     assert entries['claude'].available and entries['dry-run'].available
     assert not entries['codex'].available and 'not supported yet' in entries['codex'].reason
-    assert not entries['other'].available
 
 
 def test_configured_entries_add_replace_and_hide():
@@ -30,7 +29,6 @@ def test_configured_entries_add_replace_and_hide():
     assert ids(entries.values()) == [
         'claude',
         'codex',
-        'other',
         'dry-run',
         'claude-cyber',
         'codex-red',
@@ -52,7 +50,7 @@ def test_bad_entries_are_reported_not_fatal():
     entries = {e.id: e for e in backend_entries(config, which=found('x', 'y'))}
     assert 'x' in entries and not entries['x'].available and 'adapter' in entries['x'].reason
     assert 'z' in entries and 'command' in entries['z'].reason
-    assert len(entries) == 7  # The id-less entry is skipped.
+    assert len(entries) == 6  # The id-less entry is skipped.
 
 
 def test_env_and_models_are_kept():

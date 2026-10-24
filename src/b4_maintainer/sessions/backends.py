@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The backend list: built-in entries plus `[[backends]]` from workspace.toml.
 
-Each entry speaks one adapter's protocol (claude, codex, other, pi, or the built-in
+Each entry speaks one adapter's protocol (claude, codex, pi, or the built-in
 dry-run) with its own command, so a specially provisioned harness inherits its
 adapter's capabilities. Entries are configured by hand; the UI only lists them, and
 an entry that cannot run here is shown disabled with the reason.
@@ -40,7 +40,6 @@ ADAPTERS = {
         headless=True,
     ),
     'codex': Adapter('codex', ('codex',), False),
-    'other': Adapter('other', ('other',), False),
     'pi': Adapter('pi', ('pi',), False),
     # Runs a script instead of an agent; the launch, hooks, and sandbox are real.
     'dry-run': Adapter(
