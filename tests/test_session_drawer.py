@@ -9,10 +9,11 @@ from test_draft import DraftActions
 
 from b4_maintainer.adapters.fixture import FixtureSource
 from b4_maintainer.app import Confirm, MaintainerApp, SeriesList
-from b4_maintainer.drawer import drawer_line, format_bytes, session_label
+from b4_maintainer.drawer import drawer_line, format_bytes, session_label, worktree_row
 from b4_maintainer.sessions.hub import Overview, SessionHub, WorktreeInfo
 from b4_maintainer.sessions.records import Worktree
 from b4_maintainer.sessions.store import SessionStore, SessionView
+from b4_maintainer.sessions.trees import TreeState
 
 GB = 1_000_000_000
 
@@ -195,10 +196,11 @@ async def test_s_stops_after_confirmation(demo_root, store, runner, answer, stop
             assert 'stopped' in app.drawer_rows()[0]
 
 
-async def test_x_ends_after_confirmation_and_keeps_the_worktree(demo_root, store, runner):
+async def test_x_ends_after_confirmation_and_may_keep_the_worktree(demo_root, store, runner):
     wt = Worktree('/w/a', 'b4m/session/a', 'v6.18', 'deadbeef')
     runner.add(make_record('a', mode='worktree', worktree=wt))
-    app = make_app(demo_root, store, runner)
+    info = WorktreeInfo('/w/a', 'b4m/session/a', 'a', GB, TreeState())
+    app = make_app(demo_root, store, runner, info)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         hidden = app.snapshot.items[0].hidden
@@ -206,10 +208,13 @@ async def test_x_ends_after_confirmation_and_keeps_the_worktree(demo_root, store
         await settle(pilot)
         await pilot.press('x')
         assert isinstance(app.screen, Confirm)
-        assert 'worktree is kept' in app.screen.prompt
         await pilot.press('y')
         await settle(pilot)
         assert runner.ends == ['a']
+        assert isinstance(app.screen, Confirm) and 'Remove its worktree' in app.screen.prompt
+        await pilot.press('n')  # Kept: still in the Worktrees tab.
+        await settle(pilot)
+        assert app._sessions.worktrees.removed == []
         assert store.record('a').state == 'ended'
         assert app.snapshot.items[0].hidden == hidden  # x did not hide a series.
         assert 'No agent sessions' in app.drawer_text()
@@ -318,3 +323,97 @@ async def test_opening_the_drawer_selects_the_most_urgent_session(demo_root, sto
         await pilot.press('grave_accent')
         await settle(pilot)
         assert app.selected_session() == 'b'
+
+
+def tree_app(demo_root, store, runner, *infos, states=None):
+    trees = FakeWorktrees(*infos)
+    trees.states = states or {}
+    hub = SessionHub(store, runner, trees)
+    return MaintainerApp(FixtureSource(demo_root).load, sessions=hub), trees
+
+
+async def open_worktrees(pilot):
+    await settle(pilot)
+    await pilot.press('grave_accent')
+    await settle(pilot)
+    await pilot.press('tab')
+    await settle(pilot)
+
+
+def test_worktree_rows_show_state_and_orphans():
+    changed = TreeState(changed=('?? x',), commits=('abc agent: work',))
+    row = worktree_row(WorktreeInfo('/w/a', 'b4m/session/a', 'a', GB, changed), {'a': 'working'})
+    assert 'session a (working)' in row and '1 uncommitted file, 1 commit only here' in row
+    orphan = worktree_row(WorktreeInfo('/w/o', 'b4m/session/o', '', GB, TreeState()), {})
+    assert 'orphan' in orphan and 'clean' in orphan
+
+
+async def test_x_removes_a_clean_worktree_after_one_confirmation(demo_root, store, runner):
+    runner.add(make_record('a', mode='worktree'), alive=False)
+    store.set_state('a', 'ended')
+    info = WorktreeInfo('/w/a', 'b4m/session/a', 'a', GB, TreeState())
+    app, trees = tree_app(demo_root, store, runner, info)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_worktrees(pilot)
+        await pilot.press('x')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm)
+        assert '/w/a' in app.screen.prompt and 'clean' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert trees.removed == ['/w/a']
+        assert app.drawer_rows() == []
+
+
+async def test_changes_need_a_second_confirmation(demo_root, store, runner):
+    info = WorktreeInfo('/w/o', 'b4m/session/o', '', GB, TreeState())
+    states = {'/w/o': TreeState(changed=('M a.c',))}
+    app, trees = tree_app(demo_root, store, runner, info, states=states)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_worktrees(pilot)
+        await pilot.press('x')
+        await settle(pilot)
+        assert '1 uncommitted file' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'will be lost' in app.screen.prompt
+        await pilot.press('n')
+        await settle(pilot)
+        assert trees.removed == []
+        await pilot.press('x')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        assert trees.removed == ['/w/o']
+
+
+async def test_space_marks_several_and_x_removes_them(demo_root, store, runner):
+    infos = [WorktreeInfo(f'/w/{n}', f'b4m/session/{n}', '', GB, TreeState()) for n in 'abc']
+    app, trees = tree_app(demo_root, store, runner, *infos)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_worktrees(pilot)
+        await pilot.press('space', 'down', 'down', 'space')
+        await settle(pilot)
+        assert [r.startswith('* ') for r in app.drawer_rows()] == [True, False, True]
+        await pilot.press('x')
+        await settle(pilot)
+        assert '/w/a' in app.screen.prompt and '/w/c' in app.screen.prompt
+        assert '/w/b' not in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert trees.removed == ['/w/a', '/w/c']
+
+
+async def test_a_live_sessions_worktree_is_refused(demo_root, store, runner):
+    runner.add(make_record('a', mode='worktree'))
+    info = WorktreeInfo('/w/a', 'b4m/session/a', 'a', GB, TreeState())
+    app, trees = tree_app(demo_root, store, runner, info)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_worktrees(pilot)
+        await pilot.press('x')
+        await settle(pilot)
+        assert not isinstance(app.screen, Confirm)
+        assert 'stop session a first' in app.status_text()
+        assert trees.removed == []

@@ -53,10 +53,12 @@ class Situation:
     models: Sequence[ModelChoice]
     limits: SessionLimits = SessionLimits()
     live: int = 0
+    live_builds: int = 0  # Live worktree sessions.
     worktrees: int = 0
     worktree_bytes: int = 0
     worktree_reason: str = ''  # Why worktree sessions cannot launch here; empty if they can.
     skills: Sequence[Skill] = ()  # Installed skills.
+    bases: Sequence[str] = ()  # Suggested worktree bases (b4's).
 
 
 @dataclass(frozen=True)
@@ -100,7 +102,12 @@ def plan(
     if mode == 'worktree' and situation.worktree_reason:
         blockers.append(f'worktree sessions unavailable: {situation.worktree_reason}')
     limit_blockers, limit_warnings = launch_check(
-        situation.limits, situation.live, situation.worktrees, situation.worktree_bytes, mode
+        situation.limits,
+        situation.live,
+        situation.worktrees,
+        situation.worktree_bytes,
+        mode,
+        situation.live_builds,
     )
     blockers.extend(limit_blockers)
     warnings.extend(limit_warnings)

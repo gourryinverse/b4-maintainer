@@ -184,12 +184,26 @@ class FakeWorktrees:
         self.prepared = []  # (session id, source, base)
         self.fail = None  # (message, output) for prepare to fail with.
         self.why = ''  # Why trees cannot be prepared.
+        self.states = {}  # Path -> TreeState, as inspect finds it.
+        self.removed = []
 
     def list(self, records):
         return list(self.infos)
 
     def reason(self, project):
         return self.why
+
+    def bases(self, project):
+        return ['HEAD', 'mm/mm-unstable'] if project else []
+
+    def inspect(self, path, applied):
+        from b4_maintainer.sessions.trees import TreeState
+
+        return self.states.get(path, TreeState())
+
+    def remove(self, path):
+        self.removed.append(path)
+        self.infos = [w for w in self.infos if w.path != path]
 
     def prepare(self, record, source, base):
         from b4_maintainer.sessions.hub import TreeError

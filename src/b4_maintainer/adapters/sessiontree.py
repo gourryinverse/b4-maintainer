@@ -184,6 +184,13 @@ def _agent(dest: pathlib.Path, identity: tuple[str, str]) -> None:
     hook.chmod(0o755)
 
 
+def base_suggestions(project: pathlib.Path) -> list[str]:
+    """b4's apply-base suggestions for the project: HEAD, the configured apply base and
+    target branches, recently used take branches."""
+    with b4_repo(project):
+        return b4.review.apply_base_suggestions(str(project))
+
+
 def prepare_tree(
     project: pathlib.Path,
     dest: pathlib.Path,

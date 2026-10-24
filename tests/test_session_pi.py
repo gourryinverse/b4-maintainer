@@ -147,3 +147,18 @@ def test_sandboxed_sessions_are_told_so(tmp_path):
     assert 'sandbox' in system and 'without network' in system
     _store, cmd = command(tmp_path, record, LaunchSpec(REQUEST, sandboxed=True))
     assert cmd.env['B4M_SANDBOX'] == '1'
+
+
+def test_worktree_sessions_are_told_they_edit_build_and_commit_in_their_tree(tmp_path):
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    tree = Worktree('/w/var/worktrees/s1', 'b4m/session/s1', 'b', 'a')
+    record = make_record('s1', mode='worktree', permissions='execute', worktree=tree)
+    prepare_session(store, record, REQUEST, source='', sandboxed=True)
+    system = (store.directory('s1') / 'system.md').read_text()
+    assert 'read-only except the output directory and the worktree' in system
+    assert 'Edit, build, and commit in the worktree /w/var/worktrees/s1' in system
+    assert 'agent identity' in system and 'Signed-off-by' in system
+    lightweight = make_record('s2')
+    prepare_session(store, lightweight, REQUEST, source='', sandboxed=True)
+    system = (store.directory('s2') / 'system.md').read_text()
+    assert 'read-only except the output directory.' in system and 'Edit, build' not in system

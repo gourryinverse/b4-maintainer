@@ -15,6 +15,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.suggester import SuggestFromList
 from textual.widget import Widget
 from textual.widgets import (
     Button,
@@ -199,7 +200,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 widgets.append(self._input(field.id, section, placeholder))
         modes = [(m, MODE_LABELS[m], False) for m in MODES]
         widgets += self._group('Mode', 'mode', modes, 0)
-        base = self._input('base', 'base', BASE_PLACEHOLDER)
+        bases = self.situation.bases
+        hint = f'{BASE_PLACEHOLDER}; → completes: {", ".join(bases)}' if bases else BASE_PLACEHOLDER
+        base = self._input('base', 'base', hint, bases)
         base.display = False  # Worktree mode only.
         widgets.append(base)
         self._mode_shown = 'lightweight'
@@ -240,8 +243,11 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         value = select.value if select is not None else Select.NULL
         return value if isinstance(value, str) else ''
 
-    def _input(self, key: str, section: str, placeholder: str) -> Input:
-        box = Input(placeholder=placeholder, id=self._new_id())
+    def _input(
+        self, key: str, section: str, placeholder: str, suggestions: Sequence[str] = ()
+    ) -> Input:
+        suggester = SuggestFromList(suggestions, case_sensitive=False) if suggestions else None
+        box = Input(placeholder=placeholder, suggester=suggester, id=self._new_id())
         self._inputs[key] = box
         self._sections[id(box)] = section
         return box
@@ -452,6 +458,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         if isinstance(focused, Button):
             return {'launch-go': 'launch', 'launch-cancel': 'cancel'}.get(focused.id or '')
         return self._sections.get(id(focused))
+
+    def base_input(self) -> Input:
+        return self._inputs['base']
 
     def base_shown(self) -> bool:
         return 'base' in self._inputs and bool(self._inputs['base'].display)

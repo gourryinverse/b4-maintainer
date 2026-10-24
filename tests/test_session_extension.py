@@ -89,6 +89,28 @@ def test_the_default_script_reports_each_state_and_shows_a_refusal(tmp_path, hom
     assert 'Dry run finished' in stdout
 
 
+@pytest.mark.skipif(not available(), reason='sandbox not usable here')
+def test_the_default_script_in_a_worktree_commits_as_the_agent(tmp_path, home):
+    worktree = tmp_path / 'wt'
+    worktree.mkdir()
+    for args in (
+        ['init', '-q', '-b', 'b4m/session/x1'],
+        ['config', 'user.name', 'b4-maintainer agent (dry-run)'],
+        ['config', 'user.email', 'agent@b4-maintainer.invalid'],
+        ['commit', '-q', '--allow-empty', '-m', 'mm: the series'],
+    ):
+        subprocess.run(['git', *args], cwd=worktree, check=True, capture_output=True)
+    _events, transcript, stdout = run(tmp_path, None, 'execute', worktree, sandboxed=True)
+    log = subprocess.run(
+        ['git', 'log', '--format=%an|%s', '-2'], cwd=worktree, capture_output=True, text=True
+    ).stdout.splitlines()
+    assert log == [
+        'b4-maintainer agent (dry-run)|dry run: an agent commit',
+        'b4-maintainer agent (dry-run)|mm: the series',
+    ]
+    assert 'mm: the series' in transcript and 'The commit carries the agent identity' in stdout
+
+
 def test_reads_outside_the_session_are_refused(tmp_path, home):
     secret = home / 'secret.txt'
     secret.write_text('do not read\n')

@@ -12,10 +12,9 @@ with no error. The gotchas and the checklist are the parts that matter.
 
 ## In this session
 
-- Run every command through the sandbox wrapper given in the task:
-  `b4-maintainer sandbox <id> -- <command>`. Anything else is refused. Put pipelines
-  and quoting inside it: `b4-maintainer sandbox <id> -- bash -c '...'`.
-- The sandbox has no network. Work with what is in the tree and on the host.
+- Shell commands already run in the session's sandbox: the worktree is writable,
+  `/dev/kvm` is there when the host has it, and the system's `vng`, compilers, and QEMU
+  are on `PATH`. There is no network: work with what is in the tree and on the host.
 - Work from the top of the session worktree; write launchers, guest runners, and
   captured logs under the session's `out/vng/`, not `/tmp`.
 - Stop only the VMs you started, by PID. Never `pkill` qemu by name: other VMs on the

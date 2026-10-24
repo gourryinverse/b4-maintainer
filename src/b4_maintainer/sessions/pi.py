@@ -120,6 +120,11 @@ SANDBOXED_TEXT = (
     'directories (this one, the project checkout, the worktree), read-only except the '
     'output directory'
 )
+TREE_TEXT = (
+    'Edit, build, and commit in the worktree {path} (branch {branch}, the series applied '
+    'on {base}). Commits there carry the agent identity; never add Signed-off-by or '
+    'review trailers'
+)
 
 
 def system_prompt(
@@ -134,10 +139,16 @@ def system_prompt(
         f'Write output files only under {work / "out"}.',
         f'Permissions: {permissions}.',
     ]
+    tree = record.worktree
+    writable = tree is not None and record.permissions == 'execute'
     if sandboxed:
-        facts.append(f'{SANDBOXED_TEXT}.')
-    if record.worktree:
-        facts.append(f'Worktree with the series applied: {record.worktree.path}.')
+        facts.append(f'{SANDBOXED_TEXT}{" and the worktree" if writable else ""}.')
+    if tree is not None and writable:
+        facts.append(
+            TREE_TEXT.format(path=tree.path, branch=tree.branch, base=tree.base[:12]) + '.'
+        )
+    elif tree is not None:
+        facts.append(f'Worktree with the series applied: {tree.path}.')
     return '\n\n'.join(p for p in (request.system_prompt, '\n'.join(facts)) if p) + '\n'
 
 

@@ -36,12 +36,23 @@ class SessionLimits:
 
 
 def launch_check(
-    limits: SessionLimits, live: int, worktrees: int, worktree_bytes: int, mode: str
+    limits: SessionLimits,
+    live: int,
+    worktrees: int,
+    worktree_bytes: int,
+    mode: str,
+    live_builds: int = 0,
 ) -> tuple[list[str], list[str]]:
-    """(blockers, warnings) for one more launch: blockers stop it, warnings are shown."""
+    """(blockers, warnings) for one more launch: blockers stop it, warnings are shown.
+    *live_builds*: live worktree sessions, which build and boot kernels."""
     blockers, warnings = [], []
     if live >= limits.max_live:
         blockers.append(f'{live} sessions are live (max_live = {limits.max_live}); stop one first')
+    if mode == 'worktree' and live_builds >= limits.max_builds:
+        many = 'sessions are' if live_builds != 1 else 'session is'
+        blockers.append(
+            f'{live_builds} worktree {many} live (max_builds = {limits.max_builds}); stop one first'
+        )
     if mode == 'worktree':
         if worktrees >= limits.worktree_warn:
             warnings.append(f'{worktrees} worktrees exist (worktree_warn = {limits.worktree_warn})')

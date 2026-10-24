@@ -62,11 +62,13 @@ from .sessions.profiles import Profile
 from .sessions.records import SessionRecord
 from .sessions.skills import Skill
 from .sessions.store import SessionView
+from .sessions.trees import TreeState
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TextPane, printable
 from .workspace import Snapshot, Workspace
 
 SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
+WORKTREE_ACTIONS = frozenset({'mark_worktree', 'remove_worktrees'})
 DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit', 'focus_session'})
 LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
 UNREAD_STYLE = Style(color='green')
@@ -302,6 +304,15 @@ class DrawerList(OptionList):
     ]
 
 
+class WorktreeList(DrawerList):
+    """The Worktrees tab: space marks trees, x removes the marked (or the selected) one."""
+
+    BINDINGS = [
+        Binding('space', 'app.mark_worktree', 'mark'),
+        Binding('x', 'app.remove_worktrees', 'remove'),
+    ]
+
+
 @dataclass
 class Draft:
     """A reply being written beside the thread, to one message."""
@@ -456,6 +467,7 @@ class MaintainerApp(App[None]):
         self._drawer_tab = 'sessions'
         self._session_rows: list[tuple[str, str]] = []
         self._worktree_rows: list[tuple[str, str]] = []
+        self._marked_trees: set[str] = set()  # Worktrees tab: marked for removal.
         # The column beside the app: the app's own tmux pane ($TMUX_PANE; empty outside
         # tmux), the session we put beside it, and the workspace session chosen there.
         self._app_pane = app_pane
@@ -499,7 +511,7 @@ class MaintainerApp(App[None]):
         with Vertical(id='drawer-panel'):
             yield Static('', id='drawer-tabs', markup=False)
             yield DrawerList(id='drawer-sessions')
-            yield DrawerList(id='drawer-worktrees')
+            yield WorktreeList(id='drawer-worktrees')
         yield Static(self._drawer, id='drawer', markup=False)
         yield Input(id='search', placeholder='/ regex over subject and author')
         yield KeyBar(id='footer')
@@ -704,7 +716,11 @@ class MaintainerApp(App[None]):
             return bool(self._app_pane) and self._beside is not None
         if action == 'launch_session':
             return self._sessions is not None and not self._drawer_focused()
+        if action in WORKTREE_ACTIONS:
+            return self._selected_worktree() is not None
         if action in SESSION_ACTIONS:
+            if self.focused is self._drawer_worktrees:
+                return False
             if self.selected_draft() is not None:  # Enter resumes it, x discards it.
                 return action in ('open_session', 'end_session')
             view = self._selected_view()
@@ -1819,13 +1835,91 @@ class MaintainerApp(App[None]):
             v.record.id == self._beside and v.state in LIVE_STATES for v in overview.sessions
         ):
             self._beside = None  # Its pane went away with it; nothing to move.
-        states = {v.record.id: v.state for v in overview.sessions}
-        worktrees = [(w.path, worktree_row(w, states)) for w in overview.worktrees]
         self._render_session_rows()
+        self._render_worktree_rows()
+        self._sync_bindings()
+
+    def _render_worktree_rows(self) -> None:
+        """The Worktrees list; marked trees start with `*`."""
+        states = {v.record.id: v.state for v in self._overview.sessions}
+        paths = {w.path for w in self._overview.worktrees}
+        self._marked_trees &= paths
+        marks = bool(self._marked_trees)
+        worktrees = [
+            (
+                w.path,
+                ('* ' if w.path in self._marked_trees else '  ' if marks else '')
+                + worktree_row(w, states),
+            )
+            for w in self._overview.worktrees
+        ]
         if worktrees != self._worktree_rows:
             self._worktree_rows = worktrees
             _replace_rows(self._drawer_worktrees, worktrees, 'No session worktrees.')
-        self._sync_bindings()
+
+    def _selected_worktree(self) -> Optional[str]:
+        if self.focused is not self._drawer_worktrees:
+            return None
+        option = self._drawer_worktrees.highlighted_option
+        key = option.id if option is not None else None
+        return key if any(w.path == key for w in self._overview.worktrees) else None
+
+    def action_mark_worktree(self) -> None:
+        if (path := self._selected_worktree()) is not None:
+            self._marked_trees ^= {path}
+            self._render_worktree_rows()
+
+    def action_remove_worktrees(self) -> None:
+        """x in the Worktrees tab: the marked trees, else the selected one."""
+        selected = self._selected_worktree()
+        order = [w.path for w in self._overview.worktrees]
+        paths = [p for p in order if p in self._marked_trees] or ([selected] if selected else [])
+        if paths:
+            self._remove_worktrees(paths)
+
+    def _remove_worktrees(self, paths: list[str]) -> None:
+        """Say what each tree would lose, then remove on y; changes need a second y."""
+        hub = self._sessions
+        if hub is None:
+            return
+
+        def look() -> None:
+            try:
+                losses = hub.worktree_losses(paths)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, str(exc))
+                return
+            self.call_from_thread(self._confirm_removal, paths, losses)
+
+        self.run_worker(look, thread=True, group='session-action')
+
+    def _confirm_removal(self, paths: list[str], losses: dict[str, TreeState]) -> None:
+        hub = self._sessions
+        assert hub is not None
+        listed = '\n'.join(f'  {p}: {losses[p].describe()}' for p in paths)
+        changed = [p for p in paths if not losses[p].clean]
+        count = f'{len(paths)} worktree{"s"[: len(paths) - 1]}'
+
+        def remove() -> str:
+            hub.remove_worktrees(paths)
+            self._marked_trees -= set(paths)
+            return f'Removed {count}'
+
+        def again(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._session_call(remove)
+
+        def first(confirmed: Optional[bool]) -> None:
+            if not confirmed:
+                return
+            if not changed:
+                self._session_call(remove)
+                return
+            lost = '\n'.join(f'  {p}: {losses[p].describe()}' for p in changed)
+            prompt = f'This will be lost:\n{lost}\nRemove anyway? [y|N]'
+            self.push_screen(Confirm(prompt), again)
+
+        self.push_screen(Confirm(f'Remove {count}?\n{listed}\n[y|N]'), first)
 
     def _render_session_rows(self) -> None:
         """The Sessions list: the selected thread's drafts first, then its sessions."""
@@ -2082,13 +2176,31 @@ class MaintainerApp(App[None]):
         if view is None or hub is None:
             return
         sid, label = view.record.id, session_label(view.record)
-        kept = ' Its worktree is kept (Worktrees tab).' if view.record.worktree else ''
+        tree = view.record.worktree
+        listed = tree is not None and any(w.path == tree.path for w in self._overview.worktrees)
+
+        def ended() -> str:
+            hub.end(sid)
+            if listed:
+                assert tree is not None
+                self.call_from_thread(self._ask_remove_tree, tree.path)
+            return f'Ended: {label}'
 
         def answered(confirmed: Optional[bool]) -> None:
             if confirmed:
-                self._session_call(lambda: hub.end(sid) or f'Ended: {label}')
+                self._session_call(ended)
 
-        self.push_screen(Confirm(f'End session {sid} ({label})?{kept} [y|N]'), answered)
+        self.push_screen(Confirm(f'End session {sid} ({label})? [y|N]'), answered)
+
+    def _ask_remove_tree(self, path: str) -> None:
+        """After ending a worktree session: remove its tree, or keep it (Worktrees tab)."""
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._remove_worktrees([path])
+
+        prompt = f'Remove its worktree {path}? [y|N] (N keeps it in the Worktrees tab)'
+        self.push_screen(Confirm(prompt), answered)
 
     def action_session_artifacts(self) -> None:
         view, hub = self._selected_view(), self._sessions
@@ -2373,10 +2485,14 @@ def _situation(
         hub.models(workspace.models),
         workspace.session_limits,
         live=sum(v.state in LIVE_STATES for v in overview.sessions),
+        live_builds=sum(
+            v.state in LIVE_STATES and v.record.mode == 'worktree' for v in overview.sessions
+        ),
         worktrees=len(overview.worktrees),
         worktree_bytes=overview.worktree_bytes,
-        worktree_reason=hub.worktree_reason(project),
+        worktree_reason=(reason := hub.worktree_reason(project)),
         skills=skills,
+        bases=() if reason else tuple(hub.bases(project)),
     )
 
 

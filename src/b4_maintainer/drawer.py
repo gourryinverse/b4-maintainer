@@ -105,8 +105,10 @@ def session_row(view: SessionView, now: datetime.datetime) -> str:
 
 def worktree_row(info: WorktreeInfo, states: dict[str, str]) -> str:
     size = format_bytes(info.bytes) if info.bytes is not None else 'size unknown'
-    state = states.get(info.session, 'ended')
-    return f'{info.branch} · {size} · session {info.session} ({state}) · {info.path}'
+    owner = f'session {info.session} ({states.get(info.session, "ended")})'
+    owner = owner if info.session else 'orphan'
+    tree = info.state.describe() if info.state is not None else 'not inspected'
+    return f'{info.branch or "?"} · {size} · {owner} · {tree} · {info.path}'
 
 
 def session_rows(

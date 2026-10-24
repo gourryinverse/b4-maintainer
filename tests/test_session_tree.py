@@ -6,7 +6,8 @@ import pathlib
 import pytest
 from gitutil import git
 
-from b4_maintainer.adapters.sessiontree import PrepareError, prepare_tree
+from b4_maintainer.adapters.sessiontree import PrepareError, base_suggestions, prepare_tree
+from b4_maintainer.sessions.trees import inspect_tree, remove_tree
 
 AGENT = ('b4-maintainer agent (dry-run)', 'agent@b4-maintainer.invalid')
 CHANGE_ID = '20261020-mm-foo-0123456789ab'
@@ -195,3 +196,47 @@ def test_a_review_branch_of_another_revision_is_not_used(upstream, tmp_path):
         'mm/foo: name line three',
         'mm/bar: add bar',
     ]
+
+
+def test_a_fresh_tree_is_clean_and_changes_are_listed(upstream, tmp_path):
+    project, _base, mbox = upstream
+    dest = tmp_path / 'var' / 'worktrees' / 's1'
+    tree = prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT)
+    assert inspect_tree(dest, tree.applied).clean
+    (dest / 'mm/bar.c').write_text('changed\n')
+    (dest / 'scratch.txt').write_text('new\n')
+    state = inspect_tree(dest, tree.applied)
+    assert len(state.changed) == 2 and state.commits == ()
+    git('add', '-A', cwd=dest)
+    git('commit', '-q', '-m', 'agent: work', cwd=dest)
+    git('checkout', '-q', '-b', 'other', tree.applied, cwd=dest)
+    write(dest, 'other.txt', 'x\n')
+    git('commit', '-q', '-m', 'agent: elsewhere', cwd=dest)
+    state = inspect_tree(dest, tree.applied)
+    assert state.changed == ()
+    assert sorted(c.split(' ', 1)[1] for c in state.commits) == ['agent: elsewhere', 'agent: work']
+    assert state.describe() == '2 commits only here'
+    # Without the series' last commit, everything beyond the cloned refs counts.
+    assert len(inspect_tree(dest).commits) == 4
+
+
+def test_removal_deletes_only_a_tree_under_the_worktrees_directory(upstream, tmp_path):
+    project, _base, mbox = upstream
+    before = snapshot(project)
+    trees = tmp_path / 'var' / 'worktrees'
+    dest = trees / 's1'
+    prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT)
+    with pytest.raises(OSError):
+        remove_tree(project, trees)
+    with pytest.raises(OSError):
+        remove_tree(dest / 'mm', trees)
+    remove_tree(dest, trees)
+    assert not dest.exists() and project.exists()
+    assert snapshot(project) == before
+    assert inspect_tree(dest).error == 'not a git tree'
+
+
+def test_base_suggestions_come_from_b4(upstream):
+    project, _base, _mbox = upstream
+    git('config', 'b4.review-apply-base', 'master', cwd=project)
+    assert base_suggestions(project)[:2] == ['HEAD', 'master']

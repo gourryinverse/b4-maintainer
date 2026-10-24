@@ -23,6 +23,8 @@ from typing import Mapping, Optional
 from .store import SessionStore
 
 SYSTEM = ('/usr', '/etc', '/bin', '/sbin', '/lib', '/lib64')
+# Empty directories: a vng guest boots on the sandbox's filesystem and mounts over these.
+MOUNT_POINTS = ('/run', '/var', '/sys', '/home', '/root', '/opt', '/srv', '/mnt')
 PATH = '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin'
 KVM = '/dev/kvm'
 
@@ -73,6 +75,8 @@ def bwrap_argv(policy: Policy, command: str) -> list[str]:
         if os.path.exists(path):
             argv += ['--ro-bind', path, path]
     argv += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp']
+    for path in MOUNT_POINTS:
+        argv += ['--dir', path]
     if policy.kvm and os.path.exists(KVM):
         argv += ['--dev-bind', KVM, KVM]
     for path in policy.readable:

@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from .launch import LaunchChoice, Situation, Target, new_record, plan
 from .models import ModelChoice, model_choices, parse_catalog
+from .pane import LIVE
 from .pi import LaunchSpec, prepare_session
 from .policy import ContextItem
 from .profiles import BUILTIN_DIR, Profile, load_profiles
@@ -26,6 +27,7 @@ from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
 from .store import SessionStore, SessionView
+from .trees import TreeState, inspect_tree, remove_tree
 
 RESUMABLE = frozenset({'stopped', 'gone'})
 
@@ -83,8 +85,9 @@ class SessionRunner(Protocol):
 class WorktreeInfo:
     path: str
     branch: str
-    session: str
+    session: str  # Empty: an orphan, named by no session.
     bytes: Optional[int] = None  # Not measured yet.
+    state: Optional[TreeState] = None  # Not inspected yet.
 
 
 class Worktrees(Protocol):
@@ -97,6 +100,16 @@ class Worktrees(Protocol):
     def prepare(self, record: SessionRecord, source: str, base: str) -> Worktree:
         """The series applied in the session's own tree (*base* empty: b4 detects it)."""
         ...
+
+    def bases(self, project: str) -> Sequence[str]:
+        """Suggested bases for the project's series (b4's)."""
+        ...
+
+    def inspect(self, path: str, applied: str) -> TreeState:
+        """What removing the tree would lose, looked at now."""
+        ...
+
+    def remove(self, path: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -140,7 +153,7 @@ class RecordWorktrees:
         self.checkouts = dict(checkouts or {})
         self.agent = agent  # Commit identity; the name may use {model}.
         self.ttl = ttl
-        self._sizes: dict[str, tuple[float, int]] = {}
+        self._sizes: dict[str, tuple[float, int, TreeState]] = {}
 
     def reason(self, project: str) -> str:
         if self.directory is None or not self.checkouts.get(project):
@@ -167,18 +180,54 @@ class RecordWorktrees:
         )
 
     def list(self, records: Sequence[SessionRecord]) -> list[WorktreeInfo]:
+        """Trees named by sessions, then orphans: directories here that none names."""
         infos = []
-        now = time.monotonic()
+        named = set()
         for record in records:
             wt = record.worktree
             if wt is None or not os.path.isdir(wt.path):
                 continue
-            cached = self._sizes.get(wt.path)
-            if cached is None or now - cached[0] > self.ttl:
-                cached = (now, disk_usage(pathlib.Path(wt.path)))
-                self._sizes[wt.path] = cached
-            infos.append(WorktreeInfo(wt.path, wt.branch, record.id, cached[1]))
+            named.add(os.path.realpath(wt.path))
+            size, state = self._measure(wt.path, wt.applied)
+            infos.append(WorktreeInfo(wt.path, wt.branch, record.id, size, state))
+        if self.directory is not None and self.directory.is_dir():
+            for entry in sorted(self.directory.iterdir()):
+                if not entry.is_dir() or os.path.realpath(entry) in named:
+                    continue
+                size, state = self._measure(str(entry), '')
+                infos.append(WorktreeInfo(str(entry), _branch(entry), '', size, state))
         return infos
+
+    def _measure(self, path: str, applied: str) -> tuple[int, TreeState]:
+        now = time.monotonic()
+        cached = self._sizes.get(path)
+        if cached is None or now - cached[0] > self.ttl:
+            tree = pathlib.Path(path)
+            cached = (now, disk_usage(tree), inspect_tree(tree, applied))
+            self._sizes[path] = cached
+        return cached[1], cached[2]
+
+    def bases(self, project: str) -> Sequence[str]:
+        from ..adapters.sessiontree import base_suggestions  # b4: only when asked.
+
+        checkout = self.checkouts.get(project)
+        return base_suggestions(pathlib.Path(checkout)) if checkout else []
+
+    def inspect(self, path: str, applied: str) -> TreeState:
+        return inspect_tree(pathlib.Path(path), applied)
+
+    def remove(self, path: str) -> None:
+        if self.directory is None:
+            raise OSError(f'{path} is not a session tree')
+        remove_tree(pathlib.Path(path), self.directory)
+        self._sizes.pop(path, None)
+
+
+def _branch(tree: pathlib.Path) -> str:
+    run = subprocess.run(
+        ['git', 'symbolic-ref', '-q', '--short', 'HEAD'], cwd=tree, capture_output=True, text=True
+    )
+    return run.stdout.strip()
 
 
 def pi_catalog() -> Optional[str]:
@@ -251,6 +300,13 @@ class SessionHub:
             )
         return self.worktrees.reason(project)
 
+    def bases(self, project: str) -> Sequence[str]:
+        """Suggested bases for a worktree session of the project's series; none on error."""
+        try:
+            return self.worktrees.bases(project)
+        except Exception:
+            return []
+
     def read_catalog(self) -> None:
         """Read pi's model list once (about a second: pi starts); later calls wait for it."""
         with self._catalog_lock:
@@ -313,9 +369,15 @@ class SessionHub:
         if state == 'ended':
             raise SessionError(f'Session {sid} has ended')
         if state in RESUMABLE:
-            self.runner.resume(record)
-            self.store.set_state(sid, '')
+            self._resume(record)
         self.runner.switch(record)
+
+    def _resume(self, record: SessionRecord) -> None:
+        tree = record.worktree
+        if tree is not None and not os.path.isdir(tree.path):
+            raise SessionError(f'Session {record.id} cannot resume: its worktree was removed')
+        self.runner.resume(record)
+        self.store.set_state(record.id, '')
 
     def show(
         self, sid: str, app_pane: str, width: int = 90, focus: bool = False, above: str = ''
@@ -327,8 +389,7 @@ class SessionHub:
         if state == 'ended':
             raise SessionError(f'Session {sid} has ended')
         if state in RESUMABLE:
-            self.runner.resume(record)
-            self.store.set_state(sid, '')
+            self._resume(record)
         self.runner.join(record, app_pane, width, above)
         if focus:
             self.runner.focus(record)
@@ -357,6 +418,45 @@ class SessionHub:
         """Close the session for good; its worktree stays until removed."""
         self.runner.end(self.store.record(sid))
         self.store.set_state(sid, 'ended')
+
+    def _tree_owners(self, paths: Sequence[str]) -> dict[str, Optional[SessionRecord]]:
+        """Each path's session (None for an orphan); refuses live sessions' trees and
+        paths that are not listed trees."""
+        views = {v.record.id: v for v in self.store.poll(self.runner.alive)}
+        listed = {
+            w.path: w.session for w in self.worktrees.list([v.record for v in views.values()])
+        }
+        owners: dict[str, Optional[SessionRecord]] = {}
+        for path in paths:
+            if path not in listed:
+                raise SessionError(f'{path} is not a session tree')
+            view = views.get(listed[path])
+            if view is not None and view.state in LIVE:
+                raise SessionError(
+                    f'{path} belongs to a live session: stop session {view.record.id} first'
+                )
+            owners[path] = view.record if view is not None else None
+        return owners
+
+    def worktree_losses(self, paths: Sequence[str]) -> dict[str, TreeState]:
+        """What removing each tree would lose (uncommitted files, commits only there)."""
+        owners = self._tree_owners(paths)
+        return {
+            path: self.worktrees.inspect(path, r.worktree.applied if r and r.worktree else '')
+            for path, r in owners.items()
+        }
+
+    def remove_worktrees(self, paths: Sequence[str]) -> list[str]:
+        """Delete the trees (the maintainer confirmed); their records stay as they were."""
+        self._tree_owners(paths)
+        removed = []
+        for path in paths:
+            try:
+                self.worktrees.remove(path)
+            except OSError as exc:
+                raise SessionError(f'Cannot remove {path}: {exc}') from exc
+            removed.append(path)
+        return removed
 
     def artifacts(self, sid: str) -> list[str]:
         return self.store.artifacts(sid)

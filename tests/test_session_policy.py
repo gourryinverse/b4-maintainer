@@ -20,6 +20,13 @@ def test_limits_block_live_sessions_and_warn_on_worktrees():
     assert warnings == []  # A lightweight session adds no worktree.
 
 
+def test_live_worktree_sessions_cap_new_ones():
+    limits = SessionLimits(max_live=4, max_builds=1)
+    blockers, _ = launch_check(limits, 1, 1, 0, 'worktree', live_builds=1)
+    assert blockers == ['1 worktree session is live (max_builds = 1); stop one first']
+    assert launch_check(limits, 1, 1, 0, 'lightweight', live_builds=1) == ([], [])
+
+
 def test_workspace_config_carries_limits_and_model_presets():
     config = {
         'sessions': {'max_live': 6, 'worktree_warn_gb': 50},

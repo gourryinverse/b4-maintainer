@@ -152,12 +152,19 @@ function check(tool: string, input: any, cwd: string): string | undefined {
 
 type Step = { tool: string; args: Record<string, unknown> } | { text: string };
 
+// A worktree session shows its tree at work: the series on its branch, then an agent commit
+// (made with the agent identity, its sign-off stripped). Others show a refused build.
+const TREE = PERMISSIONS === "execute" && !!env.B4M_WORKTREE;
+const AGENT_COMMIT =
+	"echo 'dry run' > dry-run.txt && git add dry-run.txt && " +
+	"git commit -q -s -m 'dry run: an agent commit' && git log -1 --format='%an <%ae>%n%n%B'";
+
 function defaultSteps(): Step[] {
 	const context = EVENTS ? join(dirname(EVENTS), "work", "context", "task.md") : "task.md";
 	return [
 		{ tool: "read", args: { path: context } },
-		{ tool: "bash", args: { command: "git log -1 --oneline" } },
-		{ tool: "bash", args: { command: "make -j8" } },
+		{ tool: "bash", args: { command: TREE ? "git log --oneline -4" : "git log -1 --oneline" } },
+		{ tool: "bash", args: { command: TREE ? AGENT_COMMIT : "make -j8" } },
 	];
 }
 
@@ -185,7 +192,9 @@ function summary(messages: any[]): string {
 		`- tools: ${tools.join(", ")}`,
 		`- system prompt: ${system.length} characters, ending:`,
 		system.slice(-600),
-		"It now makes the tool calls a model might: reading the task, a read-only git command, and a build the shell check refuses.",
+		TREE
+			? "It now makes the tool calls a model might: reading the task, the series in the worktree, and a commit there."
+			: "It now makes the tool calls a model might: reading the task, a read-only git command, and a build the shell check refuses.",
 	].join("\n");
 }
 
@@ -238,7 +247,11 @@ function dryRun(model: Model<Api>, context: TranscriptContext, options?: SimpleS
 				(output as any).stopReason = "toolUse";
 			}
 		} else {
-			text("Dry run finished. The refused build shows how b4-maintainer's shell check answers a model. Type anything for an echo.");
+			text(
+				TREE
+					? "Dry run finished. The commit carries the agent identity and no sign-off. Type anything for an echo."
+					: "Dry run finished. The refused build shows how b4-maintainer's shell check answers a model. Type anything for an echo.",
+			);
 			(output as any).stopReason = "stop";
 		}
 		stream.push({ type: "done", reason: (output as any).stopReason, message: output } as any);

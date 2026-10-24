@@ -73,6 +73,7 @@ def test_the_bwrap_command_binds_only_what_the_policy_names(tmp_path):
     assert f'--bind {w}/work/out {w}/work/out' in joined
     assert 'missing' not in joined  # bwrap refuses to bind what does not exist.
     assert '/dev/kvm' not in joined and '--tmpfs /tmp' in joined
+    assert '--dir /run' in joined and '--dir /sys' in joined  # A vng guest mounts on these.
     assert f'--setenv GIT_CEILING_DIRECTORIES {w}' in joined and f'--chdir {w}/work' in joined
     assert argv[-4:] == ['--', 'bash', '-c', 'make -j8']
 

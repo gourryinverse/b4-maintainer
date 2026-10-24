@@ -229,6 +229,18 @@ async def test_a_worktree_session_applies_the_series_on_the_chosen_base(demo_roo
         assert record.worktree is not None
 
 
+async def test_the_base_field_completes_b4s_suggestions(demo_root, store, runner):
+    app = make_app(demo_root, store, runner, sandbox=lambda: True)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'reproduce')
+        box = dialog.base_input()
+        assert 'mm/mm-unstable' in str(box.placeholder)
+        box.focus()
+        await pilot.press('m', 'm', '/', 'right')
+        assert box.value == 'mm/mm-unstable'
+
+
 async def test_a_series_that_does_not_apply_shows_b4s_output(demo_root, store, runner):
     trees = FakeWorktrees()
     trees.fail = ('v3 does not apply at HEAD', 'error: patch failed: mm/foo.c:3')
