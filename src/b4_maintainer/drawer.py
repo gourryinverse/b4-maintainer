@@ -110,8 +110,22 @@ def worktree_row(info: WorktreeInfo, states: dict[str, str]) -> str:
 
 
 def session_rows(
-    sessions: Iterable[SessionView], now: Optional[datetime.datetime] = None
+    sessions: Iterable[SessionView],
+    now: Optional[datetime.datetime] = None,
+    reading: Optional[str] = None,
+    beside: Optional[str] = None,
 ) -> list[tuple[str, str]]:
-    """(session id, row text) in drawer order."""
+    """(session id, row text) in drawer order: the open series' sessions first, the one
+    beside the app marked ▸."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
-    return [(v.record.id, session_row(v, now)) for v in sessions]
+    views = list(sessions)
+    if reading is not None:
+        views.sort(key=lambda v: v.record.series != reading)  # Stable: urgency kept.
+    marked = beside is not None
+    return [
+        (
+            v.record.id,
+            ('▸ ' if v.record.id == beside else '  ' if marked else '') + session_row(v, now),
+        )
+        for v in views
+    ]

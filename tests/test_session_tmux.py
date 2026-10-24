@@ -65,7 +65,7 @@ def wait_for(predicate, timeout=5.0):
 
 def windows(base):
     out = subprocess.run(
-        [*base, 'list-windows', '-a', '-F', '#{window_id} #{@b4m_session} #{window_name}'],
+        [*base, 'list-panes', '-a', '-F', '#{window_id} #{@b4m_session} #{window_name}'],
         capture_output=True,
         text=True,
     ).stdout
@@ -164,3 +164,133 @@ def test_sessions_learn_the_apps_window_for_back(tmp_path, store, server):
     runner.launch(record, LaunchSpec(REQUEST))
     launch = json.loads((store.directory('s1') / 'launch.json').read_text())
     assert launch['env']['B4M_APP_WINDOW'] == app_window
+
+
+def test_a_session_moved_beside_the_app_is_still_found_and_stops_alone(tmp_path, store, server):
+    runner, record = launched(tmp_path, store, server)
+    socket, base = server
+    app_pane = subprocess.run(
+        [*base, 'display-message', '-p', '-t', ':0', '#{pane_id}'], capture_output=True, text=True
+    ).stdout.strip()
+    session_pane = runner._panes()['s1'][0]
+    # Joining moves the pane into the app's window; its own window disappears.
+    subprocess.run([*base, 'join-pane', '-d', '-h', '-s', session_pane, '-t', app_pane], check=True)
+    assert runner.alive([record]) == {'s1'}
+    runner.stop(record)
+    assert runner.alive([record]) == set()
+    panes = subprocess.run(
+        [*base, 'list-panes', '-a', '-F', '#{pane_id}'], capture_output=True, text=True
+    ).stdout.split()
+    assert app_pane in panes  # The app's pane (and window) survived the stop.
+
+
+def app_pane(base):
+    return subprocess.run(
+        [*base, 'display-message', '-p', '-t', ':0', '#{pane_id}'], capture_output=True, text=True
+    ).stdout.strip()
+
+
+def panes_in(base, target):
+    out = subprocess.run(
+        [*base, 'list-panes', '-t', target, '-F', '#{pane_id} #{pane_width} #{@b4m_session}'],
+        capture_output=True,
+        text=True,
+    ).stdout
+    return [line.split(' ') for line in out.splitlines()]
+
+
+def test_join_puts_the_session_beside_the_app_and_release_puts_it_back(tmp_path, store, server):
+    runner, record = launched(tmp_path, store, server)
+    socket, base = server
+    app = app_pane(base)
+    assert runner.joined(app) is None
+    runner.join(record, app, width=90)
+    beside = panes_in(base, app)
+    assert len(beside) == 2 and beside[1][2] == 's1' and int(beside[1][1]) == 90
+    assert runner.joined(app) == 's1'
+    current = subprocess.run(
+        [*base, 'display-message', '-p', '#{pane_id}'], capture_output=True, text=True
+    ).stdout.strip()
+    assert current == app  # Joining never takes focus.
+    runner.join(record, app, width=90)  # Already there: nothing changes.
+    assert len(panes_in(base, app)) == 2
+    runner.release(app)
+    assert len(panes_in(base, app)) == 1 and runner.joined(app) is None
+    assert runner.alive([record]) == {'s1'}  # Back in a window of its own, still running.
+    assert any(name.startswith('b4m:') for _w, sid, name in windows(base) if sid == 's1')
+
+
+def test_joining_another_session_swaps_the_pane(tmp_path, store, server):
+    runner, first = launched(tmp_path, store, server, 's1')
+    _runner, second = launched(tmp_path, store, server, 's2')
+    socket, base = server
+    app = app_pane(base)
+    runner.join(first, app, width=90)
+    runner.join(second, app, width=90)
+    assert runner.joined(app) == 's2' and len(panes_in(base, app)) == 2
+    assert runner.alive([first, second]) == {'s1', 's2'}
+
+
+def test_focus_and_zoom_move_between_the_app_and_the_session(tmp_path, store, server):
+    runner, record = launched(tmp_path, store, server)
+    socket, base = server
+    app = app_pane(base)
+    runner.join(record, app, width=90)
+
+    def active():
+        return subprocess.run(
+            [*base, 'display-message', '-p', '#{@b4m_session}|#{window_zoomed_flag}'],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    runner.focus(record)
+    assert active() == 's1|0'
+    runner.focus_app(app)
+    assert active() == '|0'
+    runner.focus(record, zoom=True)
+    assert active() == 's1|1'
+    runner.focus_app(app)  # Leaving a zoomed session unzooms it.
+    assert active() == '|0'
+
+
+def test_the_app_announces_its_pane_to_sessions(tmp_path, store, server):
+    runner, record = launched(tmp_path, store, server)
+    socket, base = server
+    app = app_pane(base)
+    runner.announce(app)
+    session_pane = runner._panes()['s1'][0]
+    seen = subprocess.run(
+        [*base, 'display-message', '-p', '-t', session_pane, '#{@b4m_app_pane}'],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert seen == app
+
+
+def test_a_session_can_join_above_a_pane_beside_the_app(tmp_path, store, server):
+    runner, record = launched(tmp_path, store, server)
+    socket, base = server
+    app = app_pane(base)
+    editor = subprocess.run(
+        [*base, 'split-window', '-d', '-h', '-l', '90', '-t', app, '-P', '-F', '#{pane_id}']
+        + ['sleep 30'],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    runner.join(record, app, width=90, above=editor)
+    session = runner._panes()['s1'][0]
+
+    def geometry(target):
+        return [
+            int(x)
+            for x in subprocess.run(
+                [*base, 'display-message', '-p', '-t', target, '#{pane_left} #{pane_top}'],
+                capture_output=True,
+                text=True,
+            ).stdout.split()
+        ]
+
+    (s_left, s_top), (e_left, e_top) = geometry(session), geometry(editor)
+    assert s_left == e_left and s_top < e_top  # Stacked above the editor, one column.
+    assert runner.joined(app) == 's1'

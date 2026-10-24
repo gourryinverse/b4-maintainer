@@ -11,6 +11,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
@@ -49,6 +50,23 @@ class SessionRunner(Protocol):
     def resume(self, record: SessionRecord) -> None: ...
 
     def end(self, record: SessionRecord) -> None: ...
+
+    # The column beside the app (tmux panes in phase 1).
+    def joined(self, app_pane: str) -> Optional[str]: ...
+
+    def join(
+        self, record: SessionRecord, app_pane: str, width: int = 90, above: str = ''
+    ) -> None: ...
+
+    def release(self, app_pane: str) -> None: ...
+
+    def focus(self, record: SessionRecord, zoom: bool = False) -> None: ...
+
+    def focus_app(self, app_pane: str) -> None: ...
+
+    def announce(self, app_pane: str) -> None: ...
+
+    def pane_of(self, record: SessionRecord) -> Optional[str]: ...
 
 
 @dataclass(frozen=True)
@@ -147,6 +165,7 @@ class SessionHub:
         self._sandbox = sandbox or (lambda: bool(available()))
         self._catalog_text: Optional[str] = None
         self._catalog_read = False
+        self._catalog_lock = threading.Lock()
         self._states: dict[str, str] = {}
 
     def overview(self) -> Overview:
@@ -165,10 +184,15 @@ class SessionHub:
     def skills(self) -> tuple[list[Skill], list[str]]:
         return load_skills(BUILTIN_SKILLS, self.skills_dir)
 
+    def read_catalog(self) -> None:
+        """Read pi's model list once (about a second: pi starts); later calls wait for it."""
+        with self._catalog_lock:
+            if not self._catalog_read:
+                self._catalog_text, self._catalog_read = self._catalog(), True
+
     def models(self, presets: Sequence[Mapping[str, Any]]) -> list[ModelChoice]:
-        """Model choices; pi's catalog is read once (None if pi cannot list it)."""
-        if not self._catalog_read:
-            self._catalog_text, self._catalog_read = self._catalog(), True
+        """Model choices from pi's catalog (None if pi cannot list it)."""
+        self.read_catalog()
         text = self._catalog_text
         return model_choices(parse_catalog(text) if text else None, presets)
 
@@ -216,6 +240,38 @@ class SessionHub:
             self.runner.resume(record)
             self.store.set_state(sid, '')
         self.runner.switch(record)
+
+    def show(
+        self, sid: str, app_pane: str, width: int = 90, focus: bool = False, above: str = ''
+    ) -> None:
+        """Put the session beside the app, resuming it first if it was stopped or gone
+        (only ever on the maintainer's request)."""
+        record = self.store.record(sid)
+        state = self._states.get(sid, record.state)
+        if state == 'ended':
+            raise SessionError(f'Session {sid} has ended')
+        if state in RESUMABLE:
+            self.runner.resume(record)
+            self.store.set_state(sid, '')
+        self.runner.join(record, app_pane, width, above)
+        if focus:
+            self.runner.focus(record)
+
+    def hide(self, app_pane: str) -> None:
+        """Send the session beside the app back to its own window (it keeps running)."""
+        self.runner.release(app_pane)
+
+    def focus(self, sid: str, zoom: bool = False) -> None:
+        self.runner.focus(self.store.record(sid), zoom)
+
+    def focus_app(self, app_pane: str) -> None:
+        self.runner.focus_app(app_pane)
+
+    def announce(self, app_pane: str) -> None:
+        self.runner.announce(app_pane)
+
+    def pane_of(self, sid: str) -> Optional[str]:
+        return self.runner.pane_of(self.store.record(sid))
 
     def stop(self, sid: str) -> None:
         self.runner.stop(self.store.record(sid))

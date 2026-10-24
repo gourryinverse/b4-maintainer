@@ -61,12 +61,16 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
     args = parser.parse_args(argv)
     if args.demo:
         root = build_demo_workspace(args.demo)
-        return MaintainerApp(FixtureSource(root).load, sessions=_sessions(root))
+        return MaintainerApp(
+            FixtureSource(root).load, sessions=_sessions(root), app_pane=_app_pane()
+        )
     root = args.workspace or pathlib.Path('.')
     if has_config(root):
         return _live_app(LiveSource(root), args)
     if (root / 'workspace.json').is_file():
-        return MaintainerApp(FixtureSource(root).load, sessions=_sessions(root))
+        return MaintainerApp(
+            FixtureSource(root).load, sessions=_sessions(root), app_pane=_app_pane()
+        )
     name = str(args.workspace or '')
     is_name = name and '/' not in name and not root.exists()
     if is_name and has_config(pathlib.Path('.')):
@@ -98,7 +102,13 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
         sync=source.sync if source.can_sync() else None,
         sync_timeout=timeout,
         sessions=_sessions(source.root, workspace, private=True),
+        app_pane=_app_pane(),
     )
+
+
+def _app_pane() -> str:
+    """The app's own tmux pane, beside which sessions open; empty outside tmux."""
+    return os.environ.get('TMUX_PANE', '')
 
 
 def _sessions(

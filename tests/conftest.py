@@ -15,6 +15,12 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket, 'create_connection', refuse)
 
 
+@pytest.fixture(autouse=True)
+def no_pi_catalog(monkeypatch):
+    """Apps read pi's model list in the background; tests never start pi for it."""
+    monkeypatch.setattr('b4_maintainer.sessions.hub.pi_catalog', lambda: None)
+
+
 @pytest.fixture
 def demo_root(tmp_path):
     from b4_maintainer.fixtures import build_demo_workspace

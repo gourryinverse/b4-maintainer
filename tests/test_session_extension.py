@@ -187,7 +187,7 @@ def test_a_tmux_session_with_real_pi_reaches_waiting_and_stops(tmp_path, home):
 
         runner.switch(record)
         assert active() == 't1'
-        window = runner._windows()['t1']
+        window = runner._panes()['t1'][0]
         subprocess.run([*base, 'send-keys', '-t', window, '-l', '/back'], check=True)
         subprocess.run([*base, 'send-keys', '-t', window, 'Enter'], check=True)
         deadline = time.monotonic() + 10
@@ -195,6 +195,18 @@ def test_a_tmux_session_with_real_pi_reaches_waiting_and_stops(tmp_path, home):
             time.sleep(0.1)
         assert active() == ''  # Back in the app's window,
         assert state() == ['waiting']  # and the session still runs.
+
+        # Beside the app: F12 in pi returns to the app's pane (announced in tmux).
+        runner.announce(app_pane)
+        runner.join(record, app_pane, width=90)
+        runner.focus(record)
+        assert active() == 't1'
+        subprocess.run([*base, 'send-keys', '-t', window, 'F12'], check=True)
+        deadline = time.monotonic() + 10
+        while active() == 't1' and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert active() == ''
+        assert runner.joined(app_pane) == 't1'  # Still beside the app.
         runner.stop(record)
         assert runner.alive([record]) == set()
         assert '"exit"' in log.read_text()  # pi quit on /quit; the window was not killed.

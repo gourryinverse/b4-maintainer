@@ -12,6 +12,8 @@ import shlex
 import subprocess
 from typing import Callable, Optional, Sequence
 
+VIM_LIKE = frozenset({'vim', 'nvim', 'vi', 'vimx', 'view'})
+
 
 class EditorError(RuntimeError):
     pass
@@ -58,11 +60,14 @@ class TmuxEditor:
             return None
         return result.stdout.strip() if result.returncode == 0 else None
 
-    def open(self, path: pathlib.Path, checkout: pathlib.Path) -> str:
-        """Split the app's pane and run the editor on *path* to its right; return the pane id."""
+    def open(self, path: pathlib.Path, checkout: pathlib.Path, below: str = '') -> str:
+        """Run the editor on *path* to the right of the app (or under the pane *below*, a
+        session beside the app); return the pane id."""
         command = shlex.join([*self._command(checkout), str(path)])
         args: Sequence[str] = ['split-window', '-h', '-l', str(self.width), '-c', str(checkout)]
-        if self._target:
+        if below:
+            args = ['split-window', '-v', '-c', str(checkout), '-t', below]
+        elif self._target:
             args = [*args, '-t', self._target]
         result = self._tmux(*args, '-P', '-F', '#{pane_id}', command)
         pane = result.stdout.strip()
@@ -83,6 +88,16 @@ class TmuxEditor:
         result = self._tmux('select-pane', '-t', pane)
         if result.returncode != 0:
             raise EditorError(f'tmux select-pane failed: {result.stderr.strip()}')
+
+    def save_and_close(self, pane: str) -> bool:
+        """Make the editor write the draft and exit, where we know how (vim, neovim);
+        False leaves any other editor running untouched."""
+        command = self._query(pane, '#{pane_current_command}') or ''
+        if command not in VIM_LIKE:
+            return False
+        for keys in (['Escape'], ['-l', ':wq'], ['Enter']):
+            self._tmux('send-keys', '-t', pane, *keys)
+        return True
 
     def close(self, pane: str) -> None:
         """Kill the pane; a pane already gone is fine."""

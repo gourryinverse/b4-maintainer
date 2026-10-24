@@ -3,6 +3,7 @@
 import contextlib
 from unittest import mock
 
+import pytest
 from test_draft import DraftActions, reading, settle
 
 from b4_maintainer.adapters.drafts import DraftStore
@@ -19,12 +20,16 @@ class FakeEditor:
         self.focused = []
         self.closed = []
         self.fail = False
+        self.below = []  # The pane each editor was stacked under ('' beside the app).
+        self.vimlike = False  # Whether save_and_close can make it save and exit.
+        self.saved_closed = []
 
-    def open(self, path, checkout):
+    def open(self, path, checkout, below=''):
         if self.fail:
             raise EditorError('tmux split-window failed: no server')
         pane = f'%{len(self.opened) + 1}'
         self.opened.append((pane, path))
+        self.below.append(below)
         self.live.add(pane)
         return pane
 
@@ -40,6 +45,12 @@ class FakeEditor:
     def close(self, pane):
         self.closed.append(pane)
         self.live.discard(pane)
+
+    def save_and_close(self, pane):
+        self.saved_closed.append(pane)
+        if self.vimlike:
+            self.live.discard(pane)  # :wq; what it wrote is already in the file.
+        return self.vimlike
 
     def write(self, text):
         _, path = self.opened[-1]
@@ -260,3 +271,87 @@ async def test_with_the_editor_open_one_escape_closes_the_reader(demo_root, tmp_
         await pilot.press('escape')
         await settle(pilot)
         assert app.reading is None and editor.alive(editor.opened[-1][0])
+
+
+async def test_reentering_a_thread_leaves_a_saved_draft_closed(demo_root, tmp_path):
+    app, _, store, editor = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await start(pilot)
+        msgid = app.draft_msgid()
+        editor.write('On , Contributor One wrote:\n> x\n\nNot now.\n')
+        editor.exit()
+        await watched(pilot)
+        await pilot.press('escape')  # Leave b4's preview: the draft is kept.
+        await settle(pilot)
+        await pilot.press('escape')  # Close the thread.
+        await settle(pilot)
+        for _ in range(2):  # Abandoned again and again: it stays closed.
+            await pilot.press('enter')
+            await settle(pilot)
+            assert len(editor.opened) == 1
+            assert 'r resumes' in app.status_text()
+            await pilot.press('escape')
+            await settle(pilot)
+        await pilot.press('enter')
+        await settle(pilot)
+        await pilot.press('r')
+        await settle(pilot)
+        assert len(editor.opened) == 2 and editor.opened[1][1] == store.text_path(msgid)
+
+
+async def test_ctrl_g_discards_a_saved_draft_without_opening_it(demo_root, tmp_path):
+    app, _, store, editor = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await start(pilot)
+        editor.write('On , Contributor One wrote:\n> x\n\nDrop me.\n')
+        editor.exit()
+        await watched(pilot)
+        await pilot.press('escape')  # Kept.
+        await settle(pilot)
+        await pilot.press('escape')
+        await settle(pilot)
+        await pilot.press('enter')
+        await settle(pilot)
+        assert 'ctrl+g' in bindings(app)
+        await pilot.press('ctrl+g')
+        await pilot.pause()
+        await pilot.press('y')
+        await settle(pilot)
+        assert store.msgids() == set() and len(editor.opened) == 1
+        assert 'Draft discarded' in app.status_text()
+
+
+@pytest.mark.parametrize(
+    'key, kept, notice',
+    [('s', True, 'Draft saved'), ('escape', True, 'Draft saved'), ('t', False, 'Draft abandoned')],
+)
+async def test_the_preview_saves_or_abandons(demo_root, tmp_path, key, kept, notice):
+    app, _, store, editor = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await start(pilot)
+        msgid = app.draft_msgid()
+        editor.write('On , Contributor One wrote:\n> x\n\nMaybe.\n')
+        editor.exit()
+        await watched(pilot)
+        assert 's  save' in app.screen.query_one('#followup-preview-hint').render().plain
+        await pilot.press(key)
+        await settle(pilot)
+        assert (msgid in store.msgids()) == kept
+        assert notice in app.status_text()
+
+
+async def test_closing_the_thread_saves_and_closes_a_vim_draft(demo_root, tmp_path):
+    editor = FakeEditor()
+    editor.vimlike = True
+    app, _, store, _ = make(demo_root, tmp_path, editor=editor)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await start(pilot)
+        msgid, pane = app.draft_msgid(), editor.opened[-1][0]
+        editor.write('On , Contributor One wrote:\n> x\n\nLater.\n')
+        await pilot.press('escape')  # Tree -> close the thread.
+        await settle(pilot)
+        assert app.reading is None and editor.saved_closed == [pane]
+        await watched(pilot)
+        assert type(app.screen).__name__ != 'FollowupReplyPreviewScreen'  # Saved, no prompt.
+        assert store.get(msgid).text.endswith('Later.\n')
+        assert 'Draft saved' in app.status_text()

@@ -153,3 +153,12 @@ def test_demo_sessions_also_run_in_tmux(tmp_path):
 
     hub = build_app(['--demo', str(tmp_path / 'demo')])._sessions
     assert isinstance(hub.runner, TmuxRunner) and hub.runner.site.root == tmp_path / 'demo'
+
+
+def test_the_app_knows_its_own_tmux_pane(tmp_path, monkeypatch):
+    (tmp_path / 'workspace.toml').write_text('')
+    monkeypatch.setenv('TMUX_PANE', '%7')
+    assert build_app([str(tmp_path)])._app_pane == '%7'
+    assert build_app(['--demo', str(tmp_path / 'demo')])._app_pane == '%7'
+    monkeypatch.delenv('TMUX_PANE')
+    assert build_app([str(tmp_path)])._app_pane == ''

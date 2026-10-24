@@ -62,6 +62,41 @@ def test_editor_pane_edits_the_file_and_exits(server, tmp_path):
     assert draft.read_text() == 'quote\nmy reply\n'
 
 
+def test_the_editor_can_stack_under_a_session_pane(server, tmp_path):
+    socket, app_pane, base = server
+    session = subprocess.run(
+        [*base, 'split-window', '-h', '-l', '90', '-t', app_pane, '-P', '-F', '#{pane_id}']
+        + ['sleep 30'],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    draft = tmp_path / 'draft.eml'
+    draft.write_text('quote\n')
+    editor = TmuxEditor(
+        socket=socket, target=app_pane, command=lambda _: editor_script(tmp_path, 'sleep 30')
+    )
+    pane = editor.open(draft, tmp_path, below=session)
+
+    def geometry(target):
+        return subprocess.run(
+            [
+                *base,
+                'display-message',
+                '-p',
+                '-t',
+                target,
+                '#{pane_left} #{pane_top} #{pane_width}',
+            ],
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+
+    s_left, s_top, s_width = geometry(session)
+    e_left, e_top, e_width = geometry(pane)
+    assert (e_left, e_width) == (s_left, s_width) and int(e_top) > int(s_top)  # Underneath.
+    editor.close(pane)
+
+
 def test_close_kills_the_pane_and_focus_selects_it(server, tmp_path):
     socket, app_pane, base = server
     draft = tmp_path / 'it has spaces.eml'
@@ -114,3 +149,41 @@ async def test_app_drafts_in_a_real_tmux_pane_through_to_b4s_preview(server, tmp
         await settle(pilot)
         assert type(app.screen).__name__ == 'FollowupReplyPreviewScreen'
         assert store.get(msgid).text.endswith('Reviewed.\n')
+
+
+@pytest.mark.skipif(shutil.which('vim') is None, reason='vim not installed')
+def test_save_and_close_makes_vim_write_and_exit(server, tmp_path):
+    socket, app_pane, base = server
+    draft = tmp_path / 'draft.eml'
+    draft.write_text('quote\n')
+    vim = ['vim', '-u', 'NONE', '-N', '-n']
+    editor = TmuxEditor(socket=socket, target=app_pane, command=lambda _: vim)
+    pane = editor.open(draft, tmp_path)
+    assert wait_for(
+        lambda: (
+            'vim'
+            in subprocess.run(
+                [*base, 'display-message', '-p', '-t', pane, '#{pane_current_command}'],
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+    )
+    subprocess.run(
+        [*base, 'send-keys', '-t', pane, 'G', 'o', 'unsaved words', 'Escape', 'i'], check=True
+    )
+    assert editor.save_and_close(pane)  # Even from insert mode.
+    assert wait_for(lambda: not editor.alive(pane))
+    assert draft.read_text() == 'quote\nunsaved words\n'
+
+
+def test_save_and_close_leaves_other_editors_alone(server, tmp_path):
+    socket, app_pane, base = server
+    draft = tmp_path / 'draft.eml'
+    draft.write_text('quote\n')
+    editor = TmuxEditor(
+        socket=socket, target=app_pane, command=lambda _: editor_script(tmp_path, 'sleep 30')
+    )
+    pane = editor.open(draft, tmp_path)
+    assert not editor.save_and_close(pane)
+    assert editor.alive(pane)

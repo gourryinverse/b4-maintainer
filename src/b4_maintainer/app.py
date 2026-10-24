@@ -56,8 +56,10 @@ from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
 from .sessions.hub import Overview, SessionHub
 from .sessions.launch import Situation, Target
+from .sessions.pane import pane_for
 from .sessions.policy import ContextItem
 from .sessions.profiles import Profile
+from .sessions.records import SessionRecord
 from .sessions.sandbox import available
 from .sessions.skills import Skill
 from .sessions.store import SessionView
@@ -66,7 +68,7 @@ from .widgets import Block, KeyBar, TextPane, printable
 from .workspace import Snapshot, Workspace
 
 SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
-DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit'})
+DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit', 'focus_session'})
 LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
@@ -87,7 +89,7 @@ ROLE_STYLES = {
 class ExternalEditor(Protocol):
     """The maintainer's editor beside the app (a tmux pane); calls block briefly."""
 
-    def open(self, path: pathlib.Path, checkout: pathlib.Path) -> str: ...
+    def open(self, path: pathlib.Path, checkout: pathlib.Path, below: str = '') -> str: ...
 
     def alive(self, pane: str) -> bool: ...
 
@@ -96,6 +98,8 @@ class ExternalEditor(Protocol):
     def focus(self, pane: str) -> None: ...
 
     def close(self, pane: str) -> None: ...
+
+    def save_and_close(self, pane: str) -> bool: ...
 
 
 class SourceActions(Protocol):
@@ -309,6 +313,8 @@ class Draft:
     quote: str
     # External editor pane writing the draft file; empty for the in-app Draft pane.
     pane: str = ''
+    # Asked to save and exit (the thread was closed): its exit keeps the draft quietly.
+    closing: bool = False
 
 
 class MaintainerApp(App[None]):
@@ -394,6 +400,7 @@ class MaintainerApp(App[None]):
         Binding('r', 'reply', 'reply'),
         Binding('R', 'mark_read', 'read all'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
+        Binding('f12', 'focus_session', 'to session', key_display='F12'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
         Binding('Q', 'quit', 'quit'),
     ]
@@ -410,6 +417,7 @@ class MaintainerApp(App[None]):
         editor: Optional[ExternalEditor] = None,
         sync: Optional[Callable[..., str]] = None,
         sync_timeout: float = 10.0,
+        app_pane: str = '',
     ) -> None:
         super().__init__()
         self._loader = loader
@@ -436,6 +444,9 @@ class MaintainerApp(App[None]):
         # Replies marked seen while reading; counts refresh when the reader closes.
         self._seen_now: set[str] = set()
         self._draft: Optional[Draft] = None
+        # The open thread's saved draft, left closed until r (or discarded with ctrl+g).
+        self._saved_draft: Optional[tuple[WorkItem, str]] = None
+        self._resume_on_open: Optional[str] = None  # A draft to resume once its thread loads.
         # r in the series list: reply to the first posting once the opened thread loads.
         self._reply_on_open = False
         self._thread_loader = thread_loader
@@ -446,6 +457,12 @@ class MaintainerApp(App[None]):
         self._drawer_tab = 'sessions'
         self._session_rows: list[tuple[str, str]] = []
         self._worktree_rows: list[tuple[str, str]] = []
+        # The column beside the app: the app's own tmux pane ($TMUX_PANE; empty outside
+        # tmux), the session we put beside it, and the workspace session chosen there.
+        self._app_pane = app_pane
+        self._beside: Optional[str] = None
+        self._workspace_beside: Optional[str] = None
+        self._aside: Optional[str] = None  # Set aside while drafting on a short terminal.
         self._breakpoints = breakpoints
         self.symbols = symbols
         self.snapshot: Optional[Snapshot] = None
@@ -508,6 +525,16 @@ class MaintainerApp(App[None]):
         if self._sessions is not None:
             self.poll_sessions()
             self.set_interval(1.0, self.poll_sessions)
+            # pi's model list, read now so F1 need not wait for pi to start (no agent runs).
+            self.run_worker(self._sessions.read_catalog, thread=True, group='catalog')
+            if self._app_pane:
+                hub, pane = self._sessions, self._app_pane
+
+                def settle_pane() -> None:
+                    hub.announce(pane)  # Where sessions' F12 and /back return to.
+                    hub.hide(pane)  # A session left beside a previous run goes back.
+
+                self.run_worker(settle_pane, thread=True, group='session-pane')
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # After the first load has finished, so the sync's reload cannot cancel it.
@@ -674,9 +701,13 @@ class MaintainerApp(App[None]):
             return action == 'cycle_pane'  # Tab moves between the dialog's sections.
         if isinstance(self.screen, ModalScreen):
             return False  # A prompt or dialog owns every key while it is open.
+        if action == 'focus_session':
+            return bool(self._app_pane) and self._beside is not None
         if action == 'launch_session':
             return self._sessions is not None and not self._drawer_focused()
         if action in SESSION_ACTIONS:
+            if self.selected_draft() is not None:  # Enter resumes it, x discards it.
+                return action in ('open_session', 'end_session')
             view = self._selected_view()
             return view is not None and (action != 'open_session' or view.state != 'ended')
         if self._drawer_focused():
@@ -688,8 +719,10 @@ class MaintainerApp(App[None]):
             return not reading and self._mode == 'medium'
         if action == 'cycle_pane':
             return not narrow or (reading and self._draft is not None)
-        if action in ('send_draft', 'discard_draft'):
+        if action == 'send_draft':
             return self._draft is not None
+        if action == 'discard_draft':
+            return self._draft is not None or self._saved_draft is not None
         if action == 'focus_editor':
             return self._draft is not None and bool(self._draft.pane)
         if action == 'open_reader':
@@ -834,7 +867,7 @@ class MaintainerApp(App[None]):
                 self._set_reader_pane('tree')
             elif self._draft is not None and self._draft.pane:
                 self._close_reader()
-                self._set_notice('Draft still open in your editor')
+                self._save_editor_draft(self._draft)
             elif self._draft is not None and self._drafts is not None:
                 subject = self._reading.series.subject
                 self._close_draft(keep=True)
@@ -894,11 +927,15 @@ class MaintainerApp(App[None]):
             self._mark_reader_pane(pane)
 
     def action_open_reader(self) -> None:
+        self._open_reader()
+
+    def _open_reader(self, pane: bool = True) -> None:
         item = self._item
         if item is None:
             return
         self._reading, self._thread, self._post_key = item, None, ''
         self._reply_on_open = False
+        self._saved_draft = None
         self.screen.add_class('-reading')
         self._tree.clear_options()
         self._rows, self._expanded, self._node = [], set(), 0
@@ -912,17 +949,24 @@ class MaintainerApp(App[None]):
         self.run_worker(
             lambda: self._load_thread(item), thread=True, group='thread', exclusive=True
         )
+        if pane:
+            self._place_pane()
 
     def _load_thread(self, item: WorkItem) -> None:
-        restore = None
+        restore, adopt = None, False
         try:
             thread = with_sashiko(self._thread_loader(item.series), item.sashiko, self._bots())
             error = None
             if self._drafts is not None:
                 restore = _drafted_in(thread, self._drafts.msgids())
+            if restore is not None and self._drafts is not None and self._editor is not None:
+                # Its editor is still open (e.g. from a crashed run): adopt it on entry.
+                saved = self._drafts.get(restore[2])
+                path = self._drafts.text_path(restore[2])
+                adopt = bool(saved and saved.pane and self._editor.runs(saved.pane, path))
         except Exception as exc:  # Shown to the maintainer; mail is untrusted input.
             thread, error = None, f'{type(exc).__name__}: {exc}'
-        self.call_from_thread(self._apply_thread, item, thread, error, restore)
+        self.call_from_thread(self._apply_thread, item, thread, error, restore, adopt)
 
     def _apply_thread(
         self,
@@ -930,6 +974,7 @@ class MaintainerApp(App[None]):
         thread: Optional[SeriesThread],
         error: Optional[str],
         restore: Optional[tuple[str, int, str]] = None,
+        adopt: bool = False,
     ) -> None:
         if not self._still_reading(item):
             return  # Closed or reopened on another series while loading.
@@ -952,13 +997,24 @@ class MaintainerApp(App[None]):
             self._render_tree((key, node))
             self.action_focus_editor()
             return
+        resume, self._resume_on_open = self._resume_on_open, None
+        if resume is not None and self._actions is not None and self._draft is None:
+            self._render_tree((keys[0], 0) if keys else ('', 0))
+            self._begin_reply(item, resume, None)  # Chosen in the drawer.
+            return
         if restore is not None and self._actions is not None and self._draft is None:
-            # A saved draft: back to the message it answers, with the draft open.
+            # A saved draft: back to the message it answers. It stays closed (it may have
+            # been abandoned) until r resumes it; ctrl+g discards it.
             key, node, msgid = restore
             if node:
                 self._expanded.add(key)
             self._render_tree((key, node))
-            self._begin_reply(item, msgid, None)
+            self._saved_draft = (item, msgid)
+            if reply_now or adopt:
+                self._resume_saved_draft()
+            else:
+                self._set_notice('Saved draft here · r resumes · ctrl+g discards')
+                self._sync_bindings()
             return
         self._render_tree((keys[0], 0) if keys else ('', 0))
         if reply_now:
@@ -1014,6 +1070,9 @@ class MaintainerApp(App[None]):
         return post.message.msgid if post is not None else None
 
     def action_reply(self) -> None:
+        if self._saved_draft is not None and self._reading is not None:
+            self._resume_saved_draft()
+            return
         if self._reading is None:
             # Open the series; the reply starts on its first posting once the thread loads.
             self.action_open_reader()
@@ -1033,6 +1092,11 @@ class MaintainerApp(App[None]):
             msgid = msgid.removeprefix(SASHIKO_PREFIX)
         self._begin_reply(item, msgid, quote)
 
+    def _resume_saved_draft(self) -> None:
+        saved, self._saved_draft = self._saved_draft, None
+        if saved is not None:
+            self._begin_reply(saved[0], saved[1], None)
+
     def _begin_reply(self, item: WorkItem, msgid: str, quote: Optional[str]) -> None:
         """Load the message to answer (and any saved draft) off the UI thread."""
         actions, drafts = self._actions, self._drafts
@@ -1040,6 +1104,14 @@ class MaintainerApp(App[None]):
             return
 
         editor = self._editor
+        # With a session beside the app, the editor stacks under it; on a short terminal
+        # the session steps aside (still running) until the draft is done.
+        hub, app_pane, beside = self._sessions, self._app_pane, self._beside
+        width = self.snapshot.workspace.pane_width if self.snapshot else 90
+        stack = editor is not None and hub is not None and bool(app_pane) and beside is not None
+        aside = stack and self.size.height < 40
+        if aside:
+            self._aside, self._beside = beside, None
 
         def work() -> None:
             try:
@@ -1048,9 +1120,23 @@ class MaintainerApp(App[None]):
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot reply: {exc}')
                 return
+            below = ''
+            if stack and hub is not None and beside is not None:
+                try:
+                    if aside:
+                        hub.hide(app_pane)
+                    else:
+                        # Beside the app first (it may still be joining, or moved by hand),
+                        # so the editor can never land in the session's own window.
+                        hub.show(beside, app_pane, width)
+                        below = hub.pane_of(beside) or ''
+                except Exception:
+                    below = ''
             if editor is not None and drafts is not None:
                 try:
-                    pane, start = self._open_editor(editor, drafts, msgid, target, quote, saved)
+                    pane, start = self._open_editor(
+                        editor, drafts, msgid, target, quote, saved, below
+                    )
                 except Exception as exc:  # tmux trouble: the in-app pane still works
                     note = f'Editor unavailable ({exc}); drafting in the app'
                     self.call_from_thread(self._set_notice, note)
@@ -1070,6 +1156,7 @@ class MaintainerApp(App[None]):
         target: Any,
         quote: Optional[str],
         saved: Optional[SavedDraft],
+        below: str = '',
     ) -> tuple[str, str]:
         """(pane, starting quote): focus a live pane on the draft file, else open one."""
         start = saved.quote if saved else (quote or reply_quote(target.lmsg))
@@ -1079,7 +1166,7 @@ class MaintainerApp(App[None]):
         if saved is not None and saved.pane and editor.runs(saved.pane, path):
             editor.focus(saved.pane)  # Still editing, perhaps from a crashed session.
             return saved.pane, start
-        pane = editor.open(path, pathlib.Path(target.checkout))
+        pane = editor.open(path, pathlib.Path(target.checkout), below)
         drafts.set_pane(msgid, pane)
         return pane, start
 
@@ -1119,12 +1206,18 @@ class MaintainerApp(App[None]):
             return
         self._draft = None
         self.refresh_bindings()
+        if self._aside is not None:  # The session set aside for the draft comes back.
+            sid, self._aside = self._aside, None
+            self._place_pane(sid)
         saved = self._drafts.get(draft.msgid)
         self._drafts.set_pane(draft.msgid, '')
         self._drafts_changed = True
         if saved is None or saved.text == draft.quote:
             self._drafts.delete(draft.msgid)
             self._set_notice('Draft dropped: nothing written')
+            return
+        if draft.closing:  # Saved on closing the thread: no prompt.
+            self._set_notice(f'Draft saved: {draft.item.series.subject}')
             return
         self._set_notice('Draft kept; r reopens it')
         preview_and_send(
@@ -1135,7 +1228,75 @@ class MaintainerApp(App[None]):
             patatt_sign=draft.target.patatt_sign,
             on_sent=lambda _msg: self._draft_sent(draft),
             on_edit=lambda _text: self._begin_reply(draft.item, draft.msgid, None),
+            on_save=lambda _text: self._set_notice('Draft saved; r resumes it'),
+            on_abandon=lambda: self._draft_abandoned(draft),
         )
+
+    def _save_editor_draft(self, draft: Draft) -> None:
+        """Closing the thread saves a draft written in vim (and closes its pane); other
+        editors stay open."""
+        editor = self._editor
+        draft.closing = True
+
+        def work() -> None:
+            try:
+                saving = editor is not None and editor.save_and_close(draft.pane)
+            except Exception:
+                saving = False
+            self.call_from_thread(self._editor_saving, draft, saving)
+
+        self.run_worker(work, thread=True, group='editor')
+
+    def _editor_saving(self, draft: Draft, saving: bool) -> None:
+        if not saving:
+            draft.closing = False
+            self._set_notice('Draft still open in your editor')
+
+    def _open_draft(self, msgid: str) -> None:
+        """Enter on a draft in the drawer: resume it (its editor, if still open)."""
+        draft = self._draft
+        if draft is not None and draft.msgid == msgid:
+            if draft.pane:
+                self.action_focus_editor()
+            return
+        if self._reading is not None:
+            self._saved_draft = None
+            self._begin_reply(self._reading, msgid, None)
+            return
+        item = self._item
+        if item is None:
+            return
+        self._resume_on_open = msgid
+        self._open_reader()
+
+    def _discard_draft(self, msgid: str) -> None:
+        """x on a draft in the drawer: delete it after confirmation."""
+        draft, drafts = self._draft, self._drafts
+        if draft is not None and draft.msgid == msgid:
+            self._confirm_discard(then=None)
+            return
+        if drafts is None:
+            return
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                drafts.delete(msgid)
+                self._drafts_changed = True
+                if self._saved_draft is not None and self._saved_draft[1] == msgid:
+                    self._saved_draft = None
+                self._set_notice('Draft discarded')
+                self._render_session_rows()
+
+        self.push_screen(Confirm('Discard this saved draft? [y|N]'), answered)
+
+    def _draft_abandoned(self, draft: Draft) -> None:
+        """t in b4's preview: the draft is discarded for good."""
+        if self._drafts is not None:
+            self._drafts.delete(draft.msgid)
+            self._drafts_changed = True
+        self._set_notice('Draft abandoned')
+        if self._reading is not None:
+            self._refresh_tree_labels()
 
     def action_focus_editor(self) -> None:
         draft, editor = self._draft, self._editor
@@ -1221,7 +1382,27 @@ class MaintainerApp(App[None]):
         self.run_worker(work, thread=True, group='action')
 
     def action_discard_draft(self) -> None:
+        if self._draft is None and self._saved_draft is not None:
+            self._discard_saved_draft()
+            return
         self._confirm_discard(then=None)
+
+    def _discard_saved_draft(self) -> None:
+        """ctrl+g on a thread with a saved draft (not open): delete it after confirmation."""
+        saved, drafts = self._saved_draft, self._drafts
+        if saved is None or drafts is None:
+            return
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed and self._saved_draft == saved:
+                drafts.delete(saved[1])
+                self._saved_draft = None
+                self._drafts_changed = True
+                self._set_notice('Draft discarded')
+                self._refresh_tree_labels()
+                self._sync_bindings()
+
+        self.push_screen(Confirm('Discard the saved draft? [y|N]'), answered)
 
     def _confirm_discard(self, then: Optional[Callable[[], None]]) -> None:
         def answered(confirmed: Optional[bool]) -> None:
@@ -1502,6 +1683,7 @@ class MaintainerApp(App[None]):
 
     def _close_reader(self) -> None:
         self.workers.cancel_group(self, 'thread')
+        self._saved_draft = None
         self._reading, self._thread, self._post_key = None, None, ''
         self._node, self._rows, self._expanded = 0, [], set()
         self._collapsed = set()
@@ -1512,6 +1694,7 @@ class MaintainerApp(App[None]):
         if self.index is not None:
             self._update_status()
         self.refresh_bindings()
+        self._place_pane()
         if self._seen_now or self._drafts_changed:
             self._seen_now, self._drafts_changed = set(), False
             self.run_worker(self._load, thread=True, name='load', exclusive=True)
@@ -1550,6 +1733,12 @@ class MaintainerApp(App[None]):
         # However the app ends, an open draft is kept and its editor pane closed.
         self._save_draft()
         self._close_editor()
+        # A session beside the app goes back to its own window and keeps running.
+        if self._sessions is not None and self._app_pane and self._beside is not None:
+            try:
+                self._sessions.hide(self._app_pane)
+            except Exception:
+                pass
 
     def _close_editor(self) -> None:
         """Close an open editor pane, keeping what it wrote (an untouched quote is no draft)."""
@@ -1582,6 +1771,7 @@ class MaintainerApp(App[None]):
                 self._focus_main()
         else:
             self.screen.add_class('-drawer-open')
+            self._render_session_rows()  # The selected thread's drafts may have changed.
             # Opening is the maintainer's move: start at the most urgent entry.
             for rows in (self._drawer_sessions, self._drawer_worktrees):
                 if rows.option_count:
@@ -1626,16 +1816,68 @@ class MaintainerApp(App[None]):
             self._drawer = line
             self.query_one('#drawer', Static).update(line)
         self.query_one('#drawer-tabs', Static).update(tabs_line(overview, self._drawer_tab))
+        if self._beside is not None and not any(
+            v.record.id == self._beside and v.state in LIVE_STATES for v in overview.sessions
+        ):
+            self._beside = None  # Its pane went away with it; nothing to move.
         states = {v.record.id: v.state for v in overview.sessions}
-        sessions = session_rows(overview.sessions)
         worktrees = [(w.path, worktree_row(w, states)) for w in overview.worktrees]
-        if sessions != self._session_rows:
-            self._session_rows = sessions
-            _replace_rows(self._drawer_sessions, sessions, 'No agent sessions.')
+        self._render_session_rows()
         if worktrees != self._worktree_rows:
             self._worktree_rows = worktrees
             _replace_rows(self._drawer_worktrees, worktrees, 'No session worktrees.')
         self._sync_bindings()
+
+    def _render_session_rows(self) -> None:
+        """The Sessions list: the selected thread's drafts first, then its sessions."""
+        reading = self._reading.identity if self._reading is not None else None
+        rows = self._draft_rows() + session_rows(
+            self._overview.sessions, reading=reading, beside=self._beside
+        )
+        if rows != self._session_rows:
+            self._session_rows = rows
+            _replace_rows(self._drawer_sessions, rows, 'No agent sessions or drafts.')
+        self._sync_bindings()
+
+    def _draft_rows(self) -> list[tuple[str, str]]:
+        """Saved drafts of the open thread (or, in the list, the highlighted series)."""
+        drafts, item = self._drafts, self._reading or self._item
+        if drafts is None or item is None:
+            return []
+        saved = drafts.msgids()
+        messages: dict[str, tuple[str, str]] = {}
+        if self._reading is not None and self._thread is not None:
+            for key in post_keys(self._thread):
+                post = find_post(self._thread, key)
+                replies = thread_replies(self._thread, key)
+                for message in [post.message] if post else []:
+                    messages[message.msgid] = (message.author_name, message.subject)
+                for reply in replies:
+                    messages[reply.message.msgid] = (
+                        reply.message.author_name,
+                        reply.message.subject,
+                    )
+        else:
+            series = item.series
+            for msgid in series.msgids:
+                messages[msgid] = (series.author_name, series.subject)
+        rows = []
+        for msgid, (name, subject) in messages.items():
+            if msgid not in saved:
+                continue
+            text = f'✎ draft · reply to {name}: {subject}'
+            if self._draft is not None and self._draft.msgid == msgid and self._draft.pane:
+                text += ' · in your editor'
+            rows.append((f'draft:{msgid}', text))
+        return rows
+
+    def selected_draft(self) -> Optional[str]:
+        """The draft highlighted in the drawer, for its keys and tests."""
+        if self.focused is not self._drawer_sessions:
+            return None
+        option = self._drawer_sessions.highlighted_option
+        key = option.id if option is not None else None
+        return key.removeprefix('draft:') if key and key.startswith('draft:') else None
 
     def drawer_rows(self) -> list[str]:
         """Rows of the drawer tab shown, for tests."""
@@ -1737,16 +1979,78 @@ class MaintainerApp(App[None]):
             record = hub.launch(
                 result.target, result.profile, result.choice, situation, result.items
             )
+            self.call_from_thread(self._after_launch, record)
             return f'Launched session {record.id}: {label}'
 
         self._session_call(launch)
 
+    # The column beside the app: changed only by the maintainer's moves, never by polling.
+
+    def _place_pane(self, sid: Optional[str] = None, focus: bool = False) -> None:
+        """Put *sid* (or the session that belongs there) beside the app."""
+        hub, pane = self._sessions, self._app_pane
+        if hub is None or not pane:
+            return
+        reading = self._reading.identity if self._reading is not None else None
+        target = sid or pane_for(self._overview.sessions, reading, self._workspace_beside)
+        if target == self._beside and not focus:
+            return
+        width = self.snapshot.workspace.pane_width if self.snapshot else 90
+        self._beside = target
+        # A drafts editor already beside the app: the session goes above it, one column.
+        above = self._draft.pane if self._draft is not None else ''
+
+        def work() -> None:
+            try:
+                if target is None:
+                    hub.hide(pane)
+                else:
+                    hub.show(target, pane, width, focus, above)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Session pane: {exc}')
+            self.call_from_thread(self._pane_placed)
+
+        self.run_worker(work, thread=True, group='session-pane')
+
+    def _pane_placed(self) -> None:
+        self._show_overview(self._overview)  # Re-mark the drawer.
+        self._sync_bindings()
+
+    def action_focus_session(self) -> None:
+        """F12: into the session beside the app (zoomed on narrow terminals)."""
+        hub, sid = self._sessions, self._beside
+        if hub is None or sid is None:
+            return
+        zoom = self._mode == 'narrow'
+        self.run_worker(lambda: hub.focus(sid, zoom), thread=True, group='session-pane')
+
+    def _after_launch(self, record: SessionRecord) -> None:
+        """A session launched while reading its series joins beside the thread."""
+        if self._reading is not None and record.series == self._reading.identity:
+            self._place_pane(record.id)
+
     def action_open_session(self) -> None:
-        view, hub = self._selected_view(), self._sessions
+        """Enter in the drawer: the session beside the app (with its series in the reader),
+        focused; outside tmux, its window."""
+        if (msgid := self.selected_draft()) is not None:
+            self._open_draft(msgid)
+            return
+        view, hub, snapshot = self._selected_view(), self._sessions, self.snapshot
         if view is None or hub is None:
             return
-        sid = view.record.id
-        self._session_call(lambda: hub.open(sid))
+        record, sid = view.record, view.record.id
+        item = snapshot.item_by_identity(record.series) if snapshot and record.series else None
+        if not self._app_pane or (record.scope == 'series' and item is None):
+            self._session_call(lambda: hub.open(sid))
+            return
+        if record.scope == 'workspace' or not record.series:
+            self._workspace_beside = sid
+        elif self._reading is None or self._reading.identity != record.series:
+            assert item is not None
+            self._series_list.select_identity(item.identity)
+            self._item = item
+            self._open_reader(pane=False)
+        self._place_pane(sid, focus=True)
 
     def action_stop_session(self) -> None:
         view, hub = self._selected_view(), self._sessions
@@ -1761,6 +2065,9 @@ class MaintainerApp(App[None]):
         self.push_screen(Confirm(f'Stop session {sid} ({label})? [y|N]'), answered)
 
     def action_end_session(self) -> None:
+        if (msgid := self.selected_draft()) is not None:
+            self._discard_draft(msgid)
+            return
         view, hub = self._selected_view(), self._sessions
         if view is None or hub is None:
             return

@@ -372,3 +372,22 @@ def test_the_series_mbox_is_offered_only_when_its_mail_exists(demo_root, tmp_pat
     assert [i.id for i in series_context(item)] == ['mbox']
     gone = dataclasses.replace(item.series, source=str(tmp_path / 'missing'))
     assert series_context(dataclasses.replace(item, series=gone)) == ()
+
+
+async def test_pis_model_list_is_read_in_the_background_at_startup(demo_root, store, runner):
+    import threading
+
+    calls = []
+
+    def slow_catalog():
+        calls.append(threading.current_thread() is threading.main_thread())
+        return LISTING
+
+    hub = SessionHub(store, runner, FakeWorktrees(), catalog=slow_catalog)
+    app = MaintainerApp(FixtureSource(demo_root).load, sessions=hub)
+    async with app.run_test(size=(180, 50)) as pilot:
+        await settle(pilot)
+        assert calls == [False]  # Read once, off the UI thread, before any F1.
+        await open_dialog(pilot)
+        assert calls == [False]  # F1 used it.
+    assert runner.launches == []

@@ -9,7 +9,7 @@
  *   go only to the session's output directory and worktree. A failed check blocks.
  * - Registers the scripted dry-run model (`b4m/dry-run`): no model or provider is called.
  *
- * - Adds `/back`: return to b4-maintainer's tmux window, leaving the session running.
+ * - Adds `/back` and F12: return to b4-maintainer's pane, leaving the session running.
  *
  * The session is described by B4M_* environment variables (see sessions/pi.py); without
  * them the extension only registers the dry-run model.
@@ -270,17 +270,30 @@ export default function (pi: ExtensionAPI) {
 
 	if (!SESSION) return; // Not a b4-maintainer session: nothing to report or enforce.
 
-	const appWindow = env.B4M_APP_WINDOW ?? "";
-	if (appWindow) {
-		pi.registerCommand("back", {
-			description: "Back to b4-maintainer; this session keeps running",
-			handler: async (_args: string, ctx: any) => {
-				const run = spawnSync("tmux", ["select-window", "-t", appWindow], { encoding: "utf8" });
-				spawnSync("tmux", ["switch-client", "-t", appWindow], { encoding: "utf8" });
-				if (run.status !== 0) ctx?.ui?.notify?.(`tmux: ${run.stderr || run.error?.message}`, "warning");
-			},
-		});
-	}
+	// Back to b4-maintainer, leaving this session running: the app announces its pane as a
+	// tmux option at startup (read now, so it survives app restarts); the window given at
+	// launch is the fallback.
+	const backToApp = (ctx: any) => {
+		const tmux = (...args: string[]) => spawnSync("tmux", args, { encoding: "utf8" });
+		const pane = (tmux("display-message", "-p", "#{@b4m_app_pane}").stdout ?? "").trim();
+		const target = pane || (env.B4M_APP_WINDOW ?? "");
+		if (!target) {
+			ctx?.ui?.notify?.("b4-maintainer: no app window known", "warning");
+			return;
+		}
+		const run = tmux("select-window", "-t", target);
+		tmux("switch-client", "-t", target);
+		if (pane) tmux("select-pane", "-t", pane);
+		if (run.status !== 0) ctx?.ui?.notify?.(`tmux: ${run.stderr || run.error?.message}`, "warning");
+	};
+	pi.registerCommand("back", {
+		description: "Back to b4-maintainer; this session keeps running",
+		handler: async (_args: string, ctx: any) => backToApp(ctx),
+	});
+	pi.registerShortcut("f12" as any, {
+		description: "Back to b4-maintainer (F12 there returns here)",
+		handler: async (ctx: any) => backToApp(ctx),
+	});
 
 	if (SANDBOXED) {
 		// pi's bash, with each command run by `b4-maintainer sandbox`: the command travels in

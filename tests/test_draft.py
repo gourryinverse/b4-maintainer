@@ -233,8 +233,13 @@ async def test_closing_the_reader_keeps_the_draft_and_reopening_restores_it(demo
 
         await pilot.press('enter')
         await settle(pilot)
-        assert app.reader_panes() == ('tree', 'content', 'draft')
+        # Back at the message it answers; the draft waits for r (or ctrl+g).
+        assert app.reader_panes() == ('tree', 'content')
         assert app.tree_position() == position
+        assert 'r resumes' in app.status_text() and 'ctrl+g discards' in app.status_text()
+        await pilot.press('r')
+        await settle(pilot)
+        assert app.reader_panes() == ('tree', 'content', 'draft')
         assert 'Keep me.' in app.query_one('#draft').text
 
 
@@ -248,6 +253,8 @@ async def test_a_new_session_restores_saved_drafts(demo_root, tmp_path):
     again, _, _ = make_saved(demo_root, tmp_path)
     async with again.run_test(size=(180, 40)) as pilot:
         await reading(pilot)
+        await pilot.press('r')
+        await settle(pilot)
         assert 'Across restarts.' in again.query_one('#draft').text
 
 

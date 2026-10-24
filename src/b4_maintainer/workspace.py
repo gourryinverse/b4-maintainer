@@ -99,6 +99,7 @@ class Workspace:
     # workspace's own configuration.
     pi: str = 'pi'
     pi_args: tuple[str, ...] = ()
+    pane_width: int = 90  # Columns of the session pane beside the app ([sessions]).
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -146,6 +147,7 @@ class Workspace:
             models=tuple(m for m in config.get('models', []) if isinstance(m, dict)),
             pi=str(config.get('sessions', {}).get('pi', 'pi')),
             pi_args=tuple(str(a) for a in config.get('sessions', {}).get('pi_args', [])),
+            pane_width=int(config.get('sessions', {}).get('pane_width', 90)),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

@@ -99,6 +99,12 @@ class FakeSessionRunner:
         self.windows = set()
         self.fail = None  # Message for launch to fail with.
         self.blocker_reason = None
+        self.beside = None  # The session joined beside the app.
+        self.joins = []  # (session id, width)
+        self.above = []  # The pane each join went above ('' beside the app).
+        self.releases = 0
+        self.focused = None  # 'app' or a session id.
+        self.zoomed = False
 
     def add(self, record, alive=True):
         """A session as if launched earlier (not counted as a launch)."""
@@ -131,6 +137,8 @@ class FakeSessionRunner:
     def stop(self, record):
         self.stops.append(record.id)
         self.windows.discard(record.id)
+        if self.beside == record.id:
+            self.beside = None
 
     def resume(self, record):
         self.resumes.append(record.id)
@@ -139,6 +147,33 @@ class FakeSessionRunner:
     def end(self, record):
         self.ends.append(record.id)
         self.windows.discard(record.id)
+        if self.beside == record.id:
+            self.beside = None
+
+    def joined(self, app_pane):
+        return self.beside
+
+    def join(self, record, app_pane, width=90, above=''):
+        self.joins.append((record.id, width))
+        self.above.append(above)
+        self.beside = record.id
+
+    def release(self, app_pane):
+        if self.beside is not None:
+            self.releases += 1
+            self.beside = None
+
+    def focus(self, record, zoom=False):
+        self.focused, self.zoomed = record.id, zoom
+
+    def focus_app(self, app_pane):
+        self.focused, self.zoomed = 'app', False
+
+    def announce(self, app_pane):
+        self.announced = app_pane
+
+    def pane_of(self, record):
+        return f'%{record.id}' if record.id in self.windows else None
 
 
 class FakeWorktrees:
