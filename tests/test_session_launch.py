@@ -285,3 +285,32 @@ def test_a_launch_writes_its_package(store, profile):
     context = store.directory(record.id) / 'work' / 'context'
     assert (context / 'sashiko.md').read_text() == '# Sashiko review\n'
     assert record.context == ('sashiko',)
+
+
+def test_worktree_mode_suggests_the_profiles_worktree_skills(profile):
+    import dataclasses
+
+    skills = (*SKILLS, Skill('b4m-branches', 'Structure session work.', None))
+    tree_profile = dataclasses.replace(profile, worktree_skills=('b4m-branches',))
+    light = plan(tree_profile, choice(), situation(skills=skills), ITEMS)
+    assert 'b4m-branches' not in light.skills
+    tree = plan(
+        tree_profile, choice(mode='worktree'), situation(skills=skills, worktree_reason=''), ITEMS
+    )
+    assert 'b4m-branches' in tree.skills
+    off = choice(mode='worktree', skills_off=frozenset({'b4m-branches'}))
+    assert (
+        'b4m-branches'
+        not in plan(tree_profile, off, situation(skills=skills, worktree_reason=''), ITEMS).skills
+    )
+
+
+def test_the_built_in_series_profile_gives_worktree_sessions_the_branches_skill():
+    from b4_maintainer.sessions.profiles import BUILTIN_DIR, parse_profile
+    from b4_maintainer.sessions.skills import BUILTIN_DIR as SKILLS_DIR
+    from b4_maintainer.sessions.skills import load_skills
+
+    series = parse_profile((BUILTIN_DIR / 'series.toml').read_text())
+    assert series.worktree_skills == ('b4m-branches',)
+    installed, problems = load_skills(SKILLS_DIR, None)
+    assert problems == [] and 'b4m-branches' in {s.id for s in installed}

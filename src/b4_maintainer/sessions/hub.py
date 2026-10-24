@@ -106,8 +106,9 @@ class Worktrees(Protocol):
         """Suggested bases for the project's series (b4's)."""
         ...
 
-    def inspect(self, path: str, applied: str) -> TreeState:
-        """What removing the tree would lose, looked at now."""
+    def inspect(self, path: str, tree: Optional[Worktree]) -> TreeState:
+        """What removing the tree would lose, looked at now (*tree*: its session's record
+        of it; None for an orphan)."""
         ...
 
     def remove(self, path: str) -> None: ...
@@ -189,7 +190,7 @@ class RecordWorktrees:
             if wt is None or not os.path.isdir(wt.path):
                 continue
             named.add(os.path.realpath(wt.path))
-            size, state = self._measure(wt.path, wt.applied)
+            size, state = self._measure(wt.path, wt.applied, wt)
             infos.append(WorktreeInfo(wt.path, wt.branch, record.id, size, state))
         if self.directory is not None and self.directory.is_dir():
             for entry in sorted(self.directory.iterdir()):
@@ -199,12 +200,14 @@ class RecordWorktrees:
                 infos.append(WorktreeInfo(str(entry), _branch(entry), '', size, state))
         return infos
 
-    def _measure(self, path: str, applied: str) -> tuple[int, TreeState]:
+    def _measure(
+        self, path: str, applied: str, tree: Optional[Worktree] = None
+    ) -> tuple[int, TreeState]:
         now = time.monotonic()
         cached = self._sizes.get(path)
         if cached is None or now - cached[0] > self.ttl:
-            tree = pathlib.Path(path)
-            cached = (now, disk_usage(tree), inspect_tree(tree, applied))
+            where = pathlib.Path(path)
+            cached = (now, disk_usage(where), inspect_tree(where, applied, tree))
             self._sizes[path] = cached
         return cached[1], cached[2]
 
@@ -214,8 +217,8 @@ class RecordWorktrees:
         checkout = self.checkouts.get(project)
         return base_suggestions(pathlib.Path(checkout)) if checkout else []
 
-    def inspect(self, path: str, applied: str) -> TreeState:
-        return inspect_tree(pathlib.Path(path), applied)
+    def inspect(self, path: str, tree: Optional[Worktree]) -> TreeState:
+        return inspect_tree(pathlib.Path(path), tree.applied if tree else '', tree)
 
     def remove(self, path: str) -> None:
         if self.directory is None:
@@ -469,7 +472,7 @@ class SessionHub:
         """What removing each tree would lose (uncommitted files, commits only there)."""
         owners = self._tree_owners(paths)
         return {
-            path: self.worktrees.inspect(path, r.worktree.applied if r and r.worktree else '')
+            path: self.worktrees.inspect(path, r.worktree if r else None)
             for path, r in owners.items()
         }
 

@@ -164,9 +164,11 @@ async def test_choices_select_default_skills_under_advanced(demo_root, store, ru
         assert dialog.ticked('skills') == []
         await act(pilot, dialog.pick, 'goal', 'review')
         await act(pilot, dialog.pick, 'apparatus', 'vng')
+        # vng needs a tree: worktree mode, which also suggests the branches skill.
+        assert dialog.ticked('skills') == ['b4m-branches', 'vng']
+        assert 'Skills:   b4m-branches, vng' in dialog.summary_text()
+        await act(pilot, dialog.pick, 'mode', 'lightweight')  # No sandbox in this test.
         assert dialog.ticked('skills') == ['vng']
-        assert 'Skills:   vng' in dialog.summary_text()
-        await act(pilot, dialog.pick, 'mode', 'lightweight')  # Worktrees are not built yet.
         await pilot.press('ctrl+s')
         await settle(pilot)
         [(sid, _request)] = runner.launches
@@ -181,11 +183,10 @@ async def test_skills_the_maintainer_unticks_stay_off(demo_root, store, runner):
         await act(pilot, dialog.pick, 'apparatus', 'vng')
         await act(pilot, dialog.pick, 'skills', 'vng')  # Untick.
         await act(pilot, dialog.pick, 'artifacts', 'selftest')
-        assert dialog.ticked('skills') == []
-        assert 'Skills:' not in dialog.summary_text()
+        assert dialog.ticked('skills') == ['b4m-branches']  # vng stays off.
         await act(pilot, dialog.pick, 'skills', 'vng')  # Tick again: back to the default.
         await act(pilot, dialog.pick, 'apparatus', 'vng')  # Untick the apparatus.
-        assert dialog.ticked('skills') == []
+        assert dialog.ticked('skills') == ['b4m-branches']  # Selftests still need a tree.
 
 
 async def test_worktree_sessions_are_refused_without_a_sandbox(demo_root, store, runner):
@@ -361,7 +362,7 @@ async def test_keys_pick_choices_within_a_section(demo_root, store, runner):
         assert dialog.ticked('goal') == ['review']
         assert dialog.ticked('artifacts') == ['quality']
         assert dialog.ticked('apparatus') == ['vng']
-        assert dialog.ticked('skills') == ['vng']
+        assert dialog.ticked('skills') == ['b4m-branches', 'vng']
 
 
 def add_presets(demo_root, presets):

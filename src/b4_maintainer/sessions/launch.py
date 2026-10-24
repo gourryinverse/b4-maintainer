@@ -114,7 +114,7 @@ def plan(
     blockers.extend(limit_blockers)
     warnings.extend(limit_warnings)
     installed = {s.id for s in situation.skills}
-    wanted = [s for s in chosen_skills(profile, choice) if s not in choice.skills_off]
+    wanted = [s for s in chosen_skills(profile, choice, mode) if s not in choice.skills_off]
     warnings.extend(f'skill {s!r} is not installed' for s in wanted if s not in installed)
     return Plan(
         request,
@@ -130,9 +130,9 @@ def plan(
     )
 
 
-def chosen_skills(profile: Profile, choice: LaunchChoice) -> tuple[str, ...]:
+def chosen_skills(profile: Profile, choice: LaunchChoice, mode: str = '') -> tuple[str, ...]:
     """Suggested skills plus the maintainer's additions, before removals."""
-    suggested = suggested_skills(profile, choice.choices)
+    suggested = suggested_skills(profile, choice.choices, mode)
     return tuple(dict.fromkeys([*suggested, *sorted(choice.skills_on)]))
 
 

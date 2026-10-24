@@ -157,6 +157,7 @@ def test_worktree_sessions_are_told_they_edit_build_and_commit_in_their_tree(tmp
     system = (store.directory('s1') / 'system.md').read_text()
     assert 'read-only except the output directory and the worktree' in system
     assert 'Edit, build, and commit in the worktree /w/var/worktrees/s1' in system
+    assert 'on base b, its last patch a' in system  # The skill builds branches from these.
     assert 'agent identity' in system and 'Signed-off-by' in system
     lightweight = make_record('s2')
     prepare_session(store, lightweight, REQUEST, source='', sandboxed=True)

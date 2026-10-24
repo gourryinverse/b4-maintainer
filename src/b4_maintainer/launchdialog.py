@@ -433,7 +433,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
     def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
         group = self._keys.get(id(event.selection_list), ('', ''))[0]
         if group == 'skills' and self.profile is not None:
-            suggested = set(suggested_skills(self.profile, self._choice(None).choices))
+            mode = self.plan.mode if self.plan is not None else ''
+            suggested = set(suggested_skills(self.profile, self._choice(None).choices, mode))
             now = set(self.ticked('skills'))
             on, off = self._skills_on, self._skills_off
             for key in now - self._skills_shown:  # Ticked by the maintainer.

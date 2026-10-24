@@ -59,6 +59,7 @@ class Profile:
     fields: tuple[Field, ...]
     hash: str
     skills: tuple[str, ...] = ()  # Skills suggested for every session of this profile.
+    worktree_skills: tuple[str, ...] = ()  # And for its worktree sessions.
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,7 @@ def parse_profile(text: str) -> Profile:
         fields,
         hashlib.sha256(text.encode()).hexdigest(),
         _strings(data, 'skills', pid),
+        _strings(data, 'worktree_skills', pid),
     )
 
 
@@ -183,12 +185,17 @@ def _picked(field: Field, value: Any) -> list[str]:
     return [value] if isinstance(value, str) else list(value or [])
 
 
-def suggested_skills(profile: Profile, choices: Mapping[str, Any]) -> tuple[str, ...]:
-    """The profile's skills, then those of each picked choice, in field order, once each.
+def suggested_skills(
+    profile: Profile, choices: Mapping[str, Any], mode: str = ''
+) -> tuple[str, ...]:
+    """The profile's skills (and its worktree skills in worktree *mode*), then those of
+    each picked choice, in field order, once each.
 
     Unknown choices are ignored here: the dialog shows suggestions while it is incomplete.
     """
     skills = list(profile.skills)
+    if mode == 'worktree':
+        skills.extend(profile.worktree_skills)
     for field in profile.fields:
         by_id = {c.id: c for c in field.choices}
         for cid in _picked(field, choices.get(field.id)):
@@ -248,5 +255,5 @@ def compose(
         tuple(files),
         mode or suggested,
         notes,
-        suggested_skills(profile, choices),
+        suggested_skills(profile, choices, mode or suggested),
     )

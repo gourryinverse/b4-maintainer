@@ -122,9 +122,9 @@ SANDBOXED_TEXT = (
     'output directory'
 )
 TREE_TEXT = (
-    'Edit, build, and commit in the worktree {path} (branch {branch}, the series applied '
-    'on {base}). Commits there carry the agent identity; never add Signed-off-by or '
-    'review trailers'
+    'Edit, build, and commit in the worktree {path} (branch {branch}: the series applied '
+    'on base {base}, its last patch {applied}). Commits there carry the agent identity; '
+    'never add Signed-off-by or review trailers'
 )
 
 
@@ -152,7 +152,10 @@ def system_prompt(
         facts.append(f'{SANDBOXED_TEXT}{" and the worktree" if writable else ""}.')
     if tree is not None and writable:
         facts.append(
-            TREE_TEXT.format(path=tree.path, branch=tree.branch, base=tree.base[:12]) + '.'
+            TREE_TEXT.format(
+                path=tree.path, branch=tree.branch, base=tree.base[:12], applied=tree.applied[:12]
+            )
+            + '.'
         )
     elif tree is not None:
         facts.append(f'Worktree with the series applied: {tree.path}.')

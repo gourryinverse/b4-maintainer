@@ -197,7 +197,7 @@ class FakeWorktrees:
     def bases(self, project):
         return ['HEAD', 'mm/mm-unstable'] if project else []
 
-    def inspect(self, path, applied):
+    def inspect(self, path, tree):
         from b4_maintainer.sessions.trees import TreeState
 
         return self.states.get(path, TreeState())

@@ -7,7 +7,7 @@ import pytest
 from gitutil import git
 
 from b4_maintainer.adapters.sessiontree import PrepareError, base_suggestions, prepare_tree
-from b4_maintainer.sessions.trees import inspect_tree, remove_tree
+from b4_maintainer.sessions.trees import classify_tree, inspect_tree, remove_tree
 
 AGENT = ('b4-maintainer agent (dry-run)', 'agent@b4-maintainer.invalid')
 CHANGE_ID = '20261020-mm-foo-0123456789ab'
@@ -246,3 +246,62 @@ def test_base_suggestions_come_from_b4(upstream):
     project, _base, _mbox = upstream
     git('config', 'b4.review-apply-base', 'master', cwd=project)
     assert base_suggestions(project)[:2] == ['HEAD', 'master']
+
+
+def agent_work(dest, tree):
+    """What an agent following the b4m-branches skill leaves in its tree."""
+    git('switch', '-q', '-c', 'b4m/pull-ahead/readme', tree.base, cwd=dest)
+    write(dest, 'README', 'demo, fixed\n')
+    git('commit', '-q', '-m', 'demo: fix the README', cwd=dest)
+    git('switch', '-q', '-c', 'b4m/fixup/three', tree.applied, cwd=dest)
+    write(dest, 'mm/foo.c', (dest / 'mm/foo.c').read_text().replace('three\n', 'three!\n'))
+    git('commit', '-q', '-m', 'mm/foo: fixup for line three', cwd=dest)
+    git('switch', '-q', '-c', 'b4m/tests/bar', tree.applied, cwd=dest)
+    write(dest, 'mm/bar_test.c', 'test\n')
+    git('commit', '-q', '-m', 'mm/bar: add a test', cwd=dest)
+    git('switch', '-q', '-c', 'b4m/pull-ahead/wrong', tree.applied, cwd=dest)  # On the series.
+    write(dest, 'wrong.c', 'x\n')
+    git('commit', '-q', '-m', 'demo: misplaced pull-ahead', cwd=dest)
+    git('switch', '-q', 'b4m/session/s1', cwd=dest)
+    write(dest, 'notes.c', 'n\n')
+    git('commit', '-q', '-m', 'demo: on the session branch', cwd=dest)
+
+
+def test_tree_commits_are_classed_by_the_skills_branch_names(upstream, tmp_path):
+    project, base, mbox = upstream
+    dest = tmp_path / 'wt'
+    tree = prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT)
+    agent_work(dest, tree)
+    found = classify_tree(dest, tree)
+    assert [c.subject for c in found.series] == ['mm/foo: name line three', 'mm/bar: add bar']
+    by_name = {b.name: b for b in found.branches}
+    assert set(by_name) == {
+        BRANCH,
+        'b4m/pull-ahead/readme',
+        'b4m/pull-ahead/wrong',
+        'b4m/fixup/three',
+        'b4m/tests/bar',
+    }
+    readme = by_name['b4m/pull-ahead/readme']
+    assert readme.kind == 'pull-ahead' and readme.problem == ''
+    assert [c.subject for c in readme.commits] == ['demo: fix the README']
+    assert readme.commits[0].author.startswith('b4-maintainer agent')
+    assert by_name['b4m/fixup/three'].kind == 'fixup' and by_name['b4m/fixup/three'].problem == ''
+    assert [c.subject for c in by_name['b4m/tests/bar'].commits] == ['mm/bar: add a test']
+    wrong = by_name['b4m/pull-ahead/wrong']
+    assert 'series' in wrong.problem  # Pull-aheads start from the base, not the series.
+    assert [c.subject for c in wrong.commits] == ['demo: misplaced pull-ahead']
+    session = by_name[BRANCH]
+    assert session.kind == 'other' and [c.subject for c in session.commits] == [
+        'demo: on the session branch'
+    ]
+
+
+def test_a_trees_losses_are_described_by_kind(upstream, tmp_path):
+    project, base, mbox = upstream
+    dest = tmp_path / 'wt'
+    tree = prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT)
+    assert inspect_tree(dest, tree.applied, tree).describe() == 'clean'
+    agent_work(dest, tree)
+    state = inspect_tree(dest, tree.applied, tree)
+    assert state.describe() == '2 pull-aheads, 1 fixup, 1 test, 1 other commit only here'
