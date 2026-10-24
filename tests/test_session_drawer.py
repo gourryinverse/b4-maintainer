@@ -98,7 +98,7 @@ async def test_events_update_the_line_without_moving_focus_or_selection(demo_roo
         series_list = app.query_one(SeriesList)
         await pilot.press('down', 'down')
         selected, before = series_list.cursor, app.drawer_text()
-        runner.emit('a', 'Notification', notification_type='permission_prompt')
+        runner.emit('a', 'approval')
         await poll(pilot)
         assert 'needs approval' in app.drawer_text() != before
         assert app.focused is series_list and series_list.cursor == selected
@@ -155,8 +155,8 @@ async def test_events_keep_the_drawer_selection_on_its_session(demo_root, store,
         await settle(pilot)
         await pilot.press('down')
         assert app.selected_session() == 'b'
-        runner.emit('b', 'UserPromptSubmit')
-        runner.emit('a', 'Notification', notification_type='permission_prompt')
+        runner.emit('b', 'working')
+        runner.emit('a', 'approval')
         await poll(pilot)
         assert 'mm: first' in app.drawer_rows()[0]  # a is now the most urgent.
         assert app.selected_session() == 'b'
@@ -217,7 +217,7 @@ async def test_x_ends_after_confirmation_and_keeps_the_worktree(demo_root, store
 
 async def test_o_lists_the_sessions_artifacts(demo_root, store, runner):
     runner.add(make_record('a'))
-    out = store.directory('a') / 'out' / 'draft'
+    out = store.directory('a') / 'work' / 'out' / 'draft'
     out.mkdir(parents=True)
     (out / 'reply.txt').write_text('synthetic\n')
     app = make_app(demo_root, store, runner)
@@ -267,7 +267,7 @@ async def test_passive_actions_launch_no_agents(demo_root, store, runner):
     app = MaintainerApp(actions.load, actions=actions, sessions=hub)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        runner.emit('a', 'Notification', notification_type='permission_prompt')
+        runner.emit('a', 'approval')
         await pilot.press('f5')
         await settle(pilot)
         for v in [*app.index.views, app.index.views[0]]:
@@ -297,7 +297,7 @@ async def test_a_failed_drawer_update_is_reported_not_fatal(demo_root, store, ru
 
         real = app_module.drawer_line
         monkeypatch.setattr(app_module, 'drawer_line', broken)
-        runner.emit('a', 'Notification', notification_type='permission_prompt')
+        runner.emit('a', 'approval')
         await poll(pilot)
         assert app.is_running
         assert 'synthetic drawer failure' in app.status_text()
@@ -305,3 +305,16 @@ async def test_a_failed_drawer_update_is_reported_not_fatal(demo_root, store, ru
         await poll(pilot)  # Polling continues after a failure.
         assert 'needs approval' in app.drawer_text()
     assert app.return_code in (0, None)
+
+
+async def test_opening_the_drawer_selects_the_most_urgent_session(demo_root, store, runner):
+    runner.add(make_record('a', subject='mm: first'))
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        runner.add(make_record('b', subject='mm: second'))
+        runner.emit('b', 'approval')
+        await poll(pilot)
+        await pilot.press('grave_accent')
+        await settle(pilot)
+        assert app.selected_session() == 'b'

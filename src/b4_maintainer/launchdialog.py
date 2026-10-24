@@ -22,6 +22,7 @@ from textual.widgets import (
     Label,
     RadioButton,
     RadioSet,
+    Select,
     SelectionList,
     Static,
 )
@@ -29,8 +30,8 @@ from textual.widgets.collapsible import CollapsibleTitle
 from textual.widgets.selection_list import Selection
 
 from .drawer import session_label
-from .sessions.backends import BackendEntry
 from .sessions.launch import WORKSPACE, LaunchChoice, Plan, Situation, Target, plan
+from .sessions.models import THINKING, ModelChoice
 from .sessions.policy import ContextItem
 from .sessions.profiles import MODES, PERMISSIONS, Profile, suggested_skills
 
@@ -74,6 +75,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
     LaunchDialog SelectionList:focus { border: none; background: $boost; }
     LaunchDialog Collapsible { margin-top: 1; border: none; padding: 0; }
     LaunchDialog Input { border: none; height: 1; margin-left: 4; background: $boost; }
+    LaunchDialog Select { margin-left: 2; width: 60; }
     LaunchDialog Input:focus { border: none; background: $primary-background; }
     LaunchDialog #launch-summary { width: 1fr; height: auto; }
     LaunchDialog #buttons { height: 3; align: right middle; padding: 0 1; }
@@ -110,6 +112,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         self._lists: dict[str, SelectionList[str]] = {}
         self._keys: dict[int, tuple[str, str]] = {}
         self._inputs: dict[str, Input] = {}
+        self._selects: dict[str, Select[str]] = {}
         self._sections: dict[int, str] = {}  # Focusable widget -> section name.
         self._skills_shown: set[str] = set()
         self._labels: list[str] = []
@@ -150,6 +153,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         self._buttons = {k: v for k, v in self._buttons.items() if k[0] == 'scope'}
         self._lists.clear()
         self._inputs.clear()
+        self._selects.clear()
         self._skills_shown = set()
         self._labels = []  # The profile's labels only.
         profiles = self._of_scope(self.scope)
@@ -193,11 +197,10 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         modes = [(m, MODE_LABELS[m], False) for m in MODES]
         widgets += self._group('Mode', 'mode', modes, 0)
         self._mode_shown = 'lightweight'
-        entries = self.situation.entries
-        backends = [(e.id, _backend_label(e), not e.available) for e in entries]
-        default = next((n for n, e in enumerate(entries) if e.available), None)
-        widgets += self._group('Backend', 'backend', backends, default)
-        widgets.append(self._input('model', 'model', 'Model (empty: the backend default)'))
+        shown = [m for m in self.situation.models if m.kind != 'catalog']
+        models = [(m.id, _model_label(m), not m.available) for m in shown]
+        default = next((n for n, m in enumerate(shown) if m.available), None)
+        widgets += self._group('Model', 'model', models, default)
         permissions = [(p, PERMISSION_LABELS[p], False) for p in PERMISSIONS]
         widgets += self._group(
             'Permissions', 'permissions', permissions, PERMISSIONS.index(self.profile.permissions)
@@ -206,7 +209,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         return widgets
 
     def _advanced(self) -> Collapsible:
-        """Skills, ticked from the other choices; adjusting them is rarely needed."""
+        """Skills (ticked from the other choices), any model in pi's catalog, and thinking:
+        rarely needed, so collapsed."""
         skills = [
             (s.id, f'{s.id}: {_first_sentence(s.description)}', False)
             for s in self.situation.skills
@@ -216,7 +220,23 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             if skills
             else [Static('No skills installed.', markup=False)]
         )
+        catalog = [(m.label, m.id) for m in self.situation.models if m.kind == 'catalog']
+        children.append(self._label("Other model (pi's catalog; overrides Model)"))
+        children.append(self._select('other-model', catalog, 'Use Model above'))
+        children.append(self._label('Thinking'))
+        children.append(self._select('thinking', [(t, t) for t in THINKING], "The model's default"))
         return Collapsible(*children, title='Advanced', collapsed=True, id=self._new_id())
+
+    def _select(self, key: str, options: list[tuple[str, str]], prompt: str) -> Select[str]:
+        select: Select[str] = Select(options, prompt=prompt, compact=True, id=self._new_id())
+        self._selects[key] = select
+        self._sections[id(select)] = key
+        return select
+
+    def _selected_value(self, key: str) -> str:
+        select = self._selects.get(key)
+        value = select.value if select is not None else Select.NULL
+        return value if isinstance(value, str) else ''
 
     def _input(self, key: str, section: str, placeholder: str) -> Input:
         box = Input(placeholder=placeholder, id=self._new_id())
@@ -314,14 +334,13 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                     choices[field.id] = value
             elif value:
                 text[field.id] = value
-        model = self._inputs.get('model')
         return LaunchChoice(
             self.profile.id,
             choices,
             text,
             mode,
-            self.selected('backend') or '',
-            model.value.strip() if model is not None else '',
+            self._selected_value('other-model') or self.selected('model') or '',
+            self._selected_value('thinking'),
             self.selected('permissions') or '',
             frozenset(self._skills_on),
             frozenset(self._skills_off),
@@ -376,6 +395,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 (off.discard if key in suggested else on.add)(key)
             for key in self._skills_shown - now:  # Unticked by the maintainer.
                 (off.add if key in suggested else on.discard)(key)
+        self._update()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
         self._update()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -434,6 +456,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         """Press a radio button, or toggle a list entry, as a click would."""
         if group in self._lists:
             self._lists[group].toggle(key)
+        elif group in self._selects:
+            self._selects[group].value = key
         else:
             self._buttons[(group, key)].value = True
 
@@ -445,8 +469,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         if p is None:
             return ''
         lines = [
-            f'Session:  {session_label(self._target())} · {p.entry.id if p.entry else "?"} · '
-            f'{p.permissions} · {p.mode}',
+            f'Session:  {session_label(self._target())} · {p.permissions} · {p.mode}',
+            f'Model:    {_model_text(p.model, p.thinking)}',
             f'Receives: {", ".join(i.label for i in p.included) or "the task prompt only"}',
         ]
         if p.request is not None and p.request.files:
@@ -464,8 +488,15 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         return '\n'.join(lines)
 
 
-def _backend_label(entry: BackendEntry) -> str:
-    return f'{entry.id} — {entry.reason}' if not entry.available else entry.id
+def _model_label(model: ModelChoice) -> str:
+    return f'{model.label} — {model.reason}' if not model.available else model.label
+
+
+def _model_text(model: Optional[ModelChoice], thinking: str) -> str:
+    if model is None:
+        return '?'
+    name = model.model or "pi's default model"
+    return f'{name} · thinking {thinking}' if thinking else name
 
 
 def _first_sentence(text: str) -> str:

@@ -92,9 +92,13 @@ class Workspace:
     sync_timeout: float = 10.0
     # Refresh fetches the remotes behind configured refs before scanning them.
     fetch_refs: bool = True
-    # Agent sessions: limits, and hand-configured backend entries (see sessions/backends.py).
+    # Agent sessions: limits, and hand-configured model presets (see sessions/models.py).
     session_limits: SessionLimits = SessionLimits()
-    backends: tuple[Mapping[str, Any], ...] = ()
+    models: tuple[Mapping[str, Any], ...] = ()
+    # pi and site launcher options ([sessions] pi, pi_args): site-specific, so kept in the
+    # workspace's own configuration.
+    pi: str = 'pi'
+    pi_args: tuple[str, ...] = ()
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -139,7 +143,9 @@ class Workspace:
             sync_timeout=float(config.get('sync', {}).get('timeout', 10.0)),
             fetch_refs=bool(config.get('refs', {}).get('fetch', True)),
             session_limits=SessionLimits.from_config(config.get('sessions', {})),
-            backends=tuple(b for b in config.get('backends', []) if isinstance(b, dict)),
+            models=tuple(m for m in config.get('models', []) if isinstance(m, dict)),
+            pi=str(config.get('sessions', {}).get('pi', 'pi')),
+            pi_args=tuple(str(a) for a in config.get('sessions', {}).get('pi_args', [])),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Optional, Sequence
 
 from .adapters.tmux import TmuxEditor
 from .model import Authority
-from .workspace import Project, Ref, list_id, make_ref
+from .workspace import Project, Ref, Workspace, list_id, make_ref
 
 if TYPE_CHECKING:
     from .adapters.live import LiveSource
@@ -61,12 +61,12 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
     args = parser.parse_args(argv)
     if args.demo:
         root = build_demo_workspace(args.demo)
-        return MaintainerApp(FixtureSource(root).load, sessions=_sessions(root, demo=True))
+        return MaintainerApp(FixtureSource(root).load, sessions=_sessions(root))
     root = args.workspace or pathlib.Path('.')
     if has_config(root):
         return _live_app(LiveSource(root), args)
     if (root / 'workspace.json').is_file():
-        return MaintainerApp(FixtureSource(root).load, sessions=_sessions(root, demo=True))
+        return MaintainerApp(FixtureSource(root).load, sessions=_sessions(root))
     name = str(args.workspace or '')
     is_name = name and '/' not in name and not root.exists()
     if is_name and has_config(pathlib.Path('.')):
@@ -86,9 +86,10 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
     source.email_dryrun = args.email_dry_run
     source.no_sign = args.no_sign
     try:
-        timeout = source.workspace().sync_timeout
+        workspace: Optional['Workspace'] = source.workspace()
+        timeout = workspace.sync_timeout if workspace else 10.0
     except (OSError, ValueError):
-        timeout = 10.0
+        workspace, timeout = None, 10.0
     return MaintainerApp(
         source.load,
         actions=source,
@@ -96,16 +97,36 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
         editor=_draft_editor(source),
         sync=source.sync if source.can_sync() else None,
         sync_timeout=timeout,
-        sessions=_sessions(source.root),
+        sessions=_sessions(source.root, workspace, private=True),
     )
 
 
-def _sessions(root: pathlib.Path, demo: bool = False) -> 'SessionHub':
-    """Sessions under var/sessions/; nothing launches them yet (fixture windows count as open)."""
-    from .sessions.hub import IdleRunner, SessionHub
+def _sessions(
+    root: pathlib.Path, workspace: Optional['Workspace'] = None, private: bool = False
+) -> 'SessionHub':
+    """Sessions under var/sessions/, run as pi in tmux windows. Live workspaces add the
+    maintainer's own profiles and skills from state/ (*private*)."""
+    from .sessions.hub import SessionHub
+    from .sessions.pi import Site
     from .sessions.store import SessionStore
+    from .sessions.tmuxrunner import TmuxRunner
 
-    return SessionHub(SessionStore(root / 'var' / 'sessions'), IdleRunner(alive=demo))
+    hook = pathlib.Path(sys.executable).parent / 'b4-maintainer'
+    projects = workspace.projects if workspace else ()
+    site = Site(
+        root,
+        str(hook) if hook.exists() else 'b4-maintainer',
+        workspace.pi if workspace else 'pi',
+        workspace.pi_args if workspace else (),
+        {p.id: str(root / p.path) for p in projects if p.path},
+    )
+    store = SessionStore(root / 'var' / 'sessions')
+    return SessionHub(
+        store,
+        TmuxRunner(store, site),
+        profiles_dir=root / 'state' / 'profiles' if private else None,
+        skills_dir=root / 'state' / 'skills' if private else None,
+    )
 
 
 def _draft_editor(source: 'LiveSource') -> Optional[TmuxEditor]:
@@ -238,7 +259,7 @@ def hook_main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(
         prog='b4-maintainer hook',
         description='Agent CLI hook: record the event on stdin for session ID, and deny '
-        'shell commands outside the sandbox wrapper (Claude Code hook protocol).',
+        'shell commands outside the sandbox wrapper (for the b4-maintainer pi extension).',
     )
     parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
     parser.add_argument('id', help='session id')

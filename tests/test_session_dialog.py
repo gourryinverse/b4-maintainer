@@ -1,5 +1,7 @@
 """Contract: F1 opens a launch dialog rendered from profiles; only confirming launches."""
 
+import json
+
 import pytest
 from sessiondata import FakeSessionRunner, FakeWorktrees
 
@@ -9,9 +11,11 @@ from b4_maintainer.launchdialog import LaunchDialog
 from b4_maintainer.sessions.hub import SessionHub
 from b4_maintainer.sessions.store import SessionStore
 
+LISTING = 'provider model thinking\nalpha alpha-large yes\nalpha alpha-small no\n'
 
-def which(name):
-    return f'/usr/bin/{name}' if name == 'claude' else None
+
+def catalog():
+    return LISTING
 
 
 @pytest.fixture
@@ -25,7 +29,7 @@ def runner(store):
 
 
 def make_app(demo_root, store, runner, **kwargs):
-    hub = SessionHub(store, runner, FakeWorktrees(), which=which, **kwargs)
+    hub = SessionHub(store, runner, FakeWorktrees(), catalog=catalog, **kwargs)
     return MaintainerApp(FixtureSource(demo_root).load, sessions=hub)
 
 
@@ -67,9 +71,8 @@ async def test_f1_opens_a_dialog_for_the_selected_series(demo_root, store, runne
             'Testing apparatus',
         ):
             assert label in labels, label
-        assert 'codex — codex adapter not supported yet' in labels
-        assert dialog.option_disabled('backend', 'codex')
-        assert dialog.selected('backend') == 'claude'
+        assert "pi's default model" in labels and 'dry-run (scripted, no model)' in labels
+        assert dialog.selected('model') == 'default'
 
 
 async def test_escape_cancels_without_launching(demo_root, store, runner):
@@ -112,8 +115,10 @@ async def test_confirm_launches_once_with_the_composed_request(demo_root, store,
         record = store.record(sid)
         assert (record.series, record.subject) == (item.identity, item.series.subject)
         assert record.choices == {'goal': ['review'], 'artifacts': ['draft']}
-        assert (record.backend, record.mode, record.permissions) == (
-            'claude',
+        assert (record.harness, record.preset, record.model, record.mode, record.permissions) == (
+            'pi',
+            'default',
+            '',
             'lightweight',
             'read-only',
         )
@@ -258,7 +263,6 @@ async def test_tab_moves_between_sections_and_shift_tab_back(demo_root, store, r
             'artifacts:text',
             'apparatus',
             'mode',
-            'backend',
             'model',
             'permissions',
             'advanced',
@@ -289,3 +293,81 @@ async def test_keys_pick_choices_within_a_section(demo_root, store, runner):
         assert dialog.ticked('artifacts') == ['quality']
         assert dialog.ticked('apparatus') == ['vng']
         assert dialog.ticked('skills') == ['vng']
+
+
+def add_presets(demo_root, presets):
+    path = demo_root / 'workspace.json'
+    config = json.loads(path.read_text())
+    config['models'] = presets
+    path.write_text(json.dumps(config))
+
+
+async def test_presets_are_listed_and_unknown_models_disabled(demo_root, store, runner):
+    add_presets(
+        demo_root,
+        [
+            {'id': 'deep', 'model': 'alpha/alpha-large', 'thinking': 'high'},
+            {'id': 'gone', 'model': 'gamma/old'},
+        ],
+    )
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        assert 'deep (alpha/alpha-large)' in dialog.labels()
+        assert dialog.option_disabled('model', 'gone')
+        assert not dialog.option_disabled('model', 'deep')
+        await act(pilot, dialog.pick, 'goal', 'review')
+        await act(pilot, dialog.pick, 'model', 'deep')
+        assert 'alpha/alpha-large' in dialog.summary_text()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        record = store.record(sid)
+        assert (record.preset, record.model, record.thinking) == (
+            'deep',
+            'alpha/alpha-large',
+            'high',
+        )
+
+
+async def test_advanced_picks_any_catalog_model_and_thinking(demo_root, store, runner):
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'review')
+        await act(pilot, dialog.pick, 'other-model', 'alpha/alpha-small')
+        await act(pilot, dialog.pick, 'thinking', 'low')
+        assert 'alpha/alpha-small' in dialog.summary_text()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        record = store.record(sid)
+        assert (record.preset, record.model, record.thinking) == (
+            'alpha/alpha-small',
+            'alpha/alpha-small',
+            'low',
+        )
+
+
+async def test_dry_run_is_always_offered(demo_root, store, runner):
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'review')
+        await act(pilot, dialog.pick, 'model', 'dry-run')
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        assert store.record(sid).model == 'b4m/dry-run'
+
+
+def test_the_series_mbox_is_offered_only_when_its_mail_exists(demo_root, tmp_path):
+    import dataclasses
+
+    from b4_maintainer.adapters.fixture import FixtureSource
+    from b4_maintainer.app import series_context
+
+    item = FixtureSource(demo_root).load().items[0]
+    assert [i.id for i in series_context(item)] == ['mbox']
+    gone = dataclasses.replace(item.series, source=str(tmp_path / 'missing'))
+    assert series_context(dataclasses.replace(item, series=gone)) == ()

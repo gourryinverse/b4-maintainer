@@ -51,10 +51,8 @@ needs = "worktree"
 
 
 def payload(event, **fields):
-    """A hook payload as an agent CLI passes it on stdin (synthetic)."""
-    return json.dumps(
-        {'session_id': '00000000-0000-4000-8000-000000000001', 'hook_event_name': event, **fields}
-    )
+    """An event as the b4-maintainer pi extension passes it to the hook command (synthetic)."""
+    return json.dumps({'event': event, **fields})
 
 
 NOW = '2026-10-23T12:00:00+00:00'
@@ -77,11 +75,12 @@ def make_record(sid='s1', **changes):
         profile_hash='abc',
         choices={'goal': 'review', 'artifacts': ['draft']},
         mode='lightweight',
-        backend='claude',
-        adapter='claude',
-        command=('claude',),
-        native_id='00000000-0000-4000-8000-000000000001',
+        harness='pi',
+        preset='default',
+        command=('pi',),
+        native_id=sid,
         model='',
+        thinking='',
         permissions='read-only',
     )
     return base.replace(**changes)
@@ -92,7 +91,8 @@ class FakeSessionRunner:
 
     def __init__(self, store):
         self.store = store
-        self.launches = []
+        self.launches = []  # (session id, request)
+        self.specs = []
         self.stops = []
         self.resumes = []
         self.switches = []
@@ -116,10 +116,11 @@ class FakeSessionRunner:
     def blocker(self):
         return self.blocker_reason
 
-    def launch(self, record, request):
+    def launch(self, record, spec):
         if self.fail:
             raise RuntimeError(self.fail)
-        self.launches.append((record.id, request))
+        self.launches.append((record.id, spec.request))
+        self.specs.append(spec)
         self.windows.add(record.id)
 
     def alive(self, records):

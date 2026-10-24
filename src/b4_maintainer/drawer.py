@@ -5,11 +5,10 @@ Each session is named by the series it was launched for, never by the selection.
 """
 
 import datetime
-from typing import Iterable, Optional, Union
+from typing import Iterable, Optional
 
 from .sessions.hub import Overview, WorktreeInfo
-from .sessions.launch import Target
-from .sessions.records import SessionRecord
+from .sessions.records import SessionRecord, session_label
 from .sessions.store import SessionView
 
 STATE_LABELS = {
@@ -31,12 +30,6 @@ def format_bytes(n: int) -> str:
         if n >= size:
             return f'{n / size:.1f} {unit}'
     return f'{n} B'
-
-
-def session_label(record: Union[SessionRecord, Target]) -> str:
-    if record.scope == 'workspace' or not record.series:
-        return 'workspace'
-    return f'{record.project}: {record.subject} v{record.revision}'
 
 
 def state_text(view: SessionView) -> str:
@@ -87,6 +80,12 @@ def age(created: str, now: datetime.datetime) -> str:
     return 'now'
 
 
+def _model(record: SessionRecord) -> str:
+    if record.preset in ('default', ''):
+        return record.model or 'default model'
+    return record.preset
+
+
 def _goal(record: SessionRecord) -> str:
     goal = record.choices.get('goal')
     if isinstance(goal, list) and goal:
@@ -100,7 +99,7 @@ def session_row(view: SessionView, now: datetime.datetime) -> str:
     r = view.record
     return (
         f'{mark(view.state)} {session_label(r)} · {state_text(view)} · {_goal(r)} · {r.mode} · '
-        f'{r.backend} · {age(r.created, now)}'
+        f'{_model(r)} · {age(r.created, now)}'
     )
 
 

@@ -37,34 +37,34 @@ def test_records_are_listed_most_urgent_first(store, runner):
     runner.add(make_record('a'))
     runner.add(make_record('b'))
     runner.add(make_record('c'), alive=False)
-    runner.emit('a', 'UserPromptSubmit')
-    runner.emit('b', 'Notification', notification_type='permission_prompt')
+    runner.emit('a', 'working')
+    runner.emit('b', 'approval')
     assert states(store.poll(runner.alive)) == [('b', 'approval'), ('c', 'gone'), ('a', 'working')]
 
 
 def test_polling_reads_only_new_events_and_keeps_state(store, runner):
     runner.add(make_record('a'))
-    runner.emit('a', 'SessionStart')
+    runner.emit('a', 'start')
     assert states(store.poll(runner.alive)) == [('a', 'waiting')]
-    runner.emit('a', 'PreToolUse', tool_name='Read')
+    runner.emit('a', 'tool', tool='read')
     assert states(store.poll(runner.alive)) == [('a', 'working')]
     assert states(store.poll(runner.alive)) == [('a', 'working')]
 
 
 def test_pending_approvals_count_until_the_agent_moves_on(store, runner):
     runner.add(make_record('a'))
-    runner.emit('a', 'Notification', notification_type='permission_prompt')
-    runner.emit('a', 'Notification', message='Claude needs your permission to use Bash')
+    runner.emit('a', 'approval')
+    runner.emit('a', 'approval')
     [view] = store.poll(runner.alive)
     assert (view.state, view.approvals, view.last) == ('approval', 2, NOW)
-    runner.emit('a', 'PostToolUse', tool_name='Bash')
+    runner.emit('a', 'tool_done', tool='bash')
     [view] = store.poll(runner.alive)
     assert (view.state, view.approvals) == ('working', 0)
 
 
 def test_app_states_are_recorded_and_win(store, runner):
     runner.add(make_record('a'))
-    runner.emit('a', 'UserPromptSubmit')
+    runner.emit('a', 'working')
     store.set_state('a', 'stopped')
     assert states(store.poll(runner.alive)) == [('a', 'stopped')]
     assert store.record('a').state == 'stopped'
@@ -88,7 +88,7 @@ def test_creating_an_existing_session_is_refused(store, runner):
 def test_artifacts_are_files_under_out(store, runner):
     runner.add(make_record('a'))
     assert store.artifacts('a') == []
-    out = store.directory('a') / 'out'
+    out = store.directory('a') / 'work' / 'out'
     (out / 'draft').mkdir(parents=True)
     (out / 'draft' / 'reply.txt').write_text('synthetic\n')
     (out / 'notes.md').write_text('synthetic\n')

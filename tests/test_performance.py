@@ -163,11 +163,11 @@ async def test_drawer_polls_twenty_sessions_with_steady_events_within_targets(tm
     snapshot = synthetic_snapshot(SERIES)
     hub = SessionHub(store, runner, FakeWorktrees())
     app = MaintainerApp(lambda: snapshot, sessions=hub)
-    events = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']
+    events = ['working', 'tool', 'tool_done', 'waiting']
 
     async def tick(n=0):
         for k in range(5):  # A quarter of the sessions report each second.
-            runner.emit(f's{(n * 5 + k) % 20:02}', events[n % 4], tool_name='Read')
+            runner.emit(f's{(n * 5 + k) % 20:02}', events[n % 4], tool='read')
         app.poll_sessions()
         await app.workers.wait_for_complete()
         await pilot.pause()

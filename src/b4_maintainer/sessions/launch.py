@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Planning a launch: the dialog's choices checked against backends, limits, and skills.
+"""Planning a launch: the dialog's choices checked against models, limits, and skills.
 
 The dialog re-plans on every change to show what the session would receive and why it
 cannot launch; the hub plans again when the maintainer confirms. Nothing here runs.
@@ -7,11 +7,10 @@ cannot launch; the hub plans again when the maintainer confirms. Nothing here ru
 
 import datetime
 import secrets
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from .backends import BackendEntry, launch_problems
+from .models import THINKING, ModelChoice
 from .policy import ContextItem, SessionLimits, launch_check
 from .profiles import PERMISSIONS, Profile, ProfileError, Request, compose, suggested_skills
 from .records import SessionRecord
@@ -27,6 +26,7 @@ class Target:
     series: str = ''  # Series identity.
     revision: int = 0
     subject: str = ''
+    source: str = ''  # The thread's mbox, copied into the session's context.
 
 
 WORKSPACE = Target('workspace')
@@ -38,8 +38,8 @@ class LaunchChoice:
     choices: Mapping[str, Any] = field(default_factory=dict)
     text: Mapping[str, str] = field(default_factory=dict)
     mode: Optional[str] = None  # Chosen explicitly; else the profile's suggestion.
-    backend: str = ''
-    model: str = ''
+    model: str = ''  # A ModelChoice id.
+    thinking: str = ''  # Empty: the model choice's.
     permissions: str = ''  # Empty: the profile's default.
     # The maintainer's adjustments to the suggested skills (the dialog's Advanced section).
     skills_on: frozenset[str] = frozenset()
@@ -50,7 +50,7 @@ class LaunchChoice:
 class Situation:
     """What a launch is checked against, gathered by the app."""
 
-    entries: Sequence[BackendEntry]
+    models: Sequence[ModelChoice]
     limits: SessionLimits = SessionLimits()
     live: int = 0
     worktrees: int = 0
@@ -64,7 +64,8 @@ class Plan:
     request: Optional[Request]
     mode: str
     permissions: str
-    entry: Optional[BackendEntry]
+    model: Optional[ModelChoice]
+    thinking: str = ''
     included: tuple[ContextItem, ...] = ()
     skills: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
@@ -90,11 +91,14 @@ def plan(
     permissions = choice.permissions or profile.permissions
     if permissions not in PERMISSIONS:
         blockers.append(f'unknown permission profile {permissions!r}')
-    entry = next((e for e in situation.entries if e.id == choice.backend), None)
-    if entry is None:
-        blockers.append('Choose a backend')
-    else:
-        blockers.extend(launch_problems(entry, permissions))
+    model = next((m for m in situation.models if m.id == choice.model), None)
+    if model is None:
+        blockers.append('Choose a model')
+    elif not model.available:
+        blockers.append(f'{model.id}: {model.reason}')
+    thinking = choice.thinking or (model.thinking if model else '')
+    if thinking and thinking not in THINKING:
+        blockers.append(f'thinking must be one of {", ".join(THINKING)}')
     if permissions == 'execute':
         if mode != 'worktree':
             blockers.append('execute needs a worktree session')
@@ -112,7 +116,8 @@ def plan(
         request,
         mode,
         permissions,
-        entry,
+        model,
+        thinking,
         tuple(items),
         tuple(s for s in wanted if s in installed),
         tuple(blockers),
@@ -134,10 +139,10 @@ def new_session_id(now: datetime.datetime) -> str:
 def new_record(
     target: Target, profile: Profile, choice: LaunchChoice, planned: Plan, now: datetime.datetime
 ) -> SessionRecord:
-    assert planned.entry is not None
-    entry = planned.entry
+    assert planned.model is not None
+    sid = new_session_id(now)
     return SessionRecord(
-        id=new_session_id(now),
+        id=sid,
         created=now.isoformat(timespec='seconds'),
         scope=target.scope,
         project=target.project,
@@ -149,11 +154,12 @@ def new_record(
         profile_hash=profile.hash,
         choices=dict(choice.choices) | {f'{k}:text': v for k, v in choice.text.items() if v},
         mode=planned.mode,
-        backend=entry.id,
-        adapter=entry.adapter,
-        command=entry.command,
-        native_id=str(uuid.uuid4()),
-        model=choice.model,
+        harness='pi',
+        preset=planned.model.id,
+        command=(),
+        native_id=sid,
+        model=planned.model.model,
+        thinking=planned.thinking,
         permissions=planned.permissions,
         context=tuple(i.id for i in planned.included),
         skills=planned.skills,

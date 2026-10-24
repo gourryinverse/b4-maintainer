@@ -1583,6 +1583,10 @@ class MaintainerApp(App[None]):
                 self._focus_main()
         else:
             self.screen.add_class('-drawer-open')
+            # Opening is the maintainer's move: start at the most urgent entry.
+            for rows in (self._drawer_sessions, self._drawer_worktrees):
+                if rows.option_count:
+                    rows.highlighted = 0
             self._show_drawer_tab(self._drawer_tab)
             self.poll_sessions()
         self.refresh_bindings()
@@ -1717,7 +1721,8 @@ class MaintainerApp(App[None]):
         situation: Situation,
     ) -> None:
         target = _target(item) if item is not None else None
-        items: dict[str, tuple[ContextItem, ...]] = {'series': SERIES_CONTEXT, 'workspace': ()}
+        series = series_context(item) if item is not None else ()
+        items: dict[str, tuple[ContextItem, ...]] = {'series': series, 'workspace': ()}
         dialog = LaunchDialog(target, profiles, situation, items, problems)
         self.push_screen(dialog, self._launch_chosen)
 
@@ -2048,7 +2053,7 @@ def _situation(
     hub: SessionHub, workspace: Workspace, overview: Overview, skills: list[Skill]
 ) -> Situation:
     return Situation(
-        hub.backends(workspace.backends),
+        hub.models(workspace.models),
         workspace.session_limits,
         live=sum(v.state in LIVE_STATES for v in overview.sessions),
         worktrees=len(overview.worktrees),
@@ -2060,10 +2065,15 @@ def _situation(
 
 def _target(item: WorkItem) -> Target:
     s = item.series
-    return Target('series', item.project or '', item.identity, s.revision, s.subject)
+    return Target('series', item.project or '', item.identity, s.revision, s.subject, s.source)
 
 
-SERIES_CONTEXT: tuple[ContextItem, ...] = (ContextItem('mbox', 'Series mbox and thread'),)
+def series_context(item: WorkItem) -> tuple[ContextItem, ...]:
+    """What a series session receives: its thread's mail, when the mail is here."""
+    source = item.series.source
+    if source and pathlib.Path(source).exists():
+        return (ContextItem('mbox', 'Series mbox and thread'),)
+    return ()
 
 
 def _replace_rows(rows: OptionList, entries: list[tuple[str, str]], empty: str) -> None:

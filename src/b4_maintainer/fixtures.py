@@ -495,15 +495,16 @@ def write_demo_session(root: pathlib.Path, series: str) -> None:
         profile_hash='',
         choices={'goal': 'review', 'artifacts': ['draft']},
         mode='lightweight',
-        backend='claude',
-        adapter='claude',
+        harness='pi',
+        preset='default',
         command=(),
-        native_id='',
+        native_id='A',
         model='',
+        thinking='',
         permissions='read-only',
     )
     record.save(root / 'A' / 'session.json')
-    for event in (Event(created, 'SessionStart'), Event(created, 'Notification', '', 'permission')):
+    for event in (Event(created, 'start'), Event(created, 'approval', 'bash')):
         EventLog.append(root / 'A' / 'events.jsonl', event)
 
 

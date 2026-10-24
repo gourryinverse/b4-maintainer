@@ -121,3 +121,35 @@ def test_sigusr1_dumps_every_threads_stack(tmp_path, monkeypatch):
         import faulthandler
 
         faulthandler.unregister(signal.SIGUSR1)
+
+
+def test_live_sessions_run_pi_in_tmux_with_the_workspace_settings(tmp_path):
+    from b4_maintainer.sessions.tmuxrunner import TmuxRunner
+
+    (tmp_path / 'workspace.toml').write_text(
+        '[sessions]\npi = "/opt/pi/bin/pi"\npi_args = ["--site-option"]\n'
+        '[[projects]]\nid = "linux"\npath = "projects/linux"\n'
+    )
+    hub = build_app([str(tmp_path)])._sessions
+    runner = hub.runner
+    assert isinstance(runner, TmuxRunner)
+    root = tmp_path.resolve()
+    assert (runner.site.root, runner.site.pi, runner.site.args) == (
+        root,
+        '/opt/pi/bin/pi',
+        ('--site-option',),
+    )
+    assert runner.site.checkouts == {'linux': str(root / 'projects' / 'linux')}
+    assert runner.site.hook.endswith('b4-maintainer')
+    assert (hub.profiles_dir, hub.skills_dir) == (
+        root / 'state' / 'profiles',
+        root / 'state' / 'skills',
+    )
+    assert hub.store.root == root / 'var' / 'sessions'
+
+
+def test_demo_sessions_also_run_in_tmux(tmp_path):
+    from b4_maintainer.sessions.tmuxrunner import TmuxRunner
+
+    hub = build_app(['--demo', str(tmp_path / 'demo')])._sessions
+    assert isinstance(hub.runner, TmuxRunner) and hub.runner.site.root == tmp_path / 'demo'

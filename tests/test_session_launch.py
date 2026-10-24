@@ -5,7 +5,6 @@ import datetime
 import pytest
 from sessiondata import PROFILE, FakeSessionRunner, FakeWorktrees
 
-from b4_maintainer.sessions.backends import backend_entries
 from b4_maintainer.sessions.hub import SessionError, SessionHub
 from b4_maintainer.sessions.launch import (
     LaunchChoice,
@@ -14,6 +13,7 @@ from b4_maintainer.sessions.launch import (
     new_session_id,
     plan,
 )
+from b4_maintainer.sessions.models import model_choices, parse_catalog
 from b4_maintainer.sessions.policy import ContextItem, SessionLimits
 from b4_maintainer.sessions.profiles import parse_profile
 from b4_maintainer.sessions.skills import Skill
@@ -27,13 +27,19 @@ SKILLS = (
 )
 
 
-def which(name):
-    return f'/usr/bin/{name}' if name == 'claude' else None
+CATALOG = parse_catalog('provider model thinking\nalpha alpha-large yes\n')
+MODELS = model_choices(
+    CATALOG,
+    [
+        {'id': 'deep', 'model': 'alpha/alpha-large', 'thinking': 'high'},
+        {'id': 'old', 'model': 'x/y'},
+    ],
+)
 
 
 def situation(**changes):
     base = dict(
-        entries=backend_entries([{'id': 'local', 'adapter': 'pi', 'command': ['pi']}], which),
+        models=MODELS,
         limits=SessionLimits(),
         execute_reason='no sandbox here',
         skills=SKILLS,
@@ -47,7 +53,7 @@ def profile():
 
 
 def choice(**changes):
-    base = dict(profile='series-test', choices={'goal': 'review'}, backend='claude')
+    base = dict(profile='series-test', choices={'goal': 'review'}, model='deep')
     return LaunchChoice(**{**base, **changes})
 
 
@@ -55,20 +61,32 @@ def test_a_complete_choice_plans_a_launch(profile):
     p = plan(profile, choice(), situation(), ITEMS)
     assert p.ok and not p.blockers
     assert p.request.prompt == 'Help me review this series.'
-    assert (p.mode, p.permissions, p.entry.id) == ('lightweight', 'read-only', 'claude')
+    assert (p.mode, p.permissions, p.model.id, p.thinking) == (
+        'lightweight',
+        'read-only',
+        'deep',
+        'high',
+    )
     assert [i.id for i in p.included] == ['mbox']
 
 
-def test_missing_answers_and_unknown_backends_block(profile):
+def test_missing_answers_and_unknown_models_block(profile):
     p = plan(profile, choice(choices={}), situation(), ITEMS)
     assert not p.ok and p.request is None
     assert p.blockers == ('Goal is required',)
-    assert 'Choose a backend' in plan(profile, choice(backend=''), situation(), ITEMS).blockers
+    assert 'Choose a model' in plan(profile, choice(model='nope'), situation(), ITEMS).blockers
 
 
-def test_unavailable_backends_block_with_their_reason(profile):
-    p = plan(profile, choice(backend='codex'), situation(), ITEMS)
-    assert p.blockers == ('codex: codex adapter not supported yet',)
+def test_unavailable_models_block_with_their_reason(profile):
+    p = plan(profile, choice(model='old'), situation(), ITEMS)
+    assert p.blockers == ("old: x/y is not in pi's model list",)
+
+
+def test_the_thinking_level_follows_the_choice_then_the_preset(profile):
+    assert plan(profile, choice(thinking='low'), situation(), ITEMS).thinking == 'low'
+    assert plan(profile, choice(model='default'), situation(), ITEMS).thinking == ''
+    p = plan(profile, choice(thinking='extreme'), situation(), ITEMS)
+    assert any('thinking' in b for b in p.blockers)
 
 
 def test_choices_needing_a_tree_suggest_a_worktree_unless_chosen(profile):
@@ -135,10 +153,16 @@ def test_launch_records_the_session_then_starts_it_once(store, profile):
     assert saved == record
     assert (saved.series, saved.revision, saved.subject) == (TARGET.series, 3, TARGET.subject)
     assert (saved.profile_id, saved.profile_hash) == ('series-test', profile.hash)
-    assert (saved.backend, saved.adapter, saved.command) == ('claude', 'claude', ('claude',))
+    assert (saved.harness, saved.preset, saved.model, saved.thinking) == (
+        'pi',
+        'deep',
+        'alpha/alpha-large',
+        'high',
+    )
+    assert saved.native_id == saved.id  # pi's session id is ours.
     assert saved.choices == {'goal': 'review'} and saved.context == ('mbox',)
     assert saved.skills == ()
-    assert saved.native_id and saved.state == ''
+    assert saved.state == ''
 
 
 def test_a_blocked_launch_records_nothing(store, profile):

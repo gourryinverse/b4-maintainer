@@ -56,6 +56,8 @@ def test_the_installed_wrapper_path_is_allowed_but_lookalikes_are_not():
         ('git push origin HEAD', 'not a read-only git command'),
         ('git log --output=/tmp/x', 'not a read-only git command'),
         ('git diff --ext-diff', 'not a read-only git command'),
+        ('git diff --no-index /etc/passwd /dev/null', 'not a read-only git command'),
+        ('git grep --no-index secret', 'not a read-only git command'),
         ('git grep -O vim foo', 'not a read-only git command'),
         ('git log "unterminated', 'cannot be parsed'),
         ('', 'empty'),
@@ -65,3 +67,41 @@ def test_the_installed_wrapper_path_is_allowed_but_lookalikes_are_not():
 def test_rejected(command, why):
     reason = rejection(command, SID)
     assert reason is not None and why in reason
+
+
+@pytest.mark.parametrize(
+    'command, reason',
+    [
+        ('echo test-write', 'only read-only git commands'),
+        ('echo x > out/quality.md', 'shell control is not allowed'),
+        ('b4-maintainer sandbox s1 -- make', 'cannot run commands'),
+        ('git push', 'not a read-only git command'),
+    ],
+)
+def test_without_execute_refusals_point_at_what_the_session_can_do(command, reason):
+    found = rejection(command, 's1', execute=False)
+    assert reason in found
+    if 'git' not in command:
+        assert 'write tool' in found and 'sandbox' not in found.replace('sandbox s1', '')
+
+
+def test_read_only_git_still_runs_without_execute():
+    assert rejection('git log -1', 's1', execute=False) is None
+
+
+def test_read_only_git_may_name_a_readable_directory(tmp_path):
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    roots = (str(checkout),)
+    assert rejection(f'git -C {checkout} log -1', 's1', execute=False, git_dirs=roots) is None
+    assert rejection(f'git -C {checkout}/sub log', 's1', execute=False, git_dirs=roots) is None
+    found = rejection(f'git -C {tmp_path} log', 's1', execute=False, git_dirs=roots)
+    assert 'not a read-only git command' in found
+    found = rejection(f'git -C {checkout} push', 's1', execute=False, git_dirs=roots)
+    assert 'not a read-only git command' in found
+    assert rejection(f'git -C {checkout} log', 's1', execute=False) is not None  # No roots.
+
+
+def test_refusals_name_the_file_tools_to_use_instead():
+    found = rejection('wc -l context/thread.mbx', 's1', execute=False)
+    assert 'read, grep, find, and ls tools' in found

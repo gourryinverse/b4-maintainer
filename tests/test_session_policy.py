@@ -20,13 +20,16 @@ def test_limits_block_live_sessions_and_warn_on_worktrees():
     assert warnings == []  # A lightweight session adds no worktree.
 
 
-def test_workspace_config_carries_limits_and_backends():
+def test_workspace_config_carries_limits_and_model_presets():
     config = {
         'sessions': {'max_live': 6, 'worktree_warn_gb': 50},
-        'backends': [{'id': 'claude-cyber', 'adapter': 'claude', 'command': ['claude-cyber']}],
+        'models': [{'id': 'deep', 'model': 'alpha/alpha-large', 'thinking': 'high'}],
     }
+    config['sessions'] |= {'pi': '/opt/pi/bin/pi', 'pi_args': ['--site-option']}
     ws = Workspace.from_config(config)
     assert ws.session_limits == SessionLimits(max_live=6, worktree_warn_gb=50)
-    assert ws.backends[0]['id'] == 'claude-cyber'
+    assert ws.models[0]['id'] == 'deep'
+    assert (ws.pi, ws.pi_args) == ('/opt/pi/bin/pi', ('--site-option',))
     default = Workspace.from_config({})
-    assert default.session_limits == SessionLimits() and default.backends == ()
+    assert default.session_limits == SessionLimits() and default.models == ()
+    assert (default.pi, default.pi_args) == ('pi', ())

@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Session records (var/sessions/<id>/session.json) and their hook event logs.
 
-A session's state comes from its events (appended by the hook command), whether its
-tmux window is alive, and the few states the app itself records (stopped, ended,
-failed). Hook payloads are untrusted data: only the event name, a tool name, and a
-notification kind are kept.
+A session's state comes from its events (appended by the b4-maintainer pi extension,
+directly or through the hook command), whether its tmux window is alive, and the few
+states the app itself records (stopped, ended, failed). Event payloads are untrusted
+data: only the event name, a tool name, and a short detail are kept.
+
+Events: start, working, tool, tool_done, approval (the extension asks the maintainer),
+waiting (the agent will not continue on its own), model (detail: the new model), end.
 """
 
 import dataclasses
@@ -12,12 +15,12 @@ import json
 import os
 import pathlib
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Protocol
 
 # Most urgent first: what the collapsed drawer line names.
 STATES = ('approval', 'waiting', 'failed', 'gone', 'working', 'starting', 'stopped', 'ended')
 APP_STATES = frozenset({'stopped', 'ended', 'failed'})
-WORKING_EVENTS = frozenset({'UserPromptSubmit', 'PreToolUse', 'PostToolUse'})
+WORKING_EVENTS = frozenset({'working', 'tool', 'tool_done'})
 
 
 @dataclass(frozen=True)
@@ -42,11 +45,12 @@ class SessionRecord:
     profile_hash: str
     choices: dict[str, Any]
     mode: str
-    backend: str
-    adapter: str
-    command: tuple[str, ...]
-    native_id: str
-    model: str
+    harness: str  # pi
+    preset: str  # The dialog's model choice: default, a preset id, dry-run, or provider/id.
+    command: tuple[str, ...]  # The harness command line, as launched.
+    native_id: str  # The harness's session id (pi: the same as ours).
+    model: str  # pi's --model; empty for pi's default.
+    thinking: str
     permissions: str
     worktree: Optional[Worktree] = None
     state: str = ''  # App-recorded: stopped, ended, failed; else derived from events.
@@ -79,30 +83,56 @@ class SessionRecord:
         return cls(**known, worktree=Worktree(**worktree) if worktree else None)
 
 
+class Pinned(Protocol):
+    """A session record or launch target (frozen: read-only attributes)."""
+
+    @property
+    def scope(self) -> str: ...
+
+    @property
+    def project(self) -> str: ...
+
+    @property
+    def series(self) -> str: ...
+
+    @property
+    def subject(self) -> str: ...
+
+    @property
+    def revision(self) -> int: ...
+
+
+def session_label(pinned: Pinned) -> str:
+    """What a session is pinned to: `project: subject vN`, or `workspace`."""
+    if pinned.scope == 'workspace' or not pinned.series:
+        return 'workspace'
+    return f'{pinned.project}: {pinned.subject} v{pinned.revision}'
+
+
 @dataclass(frozen=True)
 class Event:
     time: str
     event: str
     tool: str = ''
-    notification: str = ''  # permission or idle, for Notification events.
+    detail: str = ''  # E.g. the model, for model events.
 
 
 def event_from_payload(raw: str, now: str) -> Optional[Event]:
-    """The compact event for a hook payload (JSON on the hook's stdin), or None."""
+    """The compact event for a payload (JSON from the extension), or None."""
     try:
         data = json.loads(raw)
     except ValueError:
         return None
-    name = data.get('hook_event_name') if isinstance(data, dict) else None
+    name = data.get('event') if isinstance(data, dict) else None
     if not isinstance(name, str) or not name:
         return None
-    tool = data.get('tool_name', '')
-    notification = ''
-    if name == 'Notification':
-        kind = str(data.get('notification_type', ''))
-        message = str(data.get('message', '')).lower()
-        notification = 'permission' if 'permission' in kind or 'permission' in message else 'idle'
-    return Event(now, name, tool if isinstance(tool, str) else '', notification)
+    tool, detail = data.get('tool', ''), data.get('detail', '')
+    return Event(
+        now,
+        name[:40],
+        tool[:80] if isinstance(tool, str) else '',
+        detail[:200] if isinstance(detail, str) else '',
+    )
 
 
 class EventLog:
@@ -130,7 +160,7 @@ class EventLog:
                         str(raw['time']),
                         str(raw['event']),
                         str(raw.get('tool', '')),
-                        str(raw.get('notification', '')),
+                        str(raw.get('detail', '')),
                     )
                 )
             except (ValueError, KeyError, TypeError):
@@ -159,16 +189,13 @@ def fold_events(events: Iterable[Event], progress: Progress = Progress()) -> Pro
     state, approvals, last = progress.state, progress.approvals, progress.last
     for event in events:
         last = event.time
-        if event.event == 'SessionStart' or event.event == 'Stop':
+        if event.event in ('start', 'waiting'):
             state, approvals = 'waiting', 0
         elif event.event in WORKING_EVENTS:
             state, approvals = 'working', 0
-        elif event.event == 'Notification':
-            if event.notification == 'permission':
-                state, approvals = 'approval', approvals + 1
-            elif state != 'approval':
-                state = 'waiting'
-        elif event.event == 'SessionEnd':
+        elif event.event == 'approval':
+            state, approvals = 'approval', approvals + 1
+        elif event.event == 'end':
             state, approvals = 'ended', 0
     return Progress(state, approvals, last)
 

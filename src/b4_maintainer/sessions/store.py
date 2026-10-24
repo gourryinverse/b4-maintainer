@@ -58,6 +58,10 @@ class SessionStore:
     def record(self, sid: str) -> SessionRecord:
         return SessionRecord.load(self.directory(sid) / RECORD)
 
+    def save(self, record: SessionRecord) -> None:
+        """Replace an existing session's record (e.g. with its launched command line)."""
+        record.save(self.directory(record.id) / RECORD)
+
     def set_state(self, sid: str, state: str) -> None:
         """Record an app state (stopped, ended, failed), or clear it with ''."""
         self.record(sid).replace(state=state).save(self.directory(sid) / RECORD)
@@ -66,7 +70,7 @@ class SessionStore:
         EventLog.append(self.directory(sid) / EVENTS, event)
 
     def artifacts(self, sid: str) -> list[str]:
-        out = self.directory(sid) / 'out'
+        out = self.directory(sid) / 'work' / 'out'
         return sorted(
             str(p.relative_to(out)) for p in out.rglob('*') if p.is_file() and not p.is_symlink()
         )

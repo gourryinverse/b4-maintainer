@@ -10,12 +10,14 @@ import datetime
 import os
 import pathlib
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
-from .backends import BackendEntry, Which, backend_entries
 from .launch import LaunchChoice, Situation, Target, new_record, plan
+from .models import ModelChoice, model_choices, parse_catalog
+from .pi import LaunchSpec, prepare_session
 from .policy import ContextItem
 from .profiles import BUILTIN_DIR, Profile, load_profiles
 from .records import SessionRecord
@@ -35,7 +37,7 @@ class SessionRunner(Protocol):
         """Why no session can launch here (e.g. no tmux); None if they can."""
         ...
 
-    def launch(self, record: SessionRecord, request: Any) -> None: ...
+    def launch(self, record: SessionRecord, spec: LaunchSpec) -> None: ...
 
     def alive(self, records: Sequence[SessionRecord]) -> set[str]: ...
 
@@ -68,34 +70,6 @@ class Overview:
     @property
     def worktree_bytes(self) -> int:
         return sum(w.bytes or 0 for w in self.worktrees)
-
-
-class IdleRunner:
-    """Until an adapter exists: launches nothing, and windows are as *alive* says."""
-
-    def __init__(self, alive: bool = False) -> None:
-        self._alive = alive
-
-    def blocker(self) -> Optional[str]:
-        return 'agent sessions cannot launch yet: this build has no session runner'
-
-    def launch(self, record: SessionRecord, request: Any) -> None:
-        raise SessionError('No session runner configured')
-
-    def alive(self, records: Sequence[SessionRecord]) -> set[str]:
-        return {r.id for r in records} if self._alive else set()
-
-    def switch(self, record: SessionRecord) -> None:
-        raise SessionError(f'Session {record.id} has no window to switch to')
-
-    def stop(self, record: SessionRecord) -> None:
-        pass
-
-    def resume(self, record: SessionRecord) -> None:
-        raise SessionError(f'Session {record.id} cannot be resumed here')
-
-    def end(self, record: SessionRecord) -> None:
-        pass
 
 
 def disk_usage(path: pathlib.Path) -> int:
@@ -132,6 +106,24 @@ class RecordWorktrees:
         return infos
 
 
+def pi_catalog() -> Optional[str]:
+    """`pi --list-models` (offline), or None when pi is missing or fails."""
+    pi = shutil.which('pi')
+    if pi is None:
+        return None
+    try:
+        run = subprocess.run(
+            [pi, '--offline', '--list-models'],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return run.stdout if run.returncode == 0 else None
+
+
 class SessionHub:
     """Blocking calls (files, tmux, disk usage): call from worker threads."""
 
@@ -142,14 +134,16 @@ class SessionHub:
         worktrees: Optional[Worktrees] = None,
         profiles_dir: Optional[pathlib.Path] = None,
         skills_dir: Optional[pathlib.Path] = None,
-        which: Which = shutil.which,
+        catalog: Optional[Callable[[], Optional[str]]] = None,
     ) -> None:
         self.store = store
         self.runner = runner
         self.worktrees = worktrees or RecordWorktrees()
         self.profiles_dir = profiles_dir  # The maintainer's own (state/profiles/).
         self.skills_dir = skills_dir  # The maintainer's own (state/skills/).
-        self.which = which
+        self._catalog = catalog or pi_catalog
+        self._catalog_text: Optional[str] = None
+        self._catalog_read = False
         self._states: dict[str, str] = {}
 
     def overview(self) -> Overview:
@@ -168,8 +162,12 @@ class SessionHub:
     def skills(self) -> tuple[list[Skill], list[str]]:
         return load_skills(BUILTIN_SKILLS, self.skills_dir)
 
-    def backends(self, config: Sequence[Mapping[str, Any]]) -> list[BackendEntry]:
-        return backend_entries(config, self.which)
+    def models(self, presets: Sequence[Mapping[str, Any]]) -> list[ModelChoice]:
+        """Model choices; pi's catalog is read once (None if pi cannot list it)."""
+        if not self._catalog_read:
+            self._catalog_text, self._catalog_read = self._catalog(), True
+        text = self._catalog_text
+        return model_choices(parse_catalog(text) if text else None, presets)
 
     def launch(
         self,
@@ -186,9 +184,18 @@ class SessionHub:
             raise SessionError('; '.join(planned.blockers))
         now = now or datetime.datetime.now(datetime.timezone.utc)
         record = new_record(target, profile, choice, planned, now)
+        assert planned.request is not None and planned.model is not None
+        installed = {s.id: s.path for s in situation.skills}
+        spec = LaunchSpec(
+            planned.request,
+            tuple(p for s in planned.skills if (p := installed.get(s)) is not None),
+            planned.model.args,
+            planned.model.env,
+        )
         self.store.create(record)
         try:
-            self.runner.launch(record, planned.request)
+            prepare_session(self.store, record, planned.request, target.source)
+            self.runner.launch(record, spec)
         except Exception as exc:
             self.store.set_state(record.id, 'failed')
             raise SessionError(f'Session {record.id} failed to start: {exc}') from exc
