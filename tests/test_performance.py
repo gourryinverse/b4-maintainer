@@ -1,4 +1,4 @@
-"""Interface performance targets with 10,000 series (docs/design/interface.md).
+"""Interface performance targets with 10,000 series.
 
 Pilot waits for the app to settle after every input, so raw wall time includes
 harness idle detection (~50 ms for a bare app). Latency is checked two ways:

@@ -4,7 +4,7 @@ Mailing-list maintainer workspace: patch review, bug triage, interactive agents,
 
 Stage: fixture-backed interface prototype (browse screen).
 
-Python, Textual, GPL-2.0-or-later. See [decisions](docs/design/architecture.md#decisions).
+Python, Textual, GPL-2.0-or-later.
 
 ## Scope
 
@@ -19,19 +19,8 @@ Python, Textual, GPL-2.0-or-later. See [decisions](docs/design/architecture.md#d
 Agents start or resume only on maintainer request. Approved work can continue
 in the background.
 
-## Requirements
+## Contributing
 
-- [Interface](docs/design/interface.md)
-- [Workflow and tests](docs/design/workflow.md)
-- [Agents](docs/design/agents.md)
-- [Architecture](docs/design/architecture.md)
-- [Backlogs](docs/design/backlogs.md)
-- [Project workspaces](docs/design/projects.md)
-- [Sashiko feedback](docs/design/sashiko.md)
-- [External editor drafts](docs/design/editor.md)
-- [Agent sessions and drawer](docs/design/sessions.md)
-- [b4 fork notes](docs/design/b4-fork.md)
-- [Open decisions](docs/design/open.md)
 - [Contributor instructions](AGENTS.md)
 
 ## Dependencies
@@ -83,7 +72,7 @@ Python 3.11 or newer.
   reply beside the thread (in the list: to the cover letter) and `ctrl+s` sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
 - Workspace state syncs through a private state repository cloned as `state/` (see
-  [sync](docs/design/projects.md#multi-machine-sync) and [setup](#setup));
+  [setup](#setup));
   `state/workspace.toml` is the synced configuration. `b4-maintainer sync` syncs once by
   hand; the app syncs at startup, around `F5`, and on quit.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.

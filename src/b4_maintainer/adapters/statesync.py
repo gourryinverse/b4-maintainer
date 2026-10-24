@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Workspace state synced through the private state repository; see docs/design/projects.md.
+"""Workspace state synced through the private state repository.
 
 A sync exports this machine's state into state/, merges it three-way with the
 remote branch (against the last commit both share), imports what others
@@ -44,7 +44,7 @@ def is_exported(path: str) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in EXPORTED)
 
 
-# Commit messages name no machine: hostnames are private (see docs/design/projects.md).
+# Commit messages name no machine: hostnames are private.
 SYNC_MESSAGE = 'b4-maintainer sync'
 
 # Flags: one line per message: msgid, date, flags, and the tracked or watched

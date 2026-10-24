@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Compact series-row rendering; see docs/design/interface.md."""
+"""Compact series-row rendering."""
 
 from dataclasses import dataclass
 from typing import Optional

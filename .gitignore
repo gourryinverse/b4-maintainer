@@ -24,3 +24,6 @@ build/
 tmp/
 /setup.conf
 /setup.site.conf
+
+# Design notes: local only, never committed.
+/design/

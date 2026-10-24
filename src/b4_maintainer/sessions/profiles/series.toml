@@ -1,5 +1,5 @@
 # Default series session: what to work on, what to produce, and how to test.
-# The prompt wording is a starting point; see docs/design/open.md.
+# The prompt wording is a starting point.
 id = "series"
 version = 1
 label = "Series session"

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The maintainer's own editor in a tmux pane beside the app; see docs/design/editor.md.
+"""The maintainer's own editor in a tmux pane beside the app.
 
 The editor is the one b4 would run (b4.get_editor_cmd). Panes are watched by
 polling, never waited on, so a killed pane is noticed like an exited editor.

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Sashiko AI review status from its HTTP API; see docs/design/sashiko.md.
+"""Sashiko AI review status from its HTTP API.
 
 Per-list status pages are a client connector: b4 reads Sashiko one series at a
 time. Series details come through b4's fetch and parse, so both read Sashiko

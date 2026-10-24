@@ -27,8 +27,8 @@ Initialize from the project root:
 - Sashiko builds and `sashiko review` runs (LLM, cost) are explicit actions.
 - Upgrade pins explicitly and validate adapter compatibility.
 - Configure project workspaces, LLM providers, and credentials externally.
-- Maintain target repositories under projects/; see [project requirements](../docs/design/projects.md).
-- Register backlog repositories through the [backlog feature](../docs/design/backlogs.md).
+- Maintain target repositories under projects/.
+- Register backlog repositories through the backlog feature.
 
 ## Development
 
@@ -50,10 +50,6 @@ Configure remotes after initialization:
       git remote set-url --push origin "git@github.com:gourryinverse/$n.git"
       git remote get-url upstream >/dev/null 2>&1 || git remote add upstream "$up"
     '
-
-- See [dependency-first requirements](../docs/design/architecture.md).
-- b4 fork commits, behaviour changes, and upstream status:
-  [b4 fork notes](../docs/design/b4-fork.md).
 
 ## Known gaps
 

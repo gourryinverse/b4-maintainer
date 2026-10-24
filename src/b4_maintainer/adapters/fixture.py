@@ -2,7 +2,7 @@
 """Load a fixture workspace: workspace.json, mail/*.mbx parsed by b4, state.json.
 
 state.json stands in for native b4 tracking and client state until the
-pre-apply ownership decision (docs/design/open.md) is resolved.
+pre-apply ownership decision is resolved.
 """
 
 import json

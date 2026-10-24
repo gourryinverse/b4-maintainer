@@ -9,5 +9,3 @@ Checkout contents are ignored by the client repository.
 - b4 review/apply trees belong to the assigned project's repository.
 - Background jobs use isolated worktrees; preserve the maintenance checkout.
 - Project removal preserves repositories and review data.
-
-See [project requirements](../docs/design/projects.md).

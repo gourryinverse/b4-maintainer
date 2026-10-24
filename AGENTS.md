@@ -1,11 +1,12 @@
 # Agent instructions
 
-Read [README.md](README.md) and the relevant [design requirements](docs/design/).
+Read [README.md](README.md) and the relevant design notes in `design/` (a local folder,
+ignored by git: design notes are never committed or published).
 
 ## Work
 
 - Resolve open design decisions before production implementation.
-- Track open decisions in [docs/design/open.md](docs/design/open.md); remove them when resolved.
+- Track open decisions in `design/open.md`; remove them when resolved.
 - Start behavior changes with a failing contract test; implement, verify, refactor.
 - Use disposable fixtures for mail, providers, agents, workspaces, and jobs.
 - Report checks actually run. Verify documentation links and whitespace.
@@ -38,4 +39,5 @@ Read [README.md](README.md) and the relevant [design requirements](docs/design/)
 - Preserve user edits, editor files, and each project's HEAD/index/worktrees.
 - Keep runtime data and secrets out of source commits.
 - Put one-off helper scripts and drafts in ignored tmp/.
+- Keep design notes in the ignored `design/` folder; never commit or publish them.
 - Commit or push only when requested.
