@@ -7,7 +7,7 @@ import pytest
 from gitutil import git
 
 from b4_maintainer.adapters.sessiontree import PrepareError, base_suggestions, prepare_tree
-from b4_maintainer.sessions.trees import classify_tree, inspect_tree, remove_tree
+from b4_maintainer.sessions.trees import classify_tree, inspect_tree, remove_tree, tree_worktrees
 
 AGENT = ('b4-maintainer agent (dry-run)', 'agent@b4-maintainer.invalid')
 CHANGE_ID = '20261020-mm-foo-0123456789ab'
@@ -305,3 +305,27 @@ def test_a_trees_losses_are_described_by_kind(upstream, tmp_path):
     agent_work(dest, tree)
     state = inspect_tree(dest, tree.applied, tree)
     assert state.describe() == '2 pull-aheads, 1 fixup, 1 test, 1 other commit only here'
+
+
+def test_extra_checkouts_are_found_counted_and_removed_with_the_tree(upstream, tmp_path):
+    project, base, mbox = upstream
+    trees = tmp_path / 'var' / 'worktrees'
+    dest = trees / 's1'
+    tree = prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT)
+    out = tmp_path / 'var' / 'sessions' / 's1' / 'work' / 'out'
+    out.mkdir(parents=True)
+    extra = out / 'worktrees' / 'base'
+    git('worktree', 'add', '-q', '--detach', str(extra), tree.base, cwd=dest)  # As the skill says.
+    (extra / 'scratch.c').write_text('x\n')
+    found = tree_worktrees(dest)
+    assert [(w.path, w.head) for w in found] == [(str(extra), tree.base)]
+    state = inspect_tree(dest, tree.applied, tree)
+    assert state.extras == (str(extra),)
+    assert state.describe() == '1 uncommitted file, 1 extra checkout'
+    assert not state.clean  # Its uncommitted file would be lost.
+    unrelated = tmp_path / 'unrelated'
+    unrelated.mkdir()
+    (unrelated / '.git').write_text('gitdir: /elsewhere/.git/worktrees/x\n')
+    remove_tree(dest, trees)
+    assert not dest.exists() and not extra.exists() and unrelated.exists()
+    assert out.exists()  # The rest of the session's output stays.

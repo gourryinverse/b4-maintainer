@@ -18,7 +18,7 @@ from typing import Callable, Mapping, Optional, Sequence
 from .adapters.bases import BaseStatus, RebaseResult, base_status, rebase_base
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.records import SessionRecord, session_label
-from .sessions.trees import TreeState, classify_tree, inspect_tree
+from .sessions.trees import TreeState, classify_tree, inspect_tree, tree_worktrees
 from .workspace import Workspace
 
 SHOW_LINES = 4000  # A commit or file is cut here.
@@ -165,6 +165,16 @@ class BranchService:
             if branch.problem:
                 rows.append(DetailRow(f'  ! {branch.problem}'))
             rows += [_commit_row(c.sha, c.subject, tree) for c in branch.commits]
+        extras = [e for e in tree_worktrees(tree) if pathlib.Path(e.path).is_dir()]
+        if extras:
+            rows.append(DetailRow('Extra checkouts'))
+            for extra in extras:
+                try:
+                    subject = _git(tree, 'log', '-1', '--format=%s', extra.head).strip()
+                except OSError:
+                    subject = ''
+                where = extra.branch or extra.head[:12]
+                rows.append(DetailRow(f'  {extra.path} · {where} {subject}'.rstrip()))
         names = {b.name for b in classed.branches}
         artifacts, problems = load_artifacts(self._out(record.id) / 'work' / 'out', names)
         if artifacts:

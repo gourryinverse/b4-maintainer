@@ -110,3 +110,17 @@ def test_a_tree_being_prepared_is_not_removed(setup):
     with pytest.raises(SessionError, match='stop session p first|being prepared'):
         hub.remove_worktrees([tree.path])
     assert (trees / 'p').exists()
+
+
+def test_a_trees_extra_checkouts_count_toward_its_size(setup, tmp_path):
+    hub, runner, trees = setup
+    tree = make_tree(trees / 'a')
+    runner.add(make_record('a', mode='worktree', worktree=tree), alive=False)
+    alone = hub.overview().worktrees[0].bytes
+    extra = tmp_path / 'out' / 'worktrees' / 'base'
+    git('worktree', 'add', '-q', '--detach', str(extra), 'HEAD', cwd=trees / 'a')
+    (extra / 'big.bin').write_bytes(b'x' * 1_000_000)
+    hub.worktrees._sizes.clear()  # Measured again, as after the TTL.
+    [info] = hub.overview().worktrees
+    assert info.bytes is not None and alone is not None and info.bytes >= alone + 1_000_000
+    assert info.state is not None and info.state.extras == (str(extra),)

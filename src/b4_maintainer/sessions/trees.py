@@ -33,11 +33,22 @@ def _count(n: int, one: str, many: str) -> str:
 
 
 @dataclass(frozen=True)
+class ExtraCheckout:
+    """A checkout the agent added to its tree (`git worktree add`, e.g. under
+    out/worktrees/ to build another commit): removed with the tree."""
+
+    path: str
+    head: str
+    branch: str = ''
+
+
+@dataclass(frozen=True)
 class TreeState:
     changed: tuple[str, ...] = ()  # Uncommitted or untracked files (git status lines).
     commits: tuple[str, ...] = ()  # Commits only in this tree, beyond the series.
     error: str = ''  # Not a readable git tree.
     kinds: tuple[tuple[str, int], ...] = ()  # Commits only here by class, when classed.
+    extras: tuple[str, ...] = ()  # Its extra checkouts' paths.
 
     @property
     def clean(self) -> bool:
@@ -55,6 +66,8 @@ class TreeState:
             parts.append(', '.join(classed) + ' only here')
         elif self.commits:
             parts.append(_count(len(self.commits), 'commit', 'commits') + ' only here')
+        if self.extras:
+            parts.append(_count(len(self.extras), 'extra checkout', 'extra checkouts'))
         return ', '.join(parts) or 'clean'
 
 
@@ -133,6 +146,39 @@ def classify_tree(path: pathlib.Path, tree: Worktree) -> TreeCommits:
     return TreeCommits(series, tuple(branches))
 
 
+def tree_worktrees(path: pathlib.Path) -> list[ExtraCheckout]:
+    """The tree's extra checkouts: its linked worktrees, not the tree itself nor b4's
+    scratch worktrees."""
+    found = []
+    current: dict[str, str] = {}
+    for line in (*_git(path, 'worktree', 'list', '--porcelain'), ''):
+        if line.startswith('worktree '):
+            current = {'path': line.removeprefix('worktree ')}
+        elif line.startswith('HEAD '):
+            current['head'] = line.removeprefix('HEAD ')
+        elif line.startswith('branch '):
+            current['branch'] = line.removeprefix('branch refs/heads/')
+        elif not line and current:
+            where = current.get('path', '')
+            own = pathlib.Path(where).resolve() == path.resolve()
+            if not own and 'b4-shazam-worktree' not in where:
+                found.append(
+                    ExtraCheckout(where, current.get('head', ''), current.get('branch', ''))
+                )
+            current = {}
+    return found
+
+
+def _belongs(extra: pathlib.Path, tree: pathlib.Path) -> bool:
+    """Whether *extra* is a checkout of *tree*'s repository: its .git file points into
+    the tree's .git/worktrees/."""
+    dotgit = extra / '.git'
+    if extra.is_symlink() or not dotgit.is_file():
+        return False
+    target = dotgit.read_text().removeprefix('gitdir:').strip()
+    return pathlib.Path(target).resolve().is_relative_to((tree / '.git' / 'worktrees').resolve())
+
+
 def inspect_tree(
     path: pathlib.Path, applied: str = '', tree: Optional[Worktree] = None
 ) -> TreeState:
@@ -145,6 +191,13 @@ def inspect_tree(
         changed = _git(path, 'status', '--porcelain')
         since = ['--not', '--remotes', *([applied] if applied else [])]
         commits = _git(path, 'log', '--format=%h %s', 'HEAD', '--branches', *since)
+        extras = [e for e in tree_worktrees(path) if os.path.isdir(e.path)]
+        for extra in extras:
+            name = pathlib.Path(extra.path).name
+            changed += [
+                f'{name}: {line}'
+                for line in _git(pathlib.Path(extra.path), 'status', '--porcelain')
+            ]
     except OSError as ex:
         return TreeState(error=str(ex))
     kinds: tuple[tuple[str, int], ...] = ()
@@ -154,12 +207,22 @@ def inspect_tree(
         for branch in classed.branches:
             seen.setdefault(branch.kind, set()).update(c.sha for c in branch.commits)
         kinds = tuple((kind, len(shas)) for kind, shas in seen.items() if shas)
-    return TreeState(tuple(changed), tuple(commits), kinds=kinds)
+    return TreeState(
+        tuple(changed), tuple(commits), kinds=kinds, extras=tuple(e.path for e in extras)
+    )
 
 
 def remove_tree(path: pathlib.Path, directory: pathlib.Path) -> None:
-    """Delete a session tree; only ever one directly under *directory*."""
+    """Delete a session tree, only ever one directly under *directory*, with its extra
+    checkouts (only those whose .git points back into this tree)."""
     path, directory = path.resolve(), directory.resolve()
     if path.parent != directory or path.is_symlink():
         raise OSError(f'{path} is not a session tree under {directory}')
+    try:
+        extras = [pathlib.Path(e.path) for e in tree_worktrees(path)]
+    except OSError:
+        extras = []  # Not a readable repository: only the tree itself goes.
+    for extra in extras:
+        if extra.is_dir() and _belongs(extra, path):
+            shutil.rmtree(extra)
     shutil.rmtree(path)

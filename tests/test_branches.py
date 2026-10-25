@@ -166,3 +166,15 @@ def test_a_base_rebases_from_here(ws):
     )
     assert result.ok
     assert '1 behind' not in service.snapshot(workspace).items[0].label
+
+
+def test_a_trees_extra_checkouts_are_listed_under_it(ws, tmp_path):
+    service, workspace, _project = ws
+    tree = tmp_path / 'ws' / 'var' / 'worktrees' / 's1'
+    extra = tmp_path / 'ws' / 'var' / 'sessions' / 's1' / 'work' / 'out' / 'worktrees' / 'base'
+    git('worktree', 'add', '-q', '--detach', str(extra), 'HEAD~1', cwd=tree)
+    found = service.snapshot(workspace)
+    texts = [r.text for r in found.details['tree:s1']]
+    assert 'Extra checkouts' in texts
+    assert any(str(extra) in t and 'mm: start' in t for t in texts)
+    assert '1 extra checkout' in {i.key: i for i in found.items}['tree:s1'].label

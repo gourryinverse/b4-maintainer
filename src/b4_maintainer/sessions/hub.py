@@ -207,7 +207,13 @@ class RecordWorktrees:
         cached = self._sizes.get(path)
         if cached is None or now - cached[0] > self.ttl:
             where = pathlib.Path(path)
-            cached = (now, disk_usage(where), inspect_tree(where, applied, tree))
+            state = inspect_tree(where, applied, tree)
+            size = disk_usage(where) + sum(
+                disk_usage(pathlib.Path(e))
+                for e in state.extras
+                if not pathlib.Path(e).resolve().is_relative_to(where.resolve())
+            )
+            cached = (now, size, state)
             self._sizes[path] = cached
         return cached[1], cached[2]
 

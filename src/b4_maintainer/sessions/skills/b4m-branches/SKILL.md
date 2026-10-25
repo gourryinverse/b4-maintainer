@@ -33,6 +33,23 @@ One branch per piece of work, named by what it is. Names are local: they are nev
 - Other branches, or commits on the session branch itself, show as "other": the
   maintainer will ask what they are.
 
+## Building another commit (base, single patches)
+
+To build or boot something other than what the tree has checked out (the base, the
+series up to one patch, a pull-ahead on its own), add an extra checkout instead of
+switching the session branch back and forth:
+
+```sh
+git worktree add --detach <out>/worktrees/<name> <commit>   # <out>: the output directory
+```
+
+- Only under `<out>/worktrees/`: the maintainer's tools find these there, count their
+  disk use, and remove them with the session's tree. Anywhere else is not cleaned up.
+- A kernel checkout plus its build is gigabytes: keep only the ones you still need, and
+  remove each when done (`git worktree remove --force <out>/worktrees/<name>`).
+- Commits made in an extra checkout belong on a branch named as above (create it there
+  with `git switch -c b4m/...`); detached commits are not kept.
+
 ## How to write the commits
 
 - Kernel style: `subsystem: imperative summary` under 75 characters, a body that says
