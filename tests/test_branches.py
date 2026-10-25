@@ -81,16 +81,49 @@ def ws(tmp_path, home):
 def test_each_project_lists_its_bases_trees_and_prep_branches(ws):
     service, workspace, _project = ws
     found = service.snapshot(workspace)
-    kinds = [(i.kind, i.key) for i in found.items]
+    kinds = [(i.kind, i.key) for i in found.items if i.kind in ('base', 'tree', 'prep')]
     assert kinds == [
         ('base', 'base:linux:me/base'),
         ('tree', 'tree:s1'),
         ('prep', 'prep:linux:b4/pull-aheads'),  # Not b4's review branches.
     ]
-    base, tree, prep = found.items
+    by_key = {i.key: i for i in found.items}
+    base, tree = by_key['base:linux:me/base'], by_key['tree:s1']
     assert 'me/base on up/stable' in base.label and '1 commit' in base.label
     assert 'mm: fix foo leak' in tree.label and '1 pull-ahead' in tree.label
-    assert 'b4/pull-aheads' in prep.label
+    assert 'b4/pull-aheads' in by_key['prep:linux:b4/pull-aheads'].label
+
+
+def test_worktrees_review_branches_and_other_local_work_are_listed(ws, tmp_path):
+    service, workspace, project = ws
+    (project / 'scratch.txt').write_text('uncommitted\n')  # The main checkout has changes.
+    topic = tmp_path / 'topic'
+    git('worktree', 'add', '-q', '-b', 'topic', str(topic), 'up/stable', cwd=project)
+    commit(topic, 't.c', 't\n', 'mm: topic work')
+    git('branch', 'experiment', 'up/stable', cwd=project)
+    git('switch', '-q', 'experiment', cwd=project)
+    commit(project, 'e.c', 'e\n', 'mm: forgotten experiment')
+    git('switch', '-q', 'main', cwd=project)
+    git('branch', 'merged', 'up/stable', cwd=project)  # Nothing beyond the remotes.
+    before = (project / '.git' / 'index').read_bytes()
+    found = service.snapshot(workspace)
+    order = [i.kind for i in found.items]
+    assert order == ['base', 'worktree', 'worktree', 'tree', 'prep', 'review', 'branch']
+    by_key = {i.key: i for i in found.items}
+    main = by_key[f'worktree:linux:{project}']
+    assert 'main' in main.label and '1 changed' in main.label
+    assert '?? scratch.txt' in [r.text.strip() for r in found.details[main.key]]
+    linked = by_key[f'worktree:linux:{topic}']
+    assert 'topic' in linked.label and 'clean' in linked.label
+    assert any('mm: topic work' in r.text for r in found.details[linked.key])
+    review = by_key['review:linux:b4/review/20261020-foo']
+    assert any('mm: under review' in r.text for r in found.details[review.key])
+    # Other branches: with commits not upstream, not checked out, not a base or b4's
+    # (main and topic are checked out; merged has nothing beyond the remotes).
+    others = [i.key for i in found.items if i.kind == 'branch']
+    assert others == ['branch:linux:experiment']
+    assert '1 commit not upstream' in by_key['branch:linux:experiment'].label
+    assert (project / '.git' / 'index').read_bytes() == before  # Looking never writes.
 
 
 def test_details_show_commits_by_class_and_the_artifacts(ws):

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The Branches screen: each project's maintainer bases, session trees, and prep
-branches (left), the selected one's commits and artifacts (middle), and the selected
-commit or artifact (right).
+"""The Branches screen: each project's maintainer bases, worktrees, session trees, prep
+branches, review branches, and other local work (left), the selected one's commits and
+artifacts (middle), and the selected commit or artifact (right).
 
 Everything is read and acted on in workers; the screen only shows results. `r` rebases a
 maintainer base after a confirmation; F5 reloads; Escape returns to the series list.
@@ -102,7 +102,7 @@ class BranchesScreen(Screen[None]):
                 n for n in range(items.option_count) if items.get_option_at_index(n).id == target
             )
         self._show_rows()
-        empty = '' if keys else 'No maintainer bases, session trees, or prep branches.'
+        empty = '' if keys else 'No projects with a checkout.'
         self._status('; '.join(p for p in (self._note, *data.problems, empty) if p))
         self._note = ''
 

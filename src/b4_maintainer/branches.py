@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""What the Branches screen shows: per project, the maintainer bases, the session trees,
-and the prep branches, each with its commits (and a tree's artifacts); what a commit or
-artifact shows; rebasing a base.
+"""What the Branches screen shows: per project, the maintainer bases, the project's
+worktrees (main checkout and linked ones), the session trees, b4 prep branches, b4
+review branches, and other local branches with work not on any remote, each with its
+commits (and a tree's artifacts); what a commit or artifact shows; rebasing a base.
 
-Plain git and files, gathered off the UI thread. Prep branches are b4's (`b4/<name>`),
-listed read-only; b4's review branches (`b4/review/*`) are not prep branches.
+Plain git and files, gathered off the UI thread, never writing: status runs with
+GIT_OPTIONAL_LOCKS=0 so looking at a checkout does not refresh its index. Prep branches
+are b4's (`b4/<name>`); its review branches (`b4/review/*`) are listed apart, read-only.
 """
 
+import os
 import pathlib
 import subprocess
 from dataclasses import dataclass, field
@@ -19,13 +22,13 @@ from .sessions.trees import TreeState, classify_tree, inspect_tree
 from .workspace import Workspace
 
 SHOW_LINES = 4000  # A commit or file is cut here.
-PREP_LIMIT = 200  # Commits listed per prep branch.
+LIST_LIMIT = 200  # Commits listed per branch or worktree.
 
 
 @dataclass(frozen=True)
 class BranchItem:
-    key: str  # base:<project>:<branch>, tree:<session>, prep:<project>:<branch>
-    kind: str  # base, tree, or prep
+    key: str  # <kind>:<project>:<branch or path>, or tree:<session>
+    kind: str  # base, worktree, tree, prep, review, or branch
     project: str
     label: str
 
@@ -50,7 +53,12 @@ class BranchesSnapshot:
 
 def _git(repo: pathlib.Path, *args: str) -> str:
     run = subprocess.run(
-        ['git', *args], cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        ['git', *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'},  # Looking never writes the index.
     )
     if run.returncode != 0:
         raise OSError(run.stderr.strip() or f'git {args[0]} failed')
@@ -95,6 +103,13 @@ class BranchService:
                 statuses[key] = status
                 items.append(BranchItem(key, 'base', project.id, _base_label(status)))
                 details[key] = _base_rows(status, repo)
+            checked_out = set()
+            for path, branch in _worktrees(repo):
+                key = f'worktree:{project.id}:{path}'
+                checked_out.add(branch)
+                label, rows = _worktree(pathlib.Path(path), branch)
+                items.append(BranchItem(key, 'worktree', project.id, label))
+                details[key] = rows
             for record in (r for r in records if r.project == project.id):
                 assert record.worktree is not None
                 tree = pathlib.Path(record.worktree.path)
@@ -106,20 +121,33 @@ class BranchService:
                 items.append(BranchItem(key, 'tree', project.id, label))
                 details[key] = rows
             try:
-                names = _git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/b4/')
+                names = _git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/')
             except OSError as ex:
                 problems.append(f'{project.id}: {ex}')
                 continue
-            for name in names.split():
-                if name.startswith('b4/review/'):
-                    continue
-                key = f'prep:{project.id}:{name}'
-                rows = _prep_rows(repo, name)
-                commits = sum(1 for r in rows if r.key)
-                items.append(
-                    BranchItem(key, 'prep', project.id, f'{name} · {_count(commits, "commit")}')
-                )
-                details[key] = rows
+            names_list = names.split()
+            prep = [n for n in names_list if n.startswith('b4/') and not n.startswith('b4/review/')]
+            review = [n for n in names_list if n.startswith('b4/review/')]
+            bases = {b.branch for b in project.bases}
+            other = [
+                n
+                for n in names_list
+                if not n.startswith('b4/') and n not in bases and n not in checked_out
+            ]
+            for kind, group in (('prep', prep), ('review', review), ('branch', other)):
+                for name in group:
+                    key = f'{kind}:{project.id}:{name}'
+                    rows = _unpushed_rows(repo, name)
+                    commits = sum(1 for r in rows if r.key)
+                    if kind == 'branch' and not commits:
+                        continue  # Nothing of ours on it: not worth a row.
+                    note = (
+                        f'{_count(commits, "commit")} not upstream'
+                        if kind != 'prep'
+                        else _count(commits, 'commit')
+                    )
+                    items.append(BranchItem(key, kind, project.id, f'{name} · {note}'))
+                    details[key] = rows
         return BranchesSnapshot(tuple(items), details, statuses, tuple(problems))
 
     def _tree(
@@ -218,13 +246,44 @@ def _base_rows(status: BaseStatus, repo: pathlib.Path) -> tuple[DetailRow, ...]:
     return tuple(rows)
 
 
-def _prep_rows(repo: pathlib.Path, name: str) -> tuple[DetailRow, ...]:
+def _worktrees(repo: pathlib.Path) -> list[tuple[str, str]]:
+    """(path, branch) of the project's worktrees, the main checkout first; b4's scratch
+    worktrees are left out (they come and go with b4's own runs)."""
+    found: list[tuple[str, str]] = []
+    path = branch = ''
+    for line in (*_git(repo, 'worktree', 'list', '--porcelain').splitlines(), ''):
+        if line.startswith('worktree '):
+            path, branch = line.removeprefix('worktree '), ''
+        elif line.startswith('branch '):
+            branch = line.removeprefix('branch refs/heads/')
+        elif line == 'detached':
+            branch = ''
+        elif not line and path:
+            if 'b4-shazam-worktree' not in path:
+                found.append((path, branch))
+            path = ''
+    return found
+
+
+def _worktree(path: pathlib.Path, branch: str) -> tuple[str, tuple[DetailRow, ...]]:
+    try:
+        changed = [line for line in _git(path, 'status', '--porcelain').splitlines() if line]
+    except OSError as ex:
+        return f'{path} · {ex}', ()
+    state = f'{len(changed)} changed' if changed else 'clean'
+    label = f'{path} · {branch or "detached"} · {state}'
+    rows = [DetailRow('Changes'), *(DetailRow(f'  {line}') for line in changed)] if changed else []
+    rows += _unpushed_rows(path, 'HEAD')
+    return label, tuple(rows)
+
+
+def _unpushed_rows(repo: pathlib.Path, name: str) -> tuple[DetailRow, ...]:
     try:
         out = _git(
             repo,
             'log',
             '--reverse',
-            f'--max-count={PREP_LIMIT}',
+            f'--max-count={LIST_LIMIT}',
             '--format=%H%x00%s',
             name,
             '--not',
