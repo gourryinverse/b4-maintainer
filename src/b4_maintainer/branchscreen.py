@@ -40,6 +40,7 @@ class BranchesScreen(Screen[None]):
     """
     BINDINGS = [
         Binding('escape', 'back', 'back'),
+        Binding('f3', 'back', 'series', key_display='F3'),
         Binding('tab', 'cycle(1)', 'next pane', priority=True),
         Binding('shift+tab', 'cycle(-1)', 'previous pane', priority=True, show=False),
         Binding('r', 'rebase', 'rebase base'),

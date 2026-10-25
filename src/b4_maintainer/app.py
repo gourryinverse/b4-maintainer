@@ -412,7 +412,7 @@ class MaintainerApp(App[None]):
         Binding('f5', 'refresh', 'refresh', key_display='F5'),
         Binding('r', 'reply', 'reply'),
         Binding('R', 'mark_read', 'read all'),
-        Binding('b', 'branches', 'branches'),
+        Binding('f3', 'branches', 'branches', key_display='F3'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
         Binding('f12', 'focus_session', 'to session', key_display='F12'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
@@ -2040,7 +2040,7 @@ class MaintainerApp(App[None]):
         self.poll_sessions()
 
     def action_branches(self) -> None:
-        """b: the Branches screen (maintainer bases, session trees, prep branches)."""
+        """F3: the Branches screen (maintainer bases, session trees, prep branches)."""
         if self._branches is not None and self.snapshot is not None:
             self.push_screen(BranchesScreen(self._branches, self.snapshot.workspace))
 

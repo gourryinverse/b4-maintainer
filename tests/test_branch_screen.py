@@ -1,4 +1,4 @@
-"""Contract: `b` opens the Branches screen: items per project, their commits, what the
+"""Contract: F3 opens the Branches screen: items per project, their commits, what the
 selected commit shows; `r` rebases a base after a confirmation; Escape returns."""
 
 from b4_maintainer.adapters.bases import BaseCommit, BaseStatus, RebaseResult
@@ -65,12 +65,12 @@ def make_app(demo_root, branches):
     return MaintainerApp(FixtureSource(demo_root).load, branches=branches)
 
 
-async def test_b_opens_the_branches_screen_and_escape_returns(demo_root):
+async def test_f3_opens_the_branches_screen_and_escape_returns(demo_root):
     service = FakeBranches()
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('b')
+        await pilot.press('f3')
         await settle(pilot)
         screen = app.screen
         assert isinstance(screen, BranchesScreen)
@@ -93,7 +93,7 @@ async def test_r_rebases_the_selected_base_after_a_confirmation(demo_root):
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('b')
+        await pilot.press('f3')
         await settle(pilot)
         await pilot.press('r')
         await settle(pilot)
@@ -120,7 +120,7 @@ async def test_a_failed_rebase_names_the_commit(demo_root):
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('b')
+        await pilot.press('f3')
         await settle(pilot)
         await pilot.press('r')
         await settle(pilot)
@@ -129,12 +129,12 @@ async def test_a_failed_rebase_names_the_commit(demo_root):
         assert 'me/base not rebased: mm: kept does not apply' in app.screen.status_text()
 
 
-async def test_r_is_only_for_bases_and_b_only_with_a_branch_service(demo_root):
+async def test_r_is_only_for_bases_and_f3_only_with_a_branch_service(demo_root):
     service = FakeBranches()
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('b')
+        await pilot.press('f3')
         await settle(pilot)
         await pilot.press('down')
         await settle(pilot)
@@ -144,6 +144,21 @@ async def test_r_is_only_for_bases_and_b_only_with_a_branch_service(demo_root):
     app = MaintainerApp(FixtureSource(demo_root).load)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        assert not isinstance(app.screen, BranchesScreen)
+
+
+async def test_f3_toggles_back_and_b_does_not_open_it(demo_root):
+    app = make_app(demo_root, FakeBranches())
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
         await pilot.press('b')
+        await settle(pilot)
+        assert not isinstance(app.screen, BranchesScreen)
+        await pilot.press('f3')
+        await settle(pilot)
+        assert isinstance(app.screen, BranchesScreen)
+        await pilot.press('f3')
         await settle(pilot)
         assert not isinstance(app.screen, BranchesScreen)

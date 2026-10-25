@@ -82,8 +82,9 @@ Python 3.11 or newer.
   in `workspace.toml` names integration branches on top of upstream branches.
   `b4-maintainer bases` shows how far behind each is and which of its commits have landed
   upstream; `--rebase BRANCH` replays the rest onto the upstream (never in a checkout; a
-  conflict changes nothing). In the app, `b` opens Branches: each project's bases, session
-  trees (commits by class, artifacts), and b4 prep branches; `r` rebases a base.
+  conflict changes nothing). In the app, `F3` opens Branches (`F3` or Escape returns):
+  each project's bases, session trees (commits by class, artifacts), and b4 prep
+  branches; `r` rebases a base.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.
