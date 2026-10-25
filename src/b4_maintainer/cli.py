@@ -131,6 +131,8 @@ def _sessions(
         workspace.pi if workspace else 'pi',
         workspace.pi_args if workspace else (),
         {p.id: str(root / p.path) for p in projects if p.path},
+        workspace.sandbox_nice if workspace else 10,
+        workspace.sandbox_ionice if workspace else 'low',
     )
     store = SessionStore(root / 'var' / 'sessions')
     agent = (

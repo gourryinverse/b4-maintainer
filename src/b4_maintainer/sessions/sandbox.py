@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """`b4-maintainer sandbox <id>`: run one of a session's shell commands, confined.
 
-`unshare -rn` gives the command its own user and network namespaces (no network; it
+The command runs at low CPU and I/O priority (`nice`, `ionice`; configurable), so
+builds and VMs use idle capacity without starving the app. `unshare -rn` gives the
+command its own user and network namespaces (no network; it
 also works inside launcher jails that hold capabilities without setuid); bubblewrap gives
 it a filesystem of the system directories (read-only), the session's readable
 directories (read-only), and its writable ones, with a private /tmp and a cleared
@@ -33,6 +35,11 @@ class SandboxError(Exception):
     pass
 
 
+NICE = 10  # Builds and VMs yield the CPU to the app and the desktop, using what is idle.
+IONICE = 'low'
+IONICE_ARGS = {'low': ['-c2', '-n7'], 'idle': ['-c3'], 'off': []}
+
+
 @dataclass(frozen=True)
 class Policy:
     readable: tuple[str, ...]
@@ -40,6 +47,8 @@ class Policy:
     cwd: str
     kvm: bool
     env: Mapping[str, str] = field(default_factory=dict)
+    nice: int = NICE  # 0: normal priority.
+    ionice: str = IONICE  # low (best-effort, lowest), idle, or off.
 
 
 @dataclass(frozen=True)
@@ -65,11 +74,28 @@ def policy_for(store: SessionStore, sid: str) -> Policy:
     if execute:
         writable.append(str(env.get('B4M_WORKTREE', '')))
     extra = {k: str(env[k]) for k in ('GIT_CEILING_DIRECTORIES',) if k in env}
-    return Policy(tuple(readable), tuple(w for w in writable if w), cwd, execute, extra)
+    try:
+        nice = int(env.get('B4M_NICE', NICE))
+    except ValueError:
+        nice = NICE
+    ionice = str(env.get('B4M_IONICE', IONICE))
+    ionice = ionice if ionice in IONICE_ARGS else IONICE
+    return Policy(
+        tuple(readable), tuple(w for w in writable if w), cwd, execute, extra, nice, ionice
+    )
+
+
+def priority_argv(policy: Policy) -> list[str]:
+    """nice and ionice ahead of the sandbox: everything it runs inherits them."""
+    argv = ['nice', '-n', str(policy.nice)] if policy.nice > 0 else []
+    if IONICE_ARGS.get(policy.ionice) and shutil.which('ionice'):
+        argv += ['ionice', *IONICE_ARGS[policy.ionice]]
+    return argv
 
 
 def bwrap_argv(policy: Policy, command: str) -> list[str]:
-    argv = ['unshare', '-rn', '--', 'bwrap', '--die-with-parent', '--new-session']
+    argv = [*priority_argv(policy), 'unshare', '-rn', '--', 'bwrap']
+    argv += ['--die-with-parent', '--new-session']
     argv += ['--unshare-pid', '--clearenv']
     for path in SYSTEM:
         if os.path.exists(path):

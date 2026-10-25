@@ -275,3 +275,10 @@ def test_projects_carry_their_maintainer_bases():
         MaintainerBase('me/linus', 'mainline/master'),
     )
     assert ws.projects[1].bases == ()
+
+
+def test_sandbox_priorities_are_configurable():
+    ws = Workspace.from_config({'sessions': {'sandbox_nice': 15, 'sandbox_ionice': 'idle'}})
+    assert (ws.sandbox_nice, ws.sandbox_ionice) == (15, 'idle')
+    default = Workspace.from_config({})
+    assert (default.sandbox_nice, default.sandbox_ionice) == (10, 'low')

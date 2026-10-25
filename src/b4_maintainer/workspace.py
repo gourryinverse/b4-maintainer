@@ -113,6 +113,10 @@ class Workspace:
     # Commit identity in session worktrees ([sessions] agent_name may use {model}).
     agent_name: str = 'b4-maintainer agent ({model})'
     agent_email: str = 'agent@b4-maintainer.invalid'
+    # Sandboxed commands' priority ([sessions] sandbox_nice, 0 for normal; sandbox_ionice:
+    # low, idle, or off): session builds and VMs yield to the app and the desktop.
+    sandbox_nice: int = 10
+    sandbox_ionice: str = 'low'
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -166,6 +170,10 @@ class Workspace:
             pane_width=int(config.get('sessions', {}).get('pane_width', 90)),
             agent_name=str(config.get('sessions', {}).get('agent_name', cls.agent_name)),
             agent_email=str(config.get('sessions', {}).get('agent_email', cls.agent_email)),
+            sandbox_nice=int(config.get('sessions', {}).get('sandbox_nice', cls.sandbox_nice)),
+            sandbox_ionice=str(
+                config.get('sessions', {}).get('sandbox_ionice', cls.sandbox_ionice)
+            ),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

@@ -52,6 +52,8 @@ class Site:
     pi: str = 'pi'
     args: tuple[str, ...] = ()  # Site launcher options (site configuration).
     checkouts: Mapping[str, str] = field(default_factory=dict)  # Project id -> checkout.
+    nice: int = 10  # Sandboxed commands' CPU priority (0: normal).
+    ionice: str = 'low'  # And I/O priority: low, idle, or off.
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,8 @@ def pi_command(
         # git must not find a repository around the session (e.g. the workspace's own).
         'GIT_CEILING_DIRECTORIES': str(directory),
         'B4M_SANDBOX': '1' if spec.sandboxed else '',
+        'B4M_NICE': str(site.nice),
+        'B4M_IONICE': site.ionice,
         **spec.env,
     }
     return PiCommand(argv, worktree or str(work), env)

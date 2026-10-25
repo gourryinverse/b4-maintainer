@@ -54,6 +54,30 @@ def test_execute_sessions_also_write_their_worktree_and_use_kvm(tmp_path):
     assert str(worktree) in policy.writable and policy.kvm is True
 
 
+def test_sandboxed_commands_run_at_low_cpu_and_io_priority(tmp_path):
+    store, cmd = session(tmp_path)
+    assert (cmd.env['B4M_NICE'], cmd.env['B4M_IONICE']) == ('10', 'low')  # Defaults.
+    policy = policy_for(store, 's1')
+    assert (policy.nice, policy.ionice) == (10, 'low')
+    argv = bwrap_argv(policy, 'make')
+    assert argv[:6] == ['nice', '-n', '10', 'ionice', '-c2', '-n7']
+    assert argv[6:9] == ['unshare', '-rn', '--']
+    idle = bwrap_argv(Policy((), (), '/', False, nice=5, ionice='idle'), 'make')
+    assert idle[:5] == ['nice', '-n', '5', 'ionice', '-c3']
+    off = bwrap_argv(Policy((), (), '/', False, nice=0, ionice='off'), 'make')
+    assert off[:3] == ['unshare', '-rn', '--']
+
+
+def test_a_launch_record_without_priorities_gets_the_defaults(tmp_path):
+    store, _cmd = session(tmp_path)
+    path = store.directory('s1') / 'launch.json'
+    launch = json.loads(path.read_text())
+    del launch['env']['B4M_NICE'], launch['env']['B4M_IONICE']
+    path.write_text(json.dumps(launch))
+    policy = policy_for(store, 's1')
+    assert (policy.nice, policy.ionice) == (10, 'low')
+
+
 def test_the_bwrap_command_binds_only_what_the_policy_names(tmp_path):
     w = tmp_path / 'w'
     for path in ('work/out', 'linux'):
@@ -66,6 +90,7 @@ def test_the_bwrap_command_binds_only_what_the_policy_names(tmp_path):
         env={'GIT_CEILING_DIRECTORIES': str(w)},
     )
     argv = bwrap_argv(policy, 'make -j8')
+    argv = argv[argv.index('unshare') :]  # After the priority prefix.
     assert argv[:3] == ['unshare', '-rn', '--']  # User and network namespaces.
     assert argv[3] == 'bwrap' and '--clearenv' in argv and '--unshare-pid' in argv
     joined = ' '.join(argv)
@@ -105,13 +130,14 @@ def test_commands_see_the_session_and_nothing_else(tmp_path, home):
         f'touch {store.directory("s1")}/x; '  # Only the sandbox's throwaway root sees it.
         'touch /usr/x 2>/dev/null || echo system-ro; '
         'timeout 3 bash -c "exec 3<>/dev/tcp/1.1.1.1/443" 2>/dev/null || echo no-net; '
-        'echo "secret=${B4M_TEST_SECRET:-unset}"; exit 7'
+        'echo "secret=${B4M_TEST_SECRET:-unset}"; echo "nice=$(nice)"; exit 7'
     )
     result = run(store, script, tmp_path, {'B4M_TEST_SECRET': 'token'})
     assert result.returncode == 7, result.stderr
     lines = result.stdout.splitlines()
     assert lines[0].startswith('1 ') and 'synthetic checkout' in lines
-    for word in ('no-home', 'out-ok', 'system-ro', 'no-net', 'secret=unset'):
+    lowered = f'nice={min(os.nice(0) + 10, 19)}'  # Ten below whatever started it.
+    for word in ('no-home', 'out-ok', 'system-ro', 'no-net', 'secret=unset', lowered):
         assert word in lines, (word, result.stdout, result.stderr)
     assert (out / 'notes.md').read_text() == 'made\n'
     assert not (store.directory('s1') / 'x').exists()

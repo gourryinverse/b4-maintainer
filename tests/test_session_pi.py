@@ -91,6 +91,8 @@ def test_the_extension_learns_the_session_through_its_environment(tmp_path):
         # git must not find a repository around the session (e.g. the workspace's own).
         'GIT_CEILING_DIRECTORIES': str(directory),
         'B4M_SANDBOX': '',  # This machine's sandbox was not used for the launch.
+        'B4M_NICE': '10',  # Sandboxed commands run at low priority.
+        'B4M_IONICE': 'low',
     }
 
 
