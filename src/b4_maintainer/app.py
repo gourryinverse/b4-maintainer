@@ -29,6 +29,7 @@ from textual.worker import Worker, WorkerState
 
 from .adapters.b4mbox import load_thread
 from .adapters.drafts import DraftStore, SavedDraft
+from .branchscreen import Branches, BranchesScreen
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
@@ -411,6 +412,7 @@ class MaintainerApp(App[None]):
         Binding('f5', 'refresh', 'refresh', key_display='F5'),
         Binding('r', 'reply', 'reply'),
         Binding('R', 'mark_read', 'read all'),
+        Binding('b', 'branches', 'branches'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
         Binding('f12', 'focus_session', 'to session', key_display='F12'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
@@ -421,6 +423,7 @@ class MaintainerApp(App[None]):
         self,
         loader: Callable[[], Snapshot],
         sessions: Optional[SessionHub] = None,
+        branches: Optional[Branches] = None,
         breakpoints: Optional[Breakpoints] = None,
         symbols: Symbols = DEFAULT_SYMBOLS,
         thread_loader: Callable[[Series], SeriesThread] = load_thread,
@@ -464,6 +467,7 @@ class MaintainerApp(App[None]):
         self._thread_loader = thread_loader
         # Agent sessions: polled for the drawer; only the maintainer's keys act on them.
         self._sessions = sessions
+        self._branches = branches  # The Branches screen's data and actions (live only).
         self._overview = Overview()
         self._polling = False
         self._drawer_tab = 'sessions'
@@ -714,6 +718,15 @@ class MaintainerApp(App[None]):
             return action == 'cycle_pane'  # Tab moves between the dialog's sections.
         if isinstance(self.screen, ModalScreen):
             return False  # A prompt or dialog owns every key while it is open.
+        if isinstance(self.screen, BranchesScreen):
+            return action == 'quit'  # The screen has its own keys.
+        if action == 'branches':
+            return (
+                self._branches is not None
+                and self._reading is None
+                and not self._drawer_focused()
+                and self.snapshot is not None
+            )
         if action == 'focus_session':
             return bool(self._app_pane) and self._beside is not None
         if action == 'launch_session':
@@ -2025,6 +2038,11 @@ class MaintainerApp(App[None]):
         if notice:
             self._set_notice(notice)
         self.poll_sessions()
+
+    def action_branches(self) -> None:
+        """b: the Branches screen (maintainer bases, session trees, prep branches)."""
+        if self._branches is not None and self.snapshot is not None:
+            self.push_screen(BranchesScreen(self._branches, self.snapshot.workspace))
 
     def action_launch_session(self) -> None:
         """F1: the launch dialog for the open or selected series (or the workspace)."""

@@ -86,6 +86,7 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
 
 def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp':
     from .app import MaintainerApp
+    from .branches import BranchService
 
     source.email_dryrun = args.email_dry_run
     source.no_sign = args.no_sign
@@ -101,7 +102,8 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
         editor=_draft_editor(source),
         sync=source.sync if source.can_sync() else None,
         sync_timeout=timeout,
-        sessions=_sessions(source.root, workspace, private=True),
+        sessions=(hub := _sessions(source.root, workspace, private=True)),
+        branches=BranchService(source.root, hub.records, hub.store.directory),
         app_pane=_app_pane(),
     )
 

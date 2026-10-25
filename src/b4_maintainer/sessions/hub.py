@@ -298,6 +298,10 @@ class SessionHub:
     def blocker(self) -> Optional[str]:
         return self.runner.blocker()
 
+    def records(self) -> list[SessionRecord]:
+        """Every session's record, ended ones included."""
+        return [v.record for v in self._poll()]
+
     def profiles(self) -> tuple[list[Profile], list[str]]:
         return load_profiles(BUILTIN_DIR, self.profiles_dir)
 
