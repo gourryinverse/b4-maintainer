@@ -29,6 +29,8 @@ class FakeBranches:
         self.loads = 0
         self.sessions = []
         self.accepted = []
+        self.plucked = []
+        self.targets = {'tree:s1': ('base:linux:me/base',)}
 
     def snapshot(self, workspace):
         self.loads += 1
@@ -47,8 +49,10 @@ class FakeBranches:
                 DetailRow('  s1c  mm/foo: series patch', 's1c', '/tree'),
             ),
         }
+        details['tree:s1'] += (DetailRow('  s2c  mm: agent fix', 's2c', '/tree'),)
+        statuses = {'base:linux:me/base': STATUS, 'base:linux:me/linus': STATUS}
         return BranchesSnapshot(
-            items, details, {'base:linux:me/base': STATUS}, rebases={'tree:s1': 'r1'}
+            items, details, statuses, rebases={'tree:s1': 'r1'}, targets=self.targets
         )
 
     def show(self, row):
@@ -67,6 +71,12 @@ class FakeBranches:
     def accept(self, workspace, sid):
         self.accepted.append(sid)
         return RebaseResult(True, 'f' * 40)
+
+    def pluck(self, workspace, item, rows, target, expected):
+        from b4_maintainer.adapters.bases import PluckResult
+
+        self.plucked.append((item, [r.key for r in rows], target, expected))
+        return PluckResult(True, 'e' * 40, tuple((r.key, 'n') for r in rows))
 
 
 async def settle(pilot):
@@ -227,3 +237,62 @@ async def test_a_on_a_rebase_sessions_tree_accepts_its_result(demo_root):
         await settle(pilot)
         assert service.accepted == ['r1']
         assert 'Accepted: the base is at ffffffffffff' in app.screen.status_text()
+
+
+async def open_tree_rows(pilot):
+    await settle(pilot)
+    await pilot.press('f3')
+    await settle(pilot)
+    await pilot.press('down')  # The session tree.
+    await settle(pilot)
+    await pilot.press('tab')  # Its commits.
+    await settle(pilot)
+
+
+async def test_space_marks_commits_and_p_plucks_them_after_a_confirmation(demo_root):
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_tree_rows(pilot)
+        screen = app.screen
+        await pilot.press('space', 'down', 'space')
+        await settle(pilot)
+        assert [r.key for r in screen.marked_rows()] == ['s1c', 's2c']
+        await pilot.press('p')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm)
+        assert 'Pluck 2 commits onto me/base' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.plucked == [('tree:s1', ['s1c', 's2c'], 'base:linux:me/base', 'tip0')]
+        assert 'Plucked 2 onto me/base' in screen.status_text()
+
+
+async def test_with_several_bases_p_asks_which(demo_root):
+    from b4_maintainer.branchscreen import Pick
+
+    service = FakeBranches()
+    service.targets = {'tree:s1': ('base:linux:me/base', 'base:linux:me/linus')}
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_tree_rows(pilot)
+        await pilot.press('p')  # The selected commit, unmarked.
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        await pilot.press('down', 'enter')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'onto me/linus' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.plucked == [('tree:s1', ['s1c'], 'base:linux:me/linus', 'tip0')]
+
+
+async def test_pluck_is_not_offered_without_a_target(demo_root):
+    service = FakeBranches()
+    service.targets = {}
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_tree_rows(pilot)
+        await pilot.press('p')
+        await settle(pilot)
+        assert not isinstance(app.screen, Confirm) and service.plucked == []

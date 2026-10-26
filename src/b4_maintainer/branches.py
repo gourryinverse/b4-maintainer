@@ -15,7 +15,15 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Optional, Sequence
 
-from .adapters.bases import BaseStatus, RebaseResult, accept_rebase, base_status, rebase_base
+from .adapters.bases import (
+    BaseStatus,
+    PluckResult,
+    RebaseResult,
+    accept_rebase,
+    base_status,
+    pluck,
+    rebase_base,
+)
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
 from .sessions.rebase import RESULT
@@ -53,6 +61,7 @@ class BranchesSnapshot:
     statuses: Mapping[str, BaseStatus] = field(default_factory=dict)
     problems: tuple[str, ...] = ()
     rebases: Mapping[str, str] = field(default_factory=dict)  # Item key -> rebase session.
+    targets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)  # Item -> bases.
 
 
 def _git(repo: pathlib.Path, *args: str) -> str:
@@ -159,7 +168,12 @@ class BranchService:
                     )
                     items.append(BranchItem(key, kind, project.id, f'{name} · {note}'))
                     details[key] = rows
-        return BranchesSnapshot(tuple(items), details, statuses, tuple(problems), rebases)
+        targets = {}
+        for item in items:
+            project = workspace.project(item.project)
+            bases = [f'base:{item.project}:{b.branch}' for b in project.bases] if project else []
+            targets[item.key] = tuple(k for k in bases if k != item.key)
+        return BranchesSnapshot(tuple(items), details, statuses, tuple(problems), rebases, targets)
 
     def _tree(
         self, record: SessionRecord, tree: pathlib.Path
@@ -277,6 +291,55 @@ class BranchService:
             pathlib.Path(record.worktree.path),
             RESULT,
             record.choices.get('expected', ''),
+        )
+
+    def targets(self, workspace: Workspace, item: str) -> list[str]:
+        """Where commits shown under *item* may be plucked: its project's bases, not itself."""
+        project = self._project_of(workspace, item)
+        if project is None:
+            return []
+        keys = [f'base:{project.id}:{b.branch}' for b in project.bases]
+        return [k for k in keys if k != item]
+
+    def _project_of(self, workspace: Workspace, item: str) -> Optional[Project]:
+        if item.startswith('tree:'):
+            record = next((r for r in self._records() if r.id == item.removeprefix('tree:')), None)
+            return workspace.project(record.project) if record else None
+        parts = item.split(':', 2)
+        return workspace.project(parts[1]) if len(parts) == 3 else None
+
+    def pluck(
+        self,
+        workspace: Workspace,
+        item: str,
+        rows: Sequence[DetailRow],
+        target: str,
+        expected: str,
+    ) -> PluckResult:
+        """Copy the commits of *rows* (shown under *item*) onto the base *target*."""
+        try:
+            project, base = self._base(workspace, target)
+        except SessionError as ex:
+            return PluckResult(False, error=str(ex))
+        commits = [r for r in rows if r.key and r.repo and not r.git_args and r.artifact is None]
+        if not commits:
+            return PluckResult(False, error='no commits marked')
+        sources = {r.repo for r in commits}
+        if len(sources) != 1:
+            return PluckResult(False, error='mark commits from one place at a time')
+        model = 'LLM'
+        if item.startswith('tree:'):
+            record = next((r for r in self._records() if r.id == item.removeprefix('tree:')), None)
+            if record is not None:
+                model = record.model or record.preset or model
+        return pluck(
+            self.root / project.path,
+            base,
+            pathlib.Path(sources.pop()),
+            [r.key for r in commits],
+            expected,
+            workspace.agent_email,
+            workspace.assisted_by.replace('{model}', model),
         )
 
     def _base(self, workspace: Workspace, key: str) -> tuple[Project, MaintainerBase]:

@@ -71,6 +71,7 @@ TABLE_KEYS = {
             'agent_email',
             'sandbox_nice',
             'sandbox_ionice',
+            'assisted_by',
         }
     ),
 }
@@ -189,6 +190,9 @@ class Workspace:
     # low, idle, or off): session builds and VMs yield to the app and the desktop.
     sandbox_nice: int = 10
     sandbox_ionice: str = 'low'
+    # The Assisted-by trailer a plucked agent commit gets ([sessions] assisted_by; {model}
+    # is the session's model).
+    assisted_by: str = '{model}'
     warnings: tuple[str, ...] = ()  # Keys in the configuration that nothing reads.
 
     @classmethod
@@ -247,6 +251,7 @@ class Workspace:
             sandbox_ionice=str(
                 config.get('sessions', {}).get('sandbox_ionice', cls.sandbox_ionice)
             ),
+            assisted_by=str(config.get('sessions', {}).get('assisted_by', cls.assisted_by)),
             warnings=config_warnings(config),
         )
 

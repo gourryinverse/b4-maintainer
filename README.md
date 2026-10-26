@@ -86,7 +86,9 @@ Python 3.11 or newer.
   each project's bases, worktrees, session trees (commits by class, artifacts), b4 prep
   and review branches, and other local branches with work not on any remote; `r` rebases
   a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`
-  on its tree moves the base to its result.
+  on its tree moves the base to its result. Space marks commits and `p` plucks them onto
+  a base: an agent's become yours with `Assisted-by:` (`[sessions] assisted_by`, default
+  the session's model); others keep their authors.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

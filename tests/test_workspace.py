@@ -322,3 +322,9 @@ def test_unknown_config_keys_are_reported_with_where_they_belong():
         'unknown key temperature in [[models]] deep',
     )
     assert Workspace.from_config({}).warnings == ()
+
+
+def test_the_assisted_by_trailer_is_configurable():
+    assert Workspace.from_config({}).assisted_by == '{model}'
+    ws = Workspace.from_config({'sessions': {'assisted_by': 'Claude:{model}'}})
+    assert ws.assisted_by == 'Claude:{model}' and ws.warnings == ()

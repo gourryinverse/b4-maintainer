@@ -247,3 +247,22 @@ def test_a_rebase_sessions_result_is_shown_and_accepted(rebase_ws):
     assert result.ok
     assert git('rev-parse', 'me/base', cwd=project) == git('rev-parse', 'b4m/rebased', cwd=dest)
     assert service.accept(workspace, record.id).error  # Not twice: the base moved.
+
+
+def test_marked_commits_are_plucked_onto_the_base(ws):
+    service, workspace, project = ws
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    old = git('rev-parse', 'me/base', cwd=project)
+    result = service.pluck(workspace, 'tree:s1', [row], 'base:linux:me/base', old)
+    assert result.ok and len(result.picked) == 1
+    assert git('log', '-1', '--format=%s', 'me/base', cwd=project) == 'mm: fix the leak'
+    assert git('rev-parse', 'me/base~1', cwd=project) == old
+    # The fixture's commit is the maintainer's own, so its message is kept as is.
+    assert 'Assisted-by' not in git('log', '-1', '--format=%B', 'me/base', cwd=project)
+
+
+def test_plucking_onto_a_base_names_its_targets(ws):
+    service, workspace, _project = ws
+    assert service.targets(workspace, 'tree:s1') == ['base:linux:me/base']
+    assert service.targets(workspace, 'base:linux:me/base') == []  # Not onto itself.

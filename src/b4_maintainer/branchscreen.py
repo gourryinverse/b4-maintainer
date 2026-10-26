@@ -9,16 +9,16 @@ rebase session on a copy (after a confirmation), and `A` on that session's tree 
 base to its result. F5 reloads; F3 or Escape returns to the series list.
 """
 
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
-from textual.screen import Screen
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
-from .adapters.bases import RebaseResult
+from .adapters.bases import PluckResult, RebaseResult
 from .branches import BranchesSnapshot, DetailRow
 from .sessions.records import SessionRecord
 from .workspace import Workspace
@@ -36,6 +36,49 @@ class Branches(Protocol):
     ) -> SessionRecord: ...
 
     def accept(self, workspace: Workspace, sid: str) -> RebaseResult: ...
+
+    def pluck(
+        self,
+        workspace: Workspace,
+        item: str,
+        rows: Sequence[DetailRow],
+        target: str,
+        expected: str,
+    ) -> PluckResult: ...
+
+
+class Pick(ModalScreen[Optional[str]]):
+    """Choose one of several: Enter picks, Escape cancels."""
+
+    DEFAULT_CSS = """
+    Pick { align: center middle; }
+    Pick > Vertical { width: auto; height: auto; border: solid $accent; background: $panel; }
+    Pick OptionList { width: auto; height: auto; border: none; }
+    """
+    BINDINGS = [Binding('escape', 'cancel', 'cancel')]
+
+    def __init__(self, title: str, choices: Sequence[tuple[str, str]]) -> None:
+        super().__init__()
+        self.title_text = title
+        self.choices = list(choices)  # (key, label)
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(self.title_text, markup=False)
+            yield OptionList(*(Option(label, id=key) for key, label in self.choices))
+
+    def on_mount(self) -> None:
+        self.query_one(OptionList).focus()
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        event.stop()  # The app's own lists handle theirs.
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class BranchesScreen(Screen[None]):
@@ -55,6 +98,8 @@ class BranchesScreen(Screen[None]):
         Binding('r', 'rebase', 'rebase base'),
         Binding('a', 'agent_rebase', 'rebase with an agent'),
         Binding('A', 'accept', 'accept rebase'),
+        Binding('space', 'mark', 'mark'),
+        Binding('p', 'pluck', 'pluck onto a base'),
         Binding('f5', 'reload', 'reload', key_display='F5'),
     ]
 
@@ -68,6 +113,7 @@ class BranchesScreen(Screen[None]):
         self._note = ''  # The last action's outcome, kept across the reload it causes.
         self._status_text = ''
         self._failed: dict[str, RebaseResult] = {}  # Base key -> its last failed rebase.
+        self._marks: set[int] = set()  # Marked commit rows of the selected item.
 
     def compose(self) -> ComposeResult:
         yield Static('Branches', id='branch-title')
@@ -141,13 +187,24 @@ class BranchesScreen(Screen[None]):
     def _show_rows(self) -> None:
         key = self.selected_item()
         self._rows = tuple(self.data.details.get(key, ())) if key else ()
+        self._marks = set()
+        self._render_rows(next((n for n, r in enumerate(self._rows) if r.key), None))
+        self._show(self.selected_row())
+
+    def _render_rows(self, highlighted: Optional[int]) -> None:
         rows = self.query_one('#branch-rows', OptionList)
         rows.clear_options()
-        for row in self._rows:
-            rows.add_option(Option(row.text, disabled=not row.key))
-        first = next((n for n, r in enumerate(self._rows) if r.key), None)
-        rows.highlighted = first
-        self._show(self.selected_row())
+        marks = bool(self._marks)
+        for n, row in enumerate(self._rows):
+            prefix = ('* ' if n in self._marks else '  ') if marks else ''
+            rows.add_option(Option(prefix + row.text, disabled=not row.key))
+        rows.highlighted = highlighted
+
+    def marked_rows(self) -> list[DetailRow]:
+        return [self._rows[n] for n in sorted(self._marks)]
+
+    def _is_commit(self, row: Optional[DetailRow]) -> bool:
+        return row is not None and bool(row.key) and not row.git_args and row.artifact is None
 
     def _show(self, row: Optional[DetailRow]) -> None:
         if row is None or not row.key:
@@ -197,6 +254,12 @@ class BranchesScreen(Screen[None]):
             return key in self._failed
         if action == 'accept':
             return key in self.data.rebases
+        if action == 'mark':
+            rows = self.query_one('#branch-rows', OptionList)
+            return self.focused is rows and self._is_commit(self.selected_row())
+        if action == 'pluck':
+            chosen = self._marks or self._is_commit(self.selected_row())
+            return bool(chosen and self.data.targets.get(key))
         return True
 
     def action_rebase(self) -> None:
@@ -323,3 +386,76 @@ class BranchesScreen(Screen[None]):
         self._status(note)
         self._note = note
         self.action_reload()
+
+    def action_mark(self) -> None:
+        rows = self.query_one('#branch-rows', OptionList)
+        index = rows.highlighted
+        if index is None or not self._is_commit(self.selected_row()):
+            return
+        self._marks ^= {index}
+        self._render_rows(index)
+        self.refresh_bindings()
+
+    def action_pluck(self) -> None:
+        """p: the marked commits (or the selected one) onto a base, after a confirmation."""
+        key = self.selected_item()
+        if key is None:
+            return
+        selected = self.selected_row()
+        rows = self.marked_rows() or ([selected] if selected and self._is_commit(selected) else [])
+        targets = list(self.data.targets.get(key, ()))
+        if not rows or not targets:
+            return
+        if len(targets) == 1:
+            self._confirm_pluck(key, rows, targets[0])
+            return
+        labels = [(t, t.split(':', 2)[2]) for t in targets]
+
+        def picked(target: Optional[str]) -> None:
+            if target is not None:
+                self._confirm_pluck(key, rows, target)
+
+        self.app.push_screen(Pick('Pluck onto which base?', labels), picked)
+
+    def _confirm_pluck(self, key: str, rows: list[DetailRow], target: str) -> None:
+        from .app import Confirm
+
+        status = self.data.statuses.get(target)
+        branch = target.split(':', 2)[2]
+        if status is None:
+            self._status(f'{branch}: not known yet; reload with F5')
+            return
+        n = len(rows)
+        prompt = (
+            f'Pluck {n} commit{"s" if n != 1 else ""} onto {branch}? Agent commits become '
+            'yours, with Assisted-by; others keep their authors. [y|N]'
+        )
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._pluck(key, rows, target, status.tip)
+
+        self.app.push_screen(Confirm(prompt), answered)
+
+    def _pluck(self, key: str, rows: list[DetailRow], target: str, expected: str) -> None:
+        self._status('Plucking…')
+        branch = target.split(':', 2)[2]
+
+        def work() -> None:
+            try:
+                result = self.service.pluck(self.workspace, key, rows, target, expected)
+            except Exception as exc:
+                result = PluckResult(False, error=str(exc))
+            if result.ok:
+                dropped = f'; already there: {", ".join(result.dropped)}' if result.dropped else ''
+                note = f'Plucked {len(result.picked)} onto {branch}{dropped}'
+            elif result.failed:
+                first = result.detail.splitlines()[0] if result.detail else ''
+                note = f'Not plucked: {result.failed} does not apply onto {branch}' + (
+                    f' ({first})' if first else ''
+                )
+            else:
+                note = f'Not plucked: {result.error}'
+            self.app.call_from_thread(self._acted, note)
+
+        self.run_worker(work, thread=True, group='branches-act')
