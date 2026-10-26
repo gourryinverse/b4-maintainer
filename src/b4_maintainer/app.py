@@ -29,6 +29,8 @@ from textual.worker import Worker, WorkerState
 
 from .adapters.b4mbox import load_thread
 from .adapters.drafts import DraftStore, SavedDraft
+from .attachdialog import AttachDialog
+from .attachments import Attachment, gather, git_identity, render
 from .branchscreen import Branches, BranchesScreen
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import LaunchDialog, LaunchResult
@@ -410,7 +412,8 @@ class MaintainerApp(App[None]):
         Binding('x', 'unhide', 'unhide'),
         Binding('f5', 'refresh', 'refresh', key_display='F5'),
         Binding('r', 'reply', 'reply'),
-        Binding('R', 'mark_read', 'read all'),
+        Binding('R', 'reply_attach', 'reply + session output'),
+        Binding('M', 'mark_read', 'read all'),
         Binding('f3', 'branches', 'branches', key_display='F3'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
         Binding('f12', 'focus_session', 'to session', key_display='F12'),
@@ -775,6 +778,12 @@ class MaintainerApp(App[None]):
                 return False
             # In the series list: the selected series' cover letter (or first patch).
             return self._reply_msgid() is not None if reading else self._item is not None
+        if action == 'reply_attach':
+            if self._actions is None or self._draft is not None or self._sessions is None:
+                return False
+            if self._saved_draft is not None and reading:
+                return True
+            return self._reply_msgid() is not None if reading else self._item is not None
         if action == 'mark_read':
             return self._actions is not None and (self._reading or self._item) is not None
         if action in ('hide', 'unhide'):
@@ -1044,14 +1053,18 @@ class MaintainerApp(App[None]):
                 self._expanded.add(key)
             self._render_tree((key, node))
             self._saved_draft = (item, msgid)
-            if reply_now or adopt:
+            if reply_now == 'attach':
+                self.action_reply_attach()
+            elif reply_now or adopt:
                 self._resume_saved_draft()
             else:
                 self._set_notice('Saved draft here · r resumes · ctrl+g discards')
                 self._sync_bindings()
             return
         self._render_tree((keys[0], 0) if keys else ('', 0))
-        if reply_now:
+        if reply_now == 'attach':
+            self.action_reply_attach()
+        elif reply_now:
             self.action_reply()  # On the first posting: the cover letter, else the first patch.
 
     def _bots(self) -> tuple[str, ...]:
@@ -1112,9 +1125,15 @@ class MaintainerApp(App[None]):
             self.action_open_reader()
             self._reply_on_open = self._reading is not None
             return
+        found = self._reply_args()
+        if found is not None:
+            self._begin_reply(*found)
+
+    def _reply_args(self) -> Optional[tuple[WorkItem, str, Optional[str]]]:
+        """(series, message to answer, starting quote) for a reply in the reader."""
         actions, item, msgid = self._actions, self._reading, self._reply_msgid()
         if actions is None or item is None or msgid is None:
-            return
+            return None
         quote = None
         if msgid.startswith(SASHIKO_PREFIX):
             # Not on the list: answer the patch, quoting Sashiko's review.
@@ -1124,15 +1143,91 @@ class MaintainerApp(App[None]):
             quoted = '\n'.join(f'> {line}'.rstrip() for line in reply.message.body.splitlines())
             quote = f'Sashiko ({source}) reported:\n{quoted}\n\n'
             msgid = msgid.removeprefix(SASHIKO_PREFIX)
-        self._begin_reply(item, msgid, quote)
+        return item, msgid, quote
+
+    def action_reply_attach(self) -> None:
+        """R: a reply with chosen session output (patches, results) at its end: pick from
+        what this series' sessions produced, then write as usual. A saved draft gets
+        them appended; an open one must be finished first."""
+        hub, snapshot = self._sessions, self.snapshot
+        if hub is None or snapshot is None:
+            return
+        if self._draft is not None:
+            self._set_notice('Finish or close the open draft first (R adds to a saved one)')
+            return
+        if self._reading is None:
+            self.action_open_reader()
+            self._reply_on_open = 'attach' if self._reading is not None else False
+            return
+        if self._saved_draft is not None:
+            item, msgid = self._saved_draft
+            found: Optional[tuple[WorkItem, str, Optional[str]]] = (item, msgid, None)
+        else:
+            found = self._reply_args()
+        if found is None:
+            return
+        item, msgid, quote = found
+
+        def work() -> None:
+            try:
+                records = hub.records()
+                offered = gather(records, item.identity, hub.store.directory)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot list session output: {exc}')
+                return
+            models = {r.id: r.model or r.preset or 'LLM' for r in records}
+            self.call_from_thread(self._pick_attachments, item, msgid, quote, offered, models)
+
+        self.run_worker(work, thread=True, group='session-action')
+
+    def _pick_attachments(
+        self,
+        item: WorkItem,
+        msgid: str,
+        quote: Optional[str],
+        offered: list[Attachment],
+        models: dict[str, str],
+    ) -> None:
+        if not offered:
+            self._set_notice('No session output for this series yet; r replies without it')
+            return
+        workspace = self.snapshot.workspace if self.snapshot else Workspace()
+
+        def chosen(picked: Optional[list[Attachment]]) -> None:
+            if picked is None:
+                return
+            if not picked:
+                self._begin_reply(item, msgid, quote)
+                return
+            if self._saved_draft is not None and self._saved_draft[1] == msgid:
+                self._saved_draft = None
+
+            def extra(target: Any) -> str:
+                me = git_identity(pathlib.Path(target.checkout))
+                assisted = {
+                    sid: workspace.assisted_by.replace('{model}', model)
+                    for sid, model in models.items()
+                }
+                return render(picked, workspace.agent_email, assisted, me)
+
+            self._begin_reply(item, msgid, quote, extra)
+
+        self.push_screen(AttachDialog(offered), chosen)
 
     def _resume_saved_draft(self) -> None:
         saved, self._saved_draft = self._saved_draft, None
         if saved is not None:
             self._begin_reply(saved[0], saved[1], None)
 
-    def _begin_reply(self, item: WorkItem, msgid: str, quote: Optional[str]) -> None:
-        """Load the message to answer (and any saved draft) off the UI thread."""
+    def _begin_reply(
+        self,
+        item: WorkItem,
+        msgid: str,
+        quote: Optional[str],
+        extra: Optional[Callable[[Any], str]] = None,
+    ) -> None:
+        """Load the message to answer (and any saved draft) off the UI thread; *extra*
+        (given the reply target) is text appended to the draft, new or saved."""
         actions, drafts = self._actions, self._drafts
         if actions is None:
             return
@@ -1151,9 +1246,15 @@ class MaintainerApp(App[None]):
             try:
                 target = actions.prepare_reply(item, msgid)
                 saved = drafts.get(msgid) if drafts is not None else None
+                added = extra(target) if extra is not None else ''
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot reply: {exc}')
                 return
+            if added and drafts is not None:
+                start = saved.quote if saved else (quote or reply_quote(target.lmsg))
+                text = saved.text if saved else start
+                drafts.save(msgid, start, text.rstrip('\n') + '\n\n' + added)
+                saved, added = drafts.get(msgid), ''  # Now in the saved draft.
             below = ''
             if stack and hub is not None and beside is not None:
                 try:
@@ -1178,7 +1279,7 @@ class MaintainerApp(App[None]):
                 else:
                     self.call_from_thread(self._editor_opened, item, msgid, target, start, pane)
                     return
-            self.call_from_thread(self._compose_reply, item, msgid, target, quote, saved)
+            self.call_from_thread(self._compose_reply, item, msgid, target, quote, saved, added)
 
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
@@ -1353,15 +1454,20 @@ class MaintainerApp(App[None]):
         target: Any,
         quote: Optional[str] = None,
         saved: Optional[SavedDraft] = None,
+        added: str = '',
     ) -> None:
-        """Open a draft beside the thread: a saved one, else b4's quote of the message."""
+        """Open a draft beside the thread: a saved one, else b4's quote of the message;
+        *added* (session output, when no draft store holds it) goes at its end."""
         if not self._still_reading(item):
             return  # The reader closed while the message loaded.
         quote = reply_quote(target.lmsg) if quote is None else quote
         if saved is not None:
             quote = saved.quote
         self._draft = Draft(item, msgid, target, quote)
-        self._draft_area.load_text(saved.text if saved is not None else quote)
+        text = saved.text if saved is not None else quote
+        if added:
+            text = text.rstrip('\n') + '\n\n' + added
+        self._draft_area.load_text(text)
         self._draft_area.move_cursor(self._draft_area.document.end)
         author = target.lmsg.fromname or target.lmsg.fromemail
         self._draft_area.border_title = escape(f'Draft → {author} · ctrl+s send · ctrl+g discard')

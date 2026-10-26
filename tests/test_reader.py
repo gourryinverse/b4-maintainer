@@ -501,7 +501,7 @@ async def test_shift_r_in_reader_clears_unread_marks():
         await pilot.press('minus')  # Collapse: the patch row carries the unread mark.
         await pilot.pause()
         assert app.tree_labels()[0].endswith(' ●')
-        await pilot.press('R')
+        await pilot.press('M')
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert actions.marked == ['r1@example.org']

@@ -68,8 +68,11 @@ Python 3.11 or newer.
 
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
   live: `F5` fetches profile lists and your own mail from lore, `t` tracks the selected series
-  through b4 (To Review), `x` hides it, `R` marks it read, `/` filters by regex, `r` drafts a
-  reply beside the thread (in the list: to the cover letter) and `ctrl+s` sends it through b4
+  through b4 (To Review), `x` hides it, `M` marks it read, `/` filters by regex, `r` drafts a
+  reply beside the thread (in the list: to the cover letter), `R` does too after picking
+  what the series' agent sessions produced to add at its end (their commits as inline
+  patches for `git am --scissors`, their results and reproducers as text), and `ctrl+s`
+  sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
 - Workspace state syncs through a private state repository cloned as `state/` (see
   [setup](#setup));

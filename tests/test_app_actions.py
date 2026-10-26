@@ -180,14 +180,14 @@ async def test_unhide_from_hidden_view(demo_root):
         assert app.current_view == 'all'  # The Hidden view is gone once empty.
 
 
-async def test_shift_r_marks_series_read(demo_root):
+async def test_shift_m_marks_series_read(demo_root):
     app, live = make(demo_root)
     async with app.run_test(size=(180, 40)) as pilot:
         series_list = await settle(pilot)
         await pilot.press('down')
         target = series_list.highlighted_item
-        assert 'R' in footer_keys(app)
-        await pilot.press('R')
+        assert 'M' in footer_keys(app)
+        await pilot.press('M')
         series_list = await settle(pilot)
         assert live.read_calls == [target.identity]
         assert threading.get_ident() not in live.threads
