@@ -177,3 +177,10 @@ def test_rebase_sessions_are_told_to_keep_the_commits_trailers(tmp_path):
     system = (store.directory('r1') / 'system.md').read_text()
     assert 'Rebase in the worktree /w/var/worktrees/r1' in system
     assert 'keep each commit' in system and 'never add Signed-off-by' not in system
+
+
+def test_sessions_are_told_where_the_maintainers_notes_arrive(tmp_path):
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    prepare_session(store, make_record('s1'), REQUEST, source='')
+    system = (store.directory('s1') / 'system.md').read_text()
+    assert str(store.directory('s1') / 'work' / 'context' / 'inbox.md') in system

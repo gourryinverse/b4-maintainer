@@ -152,6 +152,7 @@ def system_prompt(
     facts = [
         f'This session: {session_label(record)}.',
         f'Context in {work / "context"}: {listed}.',
+        f'Notes from the maintainer may arrive in {work / "context" / "inbox.md"} while you work.',
         f'Write output files only under {work / "out"}.',
         f'Permissions: {permissions}.',
     ]

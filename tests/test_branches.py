@@ -404,3 +404,43 @@ def test_reaping_says_what_goes_then_removes_it(rebase_ws, tmp_path):
     assert not (tmp_path / 'ws' / 'var' / 'worktrees' / 's1').exists()
     keys = {i.key for i in service.snapshot(workspace).items}
     assert not keys & {'prep:linux:b4/reap-me', 'branch:linux:forgotten', 'tree:s1'}
+
+
+def second_tree(tmp_path, project, store, sid='s2'):
+    """Another session tree of the same project (e.g. the series' next revision)."""
+    tree = tmp_path / 'ws' / 'var' / 'worktrees' / sid
+    git('clone', '-q', '--shared', str(project), str(tree), cwd=tmp_path)
+    base = git('rev-parse', 'up/stable', cwd=project)
+    git('switch', '-q', '-c', f'b4m/session/{sid}', base, cwd=tree)
+    commit(tree, 'foo.c', 'foo v2\n', 'mm/foo: the series patch, v2')
+    applied = git('rev-parse', 'HEAD', cwd=tree)
+    record = make_record(
+        sid,
+        mode='worktree',
+        revision=4,
+        worktree=Worktree(str(tree), f'b4m/session/{sid}', base, applied),
+    )
+    store.create(record)
+    return tree, record
+
+
+def test_commits_copy_to_another_session_tree_on_branches_of_the_same_name(ws, tmp_path):
+    _service, workspace, project = ws
+    store = SessionStore(tmp_path / 'ws' / 'var' / 'sessions')
+    tree2, record2 = second_tree(tmp_path, project, store)
+    service = BranchService(tmp_path / 'ws', lambda: [store.record('s1'), record2], store.directory)
+    found = service.snapshot(workspace)
+    assert 'tree:s2' in found.targets['tree:s1']
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    result = service.pluck(workspace, 'tree:s1', [row], 'tree:s2', found.tips['tree:s2'])
+    assert result.ok, result.error
+    # On the pull-ahead branch of the same name, started at s2's series base.
+    assert git('log', '--format=%s', 'b4m/pull-ahead/leak', '-1', cwd=tree2) == 'mm: fix the leak'
+    assert git('rev-parse', 'b4m/pull-ahead/leak~1', cwd=tree2) == record2.worktree.base
+    note = (store.directory('s2') / 'work' / 'context' / 'inbox.md').read_text()
+    assert 'b4m/pull-ahead/leak' in note and 'mm: fix the leak' in note and 's1' in note
+    # The branch checked out in the target tree is never moved under it.
+    series_row = next(r for r in found.details['tree:s1'] if 'mm/foo: the series patch' in r.text)
+    git('switch', '-q', '-c', 'b4m/session/s1', cwd=tree2)  # Same name as the source branch.
+    busy = service.pluck(workspace, 'tree:s1', [series_row], 'tree:s2', found.tips['tree:s2'])
+    assert not busy.ok and 'checked out' in busy.error

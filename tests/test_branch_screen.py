@@ -68,6 +68,7 @@ class FakeBranches:
             'base:linux:me/base': 'tip0',
             'base:linux:me/linus': 'tip0',
             'prep:linux:b4/pa': 'ptip',
+            'tree:s9': 'applied9',
         }
         return BranchesSnapshot(
             items,
@@ -574,3 +575,22 @@ async def test_x_removes_after_saying_what_goes_and_asks_twice_for_changes(demo_
         await pilot.press('n')
         await settle(pilot)
         assert service.reaped == ['prep:linux:b4/pa']
+
+
+async def test_p_copies_to_another_session_tree_with_its_own_wording(demo_root):
+    from b4_maintainer.branchscreen import Pick
+
+    service = FakeBranches()
+    service.targets = {'tree:s1': ('base:linux:me/base', 'tree:s9')}
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_tree_rows(pilot)
+        await pilot.press('p')
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        assert [label for _key, label in app.screen.choices] == ['me/base', "session s9's tree"]
+        await pilot.press('down', 'enter')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and "Copy 1 commit to session s9's tree" in (
+            app.screen.prompt
+        )

@@ -502,7 +502,7 @@ class BranchesScreen(Screen[None]):
         if len(targets) == 1:
             self._confirm_pluck(key, rows, targets[0])
             return
-        labels = [(t, t.split(':', 2)[2]) for t in targets]
+        labels = [(t, _target_label(t)) for t in targets]
 
         def picked(target: Optional[str]) -> None:
             if target is not None:
@@ -514,15 +514,22 @@ class BranchesScreen(Screen[None]):
         from .app import Confirm
 
         tip = self.data.tips.get(target)
-        branch = target.split(':', 2)[2]
+        branch = _target_label(target)
         if tip is None:
             self._status(f'{branch}: not known yet; reload with F5')
             return
         n = len(rows)
-        prompt = (
-            f'Pluck {n} commit{"s" if n != 1 else ""} onto {branch}? Agent commits become '
-            'yours, with Assisted-by; others keep their authors. [y|N]'
-        )
+        commits = f'{n} commit{"s" if n != 1 else ""}'
+        if target.startswith('tree:'):
+            prompt = (
+                f'Copy {commits} to {branch}? They go on branches of the same name and keep '
+                "their authors; a note in that session's context says what arrived. [y|N]"
+            )
+        else:
+            prompt = (
+                f'Pluck {commits} onto {branch}? Agent commits become yours, with '
+                'Assisted-by; others keep their authors. [y|N]'
+            )
 
         def answered(confirmed: Optional[bool]) -> None:
             if confirmed:
@@ -532,7 +539,7 @@ class BranchesScreen(Screen[None]):
 
     def _pluck(self, key: str, rows: list[DetailRow], target: str, expected: str) -> None:
         self._status('Plucking…')
-        branch = target.split(':', 2)[2]
+        branch = _target_label(target)
 
         def work() -> None:
             try:
@@ -827,3 +834,11 @@ def _moved(result: RebaseResult) -> str:
     for branch, why in result.stuck:
         text += f'; {branch} stays: {why}'
     return text
+
+
+def _target_label(target: str) -> str:
+    """A pluck target as the maintainer reads it: a branch, or a session's tree."""
+    kind, _, rest = target.partition(':')
+    if kind == 'tree':
+        return f"session {rest}'s tree"
+    return rest.partition(':')[2]

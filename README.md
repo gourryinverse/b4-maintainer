@@ -100,7 +100,10 @@ Python 3.11 or newer.
   terminal, where b4 shows its summary and asks before anything goes out
   (`--email-dry-run` and `--no-sign` pass through). All by running b4. `x` removes a prep
   branch (`b4 prep --cleanup`, which archives it), another local branch, or a session tree,
-  after saying what goes; rebasing a base moves the prep branches cut from it.
+  after saying what goes; rebasing a base moves the prep branches cut from it. `p` onto
+  another session's tree copies commits there (same branch names, authors kept, a note in
+  that session's `context/inbox.md`): a fix back to the session that found the bug, or
+  work onto the tree of a series' next revision.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

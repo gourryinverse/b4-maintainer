@@ -460,3 +460,53 @@ def pluck_onto(
         ).stdout.split()
         for ref in refs:
             _git(repo, 'update-ref', '-d', ref, check=False)
+
+
+ZERO = '0' * 40
+
+
+def copy_to_tree(
+    source: pathlib.Path, tree: pathlib.Path, shas: Sequence[str], branch: str, start: str
+) -> PluckResult:
+    """Copy *shas* (oldest first) from *source* onto *branch* in a session *tree* (made at
+    *start* if missing), as they are: no attribution rewrite, they stay session work. A
+    branch checked out in the tree (or one of its checkouts) is refused; a conflict
+    changes nothing. Source commits come in through scratch refs, deleted after."""
+    listed = _git(tree, 'worktree', 'list', '--porcelain').stdout
+    if f'branch refs/heads/{branch}\n' in listed + '\n':
+        return PluckResult(False, error=f'{branch} is checked out in that tree')
+    tip0 = _commit(tree, f'refs/heads/{branch}')
+    incoming = f'{INCOMING_REF}/copy'
+    try:
+        if source.resolve() != tree.resolve() and shas:
+            refspecs = [f'+{s}:{incoming}/{n}' for n, s in enumerate(shas)]
+            pushed = _git(
+                source, 'push', '--quiet', '--no-verify', str(tree), *refspecs, check=False
+            )
+            if pushed.returncode != 0:
+                return PluckResult(
+                    False, error=f'cannot bring the commits in: {pushed.stderr.strip()}'
+                )
+        replayed = _replay(tree, tip0 or start, shas)
+        if not replayed.ok:
+            return replayed
+        if replayed.tip != (tip0 or start) or tip0 is None:
+            moved = _git(
+                tree,
+                'update-ref',
+                '-m',
+                'b4-maintainer: copied from another tree',
+                f'refs/heads/{branch}',
+                replayed.tip,
+                tip0 or ZERO,
+                check=False,
+            )
+            if moved.returncode != 0:
+                return PluckResult(False, error=f'{branch} moved meanwhile: {moved.stderr.strip()}')
+        return replayed
+    finally:
+        refs = _git(
+            tree, 'for-each-ref', '--format=%(refname)', incoming, check=False
+        ).stdout.split()
+        for ref in refs:
+            _git(tree, 'update-ref', '-d', ref, check=False)

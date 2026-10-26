@@ -10,9 +10,11 @@ are b4's (`b4/<name>`); its review branches (`b4/review/*`) are listed apart, re
 """
 
 import dataclasses
+import datetime
 import json
 import os
 import pathlib
+import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -23,6 +25,7 @@ from .adapters.bases import (
     RebaseResult,
     accept_rebase,
     base_status,
+    copy_to_tree,
     pluck_onto,
     rebase_base,
 )
@@ -228,9 +231,18 @@ class BranchService:
             project = workspace.project(item.project)
             bases = [f'base:{item.project}:{b.branch}' for b in project.bases] if project else []
             prep_keys = [i.key for i in items if i.kind == 'prep' and i.project == item.project]
-            targets[item.key] = tuple(k for k in (*bases, *prep_keys) if k != item.key)
+            tree_keys = [
+                i.key
+                for i in items
+                if i.kind == 'tree' and i.project == item.project and i.key not in rebases
+            ]
+            keys = (*bases, *prep_keys, *tree_keys)
+            targets[item.key] = tuple(k for k in keys if k != item.key)
         for key, status in statuses.items():
             tips[key] = status.tip
+        for record in records:
+            if record.worktree is not None:
+                tips[f'tree:{record.id}'] = record.worktree.applied  # Per branch, at copy time.
         for item in (i for i in items if i.kind == 'prep'):
             project = workspace.project(item.project)
             if project is not None:
@@ -256,7 +268,10 @@ class BranchService:
         classed = classify_tree(tree, record.worktree)
         state: TreeState = inspect_tree(tree, record.worktree.applied, record.worktree)
         rows = [DetailRow('Series')]
-        rows += [_commit_row(c.sha, c.subject, tree) for c in classed.series]
+        rows += [
+            dataclasses.replace(_commit_row(c.sha, c.subject, tree), branch=record.worktree.branch)
+            for c in classed.series
+        ]
         for branch in classed.branches:
             if not branch.commits and branch.name == record.worktree.branch:
                 continue
@@ -414,7 +429,9 @@ class BranchService:
         expected: str,
     ) -> PluckResult:
         """Copy the commits of *rows* (shown under *item*) onto *target* (a base or a prep
-        branch), remembering where each came from."""
+        branch, remembering where each came from; or another session tree)."""
+        if target.startswith('tree:'):
+            return self._copy_to_tree(workspace, item, rows, target.removeprefix('tree:'))
         try:
             project, branch = self._target(workspace, target)
         except SessionError as ex:
@@ -438,6 +455,50 @@ class BranchService:
         if result.ok:
             self._remember(project, item, commits, result)
         return result
+
+    def _copy_to_tree(
+        self, workspace: Workspace, item: str, rows: Sequence[DetailRow], sid: str
+    ) -> PluckResult:
+        """Commits onto another session tree, on branches named as their source branch
+        (or b4m/pull-ahead/<subject> from elsewhere), each made where its class starts:
+        pull-aheads at the tree's series base, others on top of its series. A note in
+        the session's context says what arrived."""
+        record = self._record(sid)
+        if record is None or record.worktree is None:
+            return PluckResult(False, error=f'no session tree {sid}')
+        tree = pathlib.Path(record.worktree.path)
+        commits = [r for r in rows if is_commit(r)]
+        if not commits or len({r.repo for r in commits}) != 1:
+            return PluckResult(False, error='mark commits from one place at a time')
+        groups: dict[str, list[DetailRow]] = {}
+        for row in commits:
+            name = row.branch or 'b4m/pull-ahead/' + _slug(row.text.split('  ', 2)[-1])
+            groups.setdefault(name, []).append(row)
+        picked: list[tuple[str, str]] = []
+        dropped: list[str] = []
+        arrived: list[str] = []
+        for name, group in groups.items():
+            start = (
+                record.worktree.base
+                if name.startswith('b4m/pull-ahead/')
+                else record.worktree.applied
+            )
+            result = copy_to_tree(
+                pathlib.Path(group[0].repo), tree, [r.key for r in group], name, start
+            )
+            if not result.ok:
+                return result
+            picked += result.picked
+            dropped += result.dropped
+            arrived += [f'- {name}: {r.text.strip().split("  ", 1)[-1]}' for r in group]
+        source = item.removeprefix('tree:') if item.startswith('tree:') else item
+        inbox = self._out(sid) / 'work' / 'context' / 'inbox.md'
+        inbox.parent.mkdir(parents=True, exist_ok=True)
+        when = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+        with inbox.open('a') as f:
+            f.write(f'\n{when}: the maintainer copied commits here from {source}:\n')
+            f.write('\n'.join(arrived) + '\n')
+        return PluckResult(True, '', tuple(picked), tuple(dropped))
 
     # Where plucked commits came from: var/branches/<project>/plucked.json, local.
 
@@ -851,6 +912,11 @@ def _identity_parts(repo: pathlib.Path) -> tuple[str, str]:
 def _identity(repo: pathlib.Path) -> str:
     name, email = _identity_parts(repo)
     return f'{name} <{email}>' if name and email else ''
+
+
+def _slug(subject: str) -> str:
+    words = re.sub(r'[^a-z0-9]+', '-', subject.split(':', 1)[-1].lower()).strip('-')
+    return words[:40].rstrip('-') or 'commit'
 
 
 def is_commit(row: DetailRow) -> bool:
