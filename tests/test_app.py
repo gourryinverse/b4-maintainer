@@ -433,3 +433,19 @@ async def test_a_stable_pending_row_colours_only_its_mark():
             and seg.style.color.name == 'dark_orange'
         ]
         assert coloured == ['⚠']
+
+
+async def test_misplaced_config_keys_are_reported_in_the_status_line(demo_root):
+    import json
+
+    path = demo_root / 'workspace.json'
+    config = json.loads(path.read_text())
+    config['profiles'][0]['bases'] = [{'branch': 'me/base', 'upstream': 'up/stable'}]
+    path.write_text(json.dumps(config))
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        text = app.status_text()
+        assert 'workspace.toml: unknown key bases in [[profiles]]' in text
+        assert 'it is a [[projects]] setting' in text

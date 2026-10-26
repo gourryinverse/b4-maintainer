@@ -43,6 +43,78 @@ def _ref(r: Mapping[str, Any]) -> Ref:
     )
 
 
+# The keys each table of workspace.toml may have; anything else is reported, not ignored.
+REF_KEYS = frozenset({'label', 'name', 'authority', 'view', 'ends_review'})
+BASE_KEYS = frozenset({'branch', 'upstream'})
+PROJECT_KEYS = frozenset(
+    {'id', 'label', 'short', 'lists', 'refs', 'path', 'maintainers', 'get_maintainer', 'bases'}
+)
+PROFILE_KEYS = frozenset({'id', 'label', 'project', 'lists', 'paths', 'enabled'})
+MODEL_KEYS = frozenset({'id', 'model', 'thinking', 'args', 'env', 'enabled'})
+TABLE_KEYS = {
+    'layout': frozenset({'three_pane', 'single_pane', 'preview_width'}),
+    'browse': frozenset({'window_days'}),
+    'sashiko': frozenset({'senders'}),
+    'drafts': frozenset({'editor', 'tmux_width'}),
+    'sync': frozenset({'auto', 'timeout'}),
+    'refs': frozenset({'fetch'}),
+    'sessions': frozenset(
+        {
+            'max_live',
+            'max_builds',
+            'worktree_warn',
+            'worktree_warn_gb',
+            'pi',
+            'pi_args',
+            'pane_width',
+            'agent_name',
+            'agent_email',
+            'sandbox_nice',
+            'sandbox_ionice',
+        }
+    ),
+}
+TOP_KEYS = frozenset({'me', 'projects', 'profiles', 'models', *TABLE_KEYS})
+
+
+def _unknown(entry: Any, known: frozenset[str], where: str) -> list[str]:
+    if not isinstance(entry, Mapping):
+        return []
+    found = []
+    for key in entry:
+        if key in known:
+            continue
+        hint = ''
+        if where.startswith('in [[profiles]]') and key in PROJECT_KEYS:
+            hint = ' (it is a [[projects]] setting)'
+        elif where.startswith('in [[projects]]') and key in PROFILE_KEYS:
+            hint = ' (it is a [[profiles]] setting)'
+        found.append(f'unknown key {key} {where}{hint}')
+    return found
+
+
+def config_warnings(config: Mapping[str, Any]) -> tuple[str, ...]:
+    """Keys workspace.toml has that nothing reads: usually a typo or a line under the
+    wrong table (a key belongs to the table header above it)."""
+    warnings = [f'unknown key {k} (top level)' for k in config if k not in TOP_KEYS]
+    for p in config.get('projects', []):
+        name = f'[[projects]] {p.get("id", "?")}' if isinstance(p, Mapping) else '[[projects]]'
+        warnings += _unknown(p, PROJECT_KEYS, f'in {name}')
+        for r in p.get('refs', []) if isinstance(p, Mapping) else []:
+            warnings += _unknown(r, REF_KEYS, f'in {name} refs')
+        for b in p.get('bases', []) if isinstance(p, Mapping) else []:
+            warnings += _unknown(b, BASE_KEYS, f'in {name} bases')
+    for p in config.get('profiles', []):
+        name = f'[[profiles]] {p.get("id", "?")}' if isinstance(p, Mapping) else '[[profiles]]'
+        warnings += _unknown(p, PROFILE_KEYS, f'in {name}')
+    for table, known in TABLE_KEYS.items():
+        warnings += _unknown(config.get(table, {}), known, f'in [{table}]')
+    for m in config.get('models', []):
+        name = f'[[models]] {m.get("id", "?")}' if isinstance(m, Mapping) else '[[models]]'
+        warnings += _unknown(m, MODEL_KEYS, f'in {name}')
+    return tuple(warnings)
+
+
 @dataclass(frozen=True)
 class MaintainerBase:
     """The maintainer's integration branch on top of an upstream branch (e.g. a local
@@ -117,6 +189,7 @@ class Workspace:
     # low, idle, or off): session builds and VMs yield to the app and the desktop.
     sandbox_nice: int = 10
     sandbox_ionice: str = 'low'
+    warnings: tuple[str, ...] = ()  # Keys in the configuration that nothing reads.
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
@@ -174,6 +247,7 @@ class Workspace:
             sandbox_ionice=str(
                 config.get('sessions', {}).get('sandbox_ionice', cls.sandbox_ionice)
             ),
+            warnings=config_warnings(config),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

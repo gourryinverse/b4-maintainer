@@ -282,3 +282,43 @@ def test_sandbox_priorities_are_configurable():
     assert (ws.sandbox_nice, ws.sandbox_ionice) == (15, 'idle')
     default = Workspace.from_config({})
     assert (default.sandbox_nice, default.sandbox_ionice) == (10, 'low')
+
+
+def test_unknown_config_keys_are_reported_with_where_they_belong():
+    config = {
+        'projects': [
+            {
+                'id': 'linux',
+                'refs': [
+                    {
+                        'label': 'm',
+                        'name': 'mainline/master',
+                        'authority': 'mainline',
+                        'colour': 'red',
+                    }
+                ],
+                'bases': [{'branch': 'me/base', 'upstream': 'up/stable', 'onto': 'x'}],
+            }
+        ],
+        'profiles': [
+            {
+                'id': 'mm',
+                'project': 'linux',
+                'bases': [{'branch': 'me/base', 'upstream': 'mm/mm-stable'}],
+            }
+        ],
+        'sessions': {'max_live': 2, 'max_bulds': 3},
+        'models': [{'id': 'deep', 'model': 'a/b', 'temperature': 1}],
+        'sashiko': {'senders': []},
+        'colours': {},
+    }
+    warnings = Workspace.from_config(config).warnings
+    assert warnings == (
+        'unknown key colours (top level)',
+        'unknown key colour in [[projects]] linux refs',
+        'unknown key onto in [[projects]] linux bases',
+        'unknown key bases in [[profiles]] mm (it is a [[projects]] setting)',
+        'unknown key max_bulds in [sessions]',
+        'unknown key temperature in [[models]] deep',
+    )
+    assert Workspace.from_config({}).warnings == ()

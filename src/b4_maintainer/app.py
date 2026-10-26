@@ -579,8 +579,11 @@ class MaintainerApp(App[None]):
         previous = self._series_list.highlighted_item if self.snapshot else None
         position = self._series_list.cursor
         view = self.current_view if any(v.id == self.current_view for v in index.views) else 'all'
+        warned = self.snapshot.workspace.warnings if self.snapshot else ()
         self.snapshot = snapshot
         self.index = index
+        if snapshot.workspace.warnings and snapshot.workspace.warnings != warned:
+            self._notice = 'workspace.toml: ' + '; '.join(snapshot.workspace.warnings)
         if self._breakpoints is None:
             self._breakpoints = snapshot.workspace.breakpoints
             self._apply_layout(self.size.width)

@@ -292,6 +292,8 @@ def bases_main(argv: Sequence[str]) -> int:
     except (OSError, ValueError) as e:
         print(f'b4-maintainer: {e}', file=sys.stderr)
         return 2
+    for warning in workspace.warnings:
+        print(f'b4-maintainer: workspace.toml: {warning}', file=sys.stderr)
     found = [(p, b) for p in workspace.projects for b in p.bases]
     if args.rebase:
         match = [(p, b) for p, b in found if b.branch == args.rebase]
