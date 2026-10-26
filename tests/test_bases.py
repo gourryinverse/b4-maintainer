@@ -4,7 +4,12 @@ commits have landed there; rebasing it replays the rest, or changes nothing."""
 import pytest
 from gitutil import git
 
-from b4_maintainer.adapters.bases import base_status, rebase_base
+from b4_maintainer.adapters.bases import (
+    accept_rebase,
+    base_status,
+    prepare_rebase_tree,
+    rebase_base,
+)
 from b4_maintainer.workspace import MaintainerBase
 
 BASE = MaintainerBase('me/base', 'up/stable')
@@ -120,6 +125,7 @@ def test_a_conflict_changes_nothing_and_names_the_commit(project):
     result = rebase_base(project, BASE)
     assert not result.ok and result.failed is not None
     assert result.failed.subject == 'mm: fix b'
+    assert 'CONFLICT' in result.detail and 'b.c' in result.detail  # What the session is told.
     assert git('rev-parse', 'me/base', cwd=project) == old
     assert snapshot(project) == before
 
@@ -176,3 +182,79 @@ def test_the_bases_command_rebases_one_base(project, tmp_path, capsys):
     out = capsys.readouterr().out
     assert 'me/base rebased onto up/stable' in out and 'dropped: mm: fix the leak in a' in out
     assert bases_main(['-C', str(root), '--rebase', 'me/none']) == 2
+
+
+AGENT = ('b4-maintainer agent (dry-run)', 'agent@b4-maintainer.invalid')
+
+
+def project_state(repo):
+    return (
+        *snapshot(repo),
+        (repo / '.git' / 'FETCH_HEAD').exists(),
+        git('for-each-ref', 'refs/b4m', cwd=repo),
+    )
+
+
+def test_a_rebase_tree_holds_the_base_and_its_upstream(project, tmp_path):
+    upstream_commit(project, 'b.c', 'something else\n', 'mm: other b')
+    before = project_state(project)
+    dest = tmp_path / 'var' / 'worktrees' / 'r1'
+    tree = prepare_rebase_tree(project, dest, 'b4m/session/r1', BASE, AGENT)
+    status = base_status(project, BASE)
+    assert tree.path == str(dest) and tree.branch == 'b4m/session/r1'
+    assert (tree.base, tree.applied) == (status.fork, status.tip)
+    assert git('rev-parse', 'HEAD', cwd=dest) == status.tip
+    # The upstream under its own name, as the maintainer sees it.
+    assert git('rev-parse', 'up/stable', cwd=dest) == git('rev-parse', 'up/stable', cwd=project)
+    assert git('config', 'user.email', cwd=dest) == AGENT[1]
+    assert not (dest / '.git' / 'hooks' / 'commit-msg').exists()  # Sign-offs must survive.
+    assert project_state(project) == before
+
+
+def agent_rebase(dest):
+    """What the agent does: rebase onto the upstream, resolving the conflict, on b4m/rebased."""
+    git('switch', '-q', '-c', 'b4m/rebased', cwd=dest)
+    run = __import__('subprocess').run(
+        ['git', 'rebase', '-q', 'up/stable'], cwd=dest, capture_output=True, text=True
+    )
+    assert run.returncode != 0  # b.c conflicts.
+    (dest / 'b.c').write_text('something else\nb\n')
+    git('add', 'b.c', cwd=dest)
+    git('-c', 'core.editor=true', 'rebase', '--continue', cwd=dest)
+    return git('rev-parse', 'HEAD', cwd=dest)
+
+
+def test_accepting_moves_the_base_to_the_result(project, tmp_path):
+    upstream_commit(project, 'b.c', 'something else\n', 'mm: other b')
+    old = git('rev-parse', 'me/base', cwd=project)
+    dest = tmp_path / 'wt'
+    prepare_rebase_tree(project, dest, 'b4m/session/r1', BASE, AGENT)
+    result = agent_rebase(dest)
+    before = project_state(project)
+    outcome = accept_rebase(project, BASE, dest, 'b4m/rebased', expected=old)
+    assert outcome.ok and outcome.tip == result
+    assert git('rev-parse', 'me/base', cwd=project) == result
+    assert git('log', '--format=%s|%an', 'up/stable..me/base', cwd=project).splitlines() == [
+        'mm: fix b|Contributor Two',
+        'mm: fix the leak in a|Contributor One',
+    ]
+    after = project_state(project)
+    assert after[:6] == before[:6]  # HEAD, index, worktrees, status, FETCH_HEAD untouched.
+    assert after[6] == ''  # No scratch ref left behind.
+    assert base_status(project, BASE).behind == 0
+
+
+def test_accepting_is_refused_when_anything_moved(project, tmp_path):
+    upstream_commit(project, 'b.c', 'something else\n', 'mm: other b')
+    old = git('rev-parse', 'me/base', cwd=project)
+    dest = tmp_path / 'wt'
+    prepare_rebase_tree(project, dest, 'b4m/session/r1', BASE, AGENT)
+    assert 'b4m/rebased' in accept_rebase(project, BASE, dest, 'b4m/rebased', old).error
+    agent_rebase(dest)
+    moved = accept_rebase(project, BASE, dest, 'b4m/rebased', expected='0' * 40)
+    assert not moved.ok and 'moved' in moved.error
+    upstream_commit(project, 'mm.c', (project / 'mm.c').read_text() + 'tail\n', 'mm: newer')
+    stale = accept_rebase(project, BASE, dest, 'b4m/rebased', expected=old)
+    assert not stale.ok and 'up/stable' in stale.error  # The result predates the upstream.
+    assert git('rev-parse', 'me/base', cwd=project) == old
+    assert git('for-each-ref', 'refs/b4m', cwd=project) == ''

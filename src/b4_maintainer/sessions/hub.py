@@ -17,12 +17,15 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
+from ..adapters.bases import BaseCommit, BaseStatus
+from ..workspace import MaintainerBase, Workspace
 from .launch import LaunchChoice, Situation, Target, new_record, plan
 from .models import ModelChoice, model_choices, parse_catalog
 from .pane import LIVE
 from .pi import LaunchSpec, prepare_session
-from .policy import ContextItem
+from .policy import ContextItem, launch_check
 from .profiles import BUILTIN_DIR, Profile, load_profiles
+from .rebase import rebase_record, rebase_request
 from .records import SessionRecord, Worktree
 from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
@@ -31,6 +34,7 @@ from .store import SessionStore, SessionView
 from .trees import TreeState, inspect_tree, remove_tree
 
 RESUMABLE = frozenset({'stopped', 'gone'})
+COUNTED_LIVE = LIVE | {'preparing'}  # Limits count a session from its preparation.
 
 
 class SessionError(Exception):
@@ -100,6 +104,10 @@ class Worktrees(Protocol):
 
     def prepare(self, record: SessionRecord, source: str, base: str) -> Worktree:
         """The series applied in the session's own tree (*base* empty: b4 detects it)."""
+        ...
+
+    def prepare_rebase(self, record: SessionRecord, base: MaintainerBase) -> Worktree:
+        """A rebase session's tree: a copy of *base* and its upstream."""
         ...
 
     def bases(self, project: str) -> Sequence[str]:
@@ -180,6 +188,24 @@ class RecordWorktrees:
             base=base or None,
             identity=(name, self.agent[1]),
         )
+
+    def prepare_rebase(self, record: SessionRecord, base: MaintainerBase) -> Worktree:
+        from ..adapters.bases import prepare_rebase_tree
+
+        checkout, directory = self.checkouts.get(record.project), self.directory
+        if not checkout or directory is None:
+            raise TreeError(self.reason(record.project))
+        name = self.agent[0].format(model=record.model or record.preset)
+        try:
+            return prepare_rebase_tree(
+                pathlib.Path(checkout),
+                directory / record.id,
+                f'b4m/session/{record.id}',
+                base,
+                (name, self.agent[1]),
+            )
+        except OSError as ex:
+            raise TreeError(f'cannot prepare the rebase: {ex}', str(ex)) from ex
 
     def list(self, records: Sequence[SessionRecord]) -> list[WorktreeInfo]:
         """Trees named by sessions, then orphans: directories here that none names."""
@@ -325,6 +351,30 @@ class SessionHub:
             )
         return self.worktrees.reason(project)
 
+    def situation(
+        self,
+        workspace: Workspace,
+        overview: Overview,
+        skills: Sequence[Skill],
+        project: str,
+        bases: bool = True,
+    ) -> Situation:
+        """What a launch for *project* is checked against: models, limits, live counts,
+        worktrees, and (with *bases*) suggested bases. Blocking."""
+        counted = [v for v in overview.sessions if v.state in COUNTED_LIVE]
+        reason = self.worktree_reason(project)
+        return Situation(
+            self.models(workspace.models),
+            workspace.session_limits,
+            live=len(counted),
+            live_builds=sum(v.record.mode == 'worktree' for v in counted),
+            worktrees=len(overview.worktrees),
+            worktree_bytes=overview.worktree_bytes,
+            worktree_reason=reason,
+            skills=tuple(skills),
+            bases=() if reason or not bases else tuple(self.bases(project)),
+        )
+
     def bases(self, project: str) -> Sequence[str]:
         """Suggested bases for a worktree session of the project's series; none on error."""
         try:
@@ -371,20 +421,37 @@ class SessionHub:
         )
         if planned.mode == 'worktree' and target.scope != 'series':
             raise SessionError('worktree sessions apply a series; this session has none')
-        tree_mode = planned.mode == 'worktree'
-        if tree_mode:
+
+        def tree(r: SessionRecord) -> Worktree:
+            return self.worktrees.prepare(r, target.source, choice.base)
+
+        return self._start(
+            record,
+            spec,
+            tree if planned.mode == 'worktree' else None,
+            lambda r: (target.source, planned.included),
+        )
+
+    def _start(
+        self,
+        record: SessionRecord,
+        spec: LaunchSpec,
+        tree: Optional[Callable[[SessionRecord], Worktree]],
+        package: Callable[[SessionRecord], tuple[Optional[str], Sequence[ContextItem]]],
+    ) -> SessionRecord:
+        """Record the session (preparing, while *tree* prepares its worktree), write its
+        package, start it; a failure leaves it marked failed."""
+        if tree is not None:
             self._preparing.add(record.id)
             record = record.replace(state='preparing')
         self.store.create(record)
         try:
-            if tree_mode:
-                tree = self.worktrees.prepare(record, target.source, choice.base)
-                record = record.replace(worktree=tree, state='')
+            if tree is not None:
+                record = record.replace(worktree=tree(record), state='')
                 self.store.save(record)
                 self._preparing.discard(record.id)
-            prepare_session(
-                self.store, record, planned.request, target.source, sandboxed, planned.included
-            )
+            source, items = package(record)
+            prepare_session(self.store, record, spec.request, source, spec.sandboxed, items)
             self.runner.launch(record, spec)
         except TreeError as exc:
             self._preparing.discard(record.id)
@@ -395,6 +462,48 @@ class SessionHub:
             self.store.set_state(record.id, 'failed')
             raise SessionError(f'Session {record.id} failed to start: {exc}') from exc
         return record
+
+    def launch_rebase(
+        self,
+        project: str,
+        base: MaintainerBase,
+        status: BaseStatus,
+        failed: Optional[BaseCommit],
+        detail: str,
+        situation: Situation,
+        model_id: str = 'default',
+        now: Optional[datetime.datetime] = None,
+    ) -> SessionRecord:
+        """A rebase session for *base* after its straight rebase stopped at *failed*: it
+        rebases a copy by hand; the base changes only when the maintainer accepts."""
+        blockers = []
+        if situation.worktree_reason:
+            blockers.append(f'rebase sessions unavailable: {situation.worktree_reason}')
+        limit_blockers, _warnings = launch_check(
+            situation.limits,
+            situation.live,
+            situation.worktrees,
+            situation.worktree_bytes,
+            'worktree',
+            situation.live_builds,
+        )
+        blockers += limit_blockers
+        model = next((m for m in situation.models if m.id == model_id), None)
+        if model is None or not model.available:
+            blockers.append(f'model {model_id}: {model.reason if model else "unknown"}')
+        if blockers:
+            raise SessionError('; '.join(blockers))
+        assert model is not None
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        record = rebase_record(project, base, status, failed, model, now)
+        request = rebase_request(base, status, f'b4m/session/{record.id}', failed, detail)
+        spec = LaunchSpec(request, (), model.args, model.env, bool(self._sandbox()))
+        return self._start(
+            record,
+            spec,
+            lambda r: self.worktrees.prepare_rebase(r, base),
+            lambda r: (None, ()),
+        )
 
     def _ready(self, sid: str) -> SessionRecord:
         """The session's record; refused while its worktree is being prepared."""

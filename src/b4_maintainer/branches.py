@@ -15,11 +15,13 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Optional, Sequence
 
-from .adapters.bases import BaseStatus, RebaseResult, base_status, rebase_base
+from .adapters.bases import BaseStatus, RebaseResult, accept_rebase, base_status, rebase_base
 from .sessions.artifacts import Artifact, load_artifacts
+from .sessions.hub import SessionError, SessionHub
+from .sessions.rebase import RESULT
 from .sessions.records import SessionRecord, session_label
 from .sessions.trees import TreeState, classify_tree, inspect_tree, tree_worktrees
-from .workspace import Workspace
+from .workspace import MaintainerBase, Project, Workspace
 
 SHOW_LINES = 4000  # A commit or file is cut here.
 LIST_LIMIT = 200  # Commits listed per branch or worktree.
@@ -41,6 +43,7 @@ class DetailRow:
     key: str = ''  # A commit sha, or artifact:<n>; empty for headings.
     repo: str = ''  # Where the commit is.
     artifact: Optional[Artifact] = None
+    git_args: tuple[str, ...] = ()  # Shown by running git with these in repo instead.
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,7 @@ class BranchesSnapshot:
     details: Mapping[str, tuple[DetailRow, ...]] = field(default_factory=dict)
     statuses: Mapping[str, BaseStatus] = field(default_factory=dict)
     problems: tuple[str, ...] = ()
+    rebases: Mapping[str, str] = field(default_factory=dict)  # Item key -> rebase session.
 
 
 def _git(repo: pathlib.Path, *args: str) -> str:
@@ -82,16 +86,19 @@ class BranchService:
         root: pathlib.Path,
         records: Callable[[], Sequence[SessionRecord]],
         out: Callable[[str], pathlib.Path],
+        sessions: Optional['SessionHub'] = None,
     ) -> None:
         self.root = root
         self._records = records
         self._out = out
+        self._sessions = sessions  # Launches rebase sessions; None: not offered.
 
     def snapshot(self, workspace: Workspace) -> BranchesSnapshot:
         items: list[BranchItem] = []
         details: dict[str, tuple[DetailRow, ...]] = {}
         statuses: dict[str, BaseStatus] = {}
         problems: list[str] = []
+        rebases: dict[str, str] = {}
         records = [r for r in self._records() if r.worktree is not None]
         for project in workspace.projects:
             repo = self.root / project.path
@@ -116,7 +123,11 @@ class BranchService:
                 if not tree.is_dir():
                     continue
                 key = f'tree:{record.id}'
-                rows, label, found = self._tree(record, tree)
+                if record.scope == 'rebase':
+                    rebases[key] = record.id
+                    rows, label, found = self._rebase_tree(record, tree)
+                else:
+                    rows, label, found = self._tree(record, tree)
                 problems += found
                 items.append(BranchItem(key, 'tree', project.id, label))
                 details[key] = rows
@@ -148,7 +159,7 @@ class BranchService:
                     )
                     items.append(BranchItem(key, kind, project.id, f'{name} · {note}'))
                     details[key] = rows
-        return BranchesSnapshot(tuple(items), details, statuses, tuple(problems))
+        return BranchesSnapshot(tuple(items), details, statuses, tuple(problems), rebases)
 
     def _tree(
         self, record: SessionRecord, tree: pathlib.Path
@@ -189,6 +200,93 @@ class BranchService:
             problems = [*problems, f'{record.id}: {classed.error}']
         return tuple(rows), label, [f'{record.id}: {p}' for p in problems]
 
+    def _rebase_tree(
+        self, record: SessionRecord, tree: pathlib.Path
+    ) -> tuple[tuple[DetailRow, ...], str, list[str]]:
+        """A rebase session's tree: its result on b4m/rebased (commits on the upstream,
+        and a range-diff against the base as it was), and its artifacts."""
+        assert record.worktree is not None
+        choices = record.choices
+        upstream, fork, tip = (
+            choices.get('upstream', ''),
+            record.worktree.base,
+            record.worktree.applied,
+        )
+        rows = [DetailRow(f'Rebase of {choices.get("base")} onto {upstream} (from {tip[:12]})')]
+        try:
+            result = _git(
+                tree, 'rev-parse', '--verify', '--quiet', f'refs/heads/{RESULT}^{{commit}}'
+            ).strip()
+        except OSError:
+            result = ''
+        if result:
+            log = _git(tree, 'log', '--reverse', '--format=%H%x00%s', f'{upstream}..{result}')
+            commits = [line.split('\x00', 1) for line in log.splitlines()]
+            rows.append(
+                DetailRow(f'Result {RESULT}: {_count(len(commits), "commit")} on {upstream}')
+            )
+            rows += [_commit_row(sha, subject, tree) for sha, subject in commits]
+            rows.append(
+                DetailRow(
+                    f'Range diff against {choices.get("base")}',
+                    'range-diff',
+                    str(tree),
+                    git_args=('range-diff', f'{fork}..{tip}', f'{upstream}..{result}'),
+                )
+            )
+            state = f'result: {_count(len(commits), "commit")}'
+        else:
+            rows.append(DetailRow(f'No result yet (the session leaves it on {RESULT}).'))
+            state = 'no result yet'
+        artifacts, problems = load_artifacts(self._out(record.id) / 'work' / 'out', {RESULT})
+        if artifacts:
+            rows.append(DetailRow('Artifacts'))
+            rows += [
+                DetailRow(f'  {a.kind}: {a.title}', f'artifact:{n}', str(tree), a)
+                for n, a in enumerate(artifacts)
+            ]
+        rows += [DetailRow(f'  ! {p}') for p in problems]
+        label = f'{session_label(record)} · {record.id} · {state}'
+        return tuple(rows), label, [f'{record.id}: {p}' for p in problems]
+
+    def rebase_session(self, workspace: Workspace, key: str, failed: RebaseResult) -> SessionRecord:
+        """Launch a rebase session for the base named by *key*, after *failed*."""
+        if self._sessions is None:
+            raise SessionError('agent sessions are not available here')
+        project, base = self._base(workspace, key)
+        status = base_status(self.root / project.path, base)
+        hub = self._sessions
+        situation = hub.situation(workspace, hub.overview(), (), project.id, bases=False)
+        return hub.launch_rebase(
+            project.id, base, status, failed.failed, failed.detail or failed.error, situation
+        )
+
+    def accept(self, workspace: Workspace, sid: str) -> RebaseResult:
+        """Move the rebase session's base to its result (see accept_rebase's guards)."""
+        record = next((r for r in self._records() if r.id == sid and r.scope == 'rebase'), None)
+        if record is None or record.worktree is None:
+            return RebaseResult(False, error=f'no rebase session {sid}')
+        branch = record.choices.get('base', '')
+        project = workspace.project(record.project)
+        base = next((b for b in project.bases if b.branch == branch), None) if project else None
+        if project is None or base is None:
+            return RebaseResult(False, error=f'no maintainer base {branch} in {record.project}')
+        return accept_rebase(
+            self.root / project.path,
+            base,
+            pathlib.Path(record.worktree.path),
+            RESULT,
+            record.choices.get('expected', ''),
+        )
+
+    def _base(self, workspace: Workspace, key: str) -> tuple[Project, MaintainerBase]:
+        _kind, pid, branch = key.split(':', 2)
+        project = workspace.project(pid)
+        base = next((b for b in project.bases if b.branch == branch), None) if project else None
+        if project is None or base is None:
+            raise SessionError(f'no maintainer base {branch} in {pid}')
+        return project, base
+
     def show(self, row: DetailRow) -> str:
         """The right pane for a row: a commit's message, stat, and patch; an artifact's
         description and file."""
@@ -207,6 +305,11 @@ class BranchService:
             return '\n'.join(lines)
         if not row.key or not row.repo:
             return ''
+        if row.git_args:
+            try:
+                return _git(pathlib.Path(row.repo), *row.git_args) or '(no differences)'
+            except OSError as ex:
+                return f'Cannot show it: {ex}'
         try:
             text = _git(
                 pathlib.Path(row.repo), 'show', '--stat', '--patch', '--format=fuller', row.key
@@ -219,11 +322,10 @@ class BranchService:
 
     def rebase(self, workspace: Workspace, key: str, expected: str) -> RebaseResult:
         """Rebase the base named by *key*, if it is still at *expected* (its tip as shown)."""
-        _kind, pid, branch = key.split(':', 2)
-        project = workspace.project(pid)
-        base = next((b for b in project.bases if b.branch == branch), None) if project else None
-        if project is None or base is None:
-            return RebaseResult(False, error=f'no maintainer base {branch} in {pid}')
+        try:
+            project, base = self._base(workspace, key)
+        except SessionError as ex:
+            return RebaseResult(False, error=str(ex))
         return rebase_base(self.root / project.path, base, expected)
 
 

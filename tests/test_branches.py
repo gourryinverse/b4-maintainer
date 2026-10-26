@@ -178,3 +178,72 @@ def test_a_trees_extra_checkouts_are_listed_under_it(ws, tmp_path):
     assert 'Extra checkouts' in texts
     assert any(str(extra) in t and 'mm: start' in t for t in texts)
     assert '1 extra checkout' in {i.key: i for i in found.items}['tree:s1'].label
+
+
+@pytest.fixture
+def rebase_ws(ws, tmp_path):
+    """The same workspace, with a real hub (stand-in runner) and an upstream move that
+    conflicts with the base's commit."""
+    from sessiondata import FakeSessionRunner
+
+    from b4_maintainer.sessions.hub import RecordWorktrees, SessionHub
+
+    _service, workspace, project = ws
+    git('switch', '-q', '--detach', 'up/stable', cwd=project)
+    tip = commit(project, 'a.c', 'upstream a\n', 'mm: upstream a')
+    git('update-ref', 'refs/remotes/up/stable', tip, cwd=project)
+    git('switch', '-q', 'main', cwd=project)
+    root = tmp_path / 'ws'
+    store = SessionStore(root / 'var' / 'sessions')
+    runner = FakeSessionRunner(store)
+    trees = RecordWorktrees(root / 'var' / 'worktrees', {'linux': str(project)})
+    hub = SessionHub(store, runner, trees, catalog=lambda: None, sandbox=lambda: True)
+    service = BranchService(root, hub.records, store.directory, hub)
+    return service, workspace, project, hub, runner
+
+
+def test_a_failed_rebase_launches_a_rebase_session_on_a_copy(rebase_ws):
+    service, workspace, project, hub, runner = rebase_ws
+    key = 'base:linux:me/base'
+    old = git('rev-parse', 'me/base', cwd=project)
+    failed = service.rebase(workspace, key, old)
+    assert not failed.ok and failed.failed is not None
+    record = service.rebase_session(workspace, key, failed)
+    assert record.scope == 'rebase' and record.choices['expected'] == old
+    [(sid, request)] = runner.launches
+    assert sid == record.id and 'a.c' in request.prompt  # The conflict, from merge-tree.
+    tree = record.worktree
+    assert tree is not None
+    assert git('rev-parse', 'HEAD', cwd=tree.path) == old
+    assert git('rev-parse', 'me/base', cwd=project) == old  # Nothing changed yet.
+    rows = service.snapshot(workspace).details[f'tree:{record.id}']
+    assert any('No result yet' in r.text for r in rows)
+
+
+def test_a_rebase_sessions_result_is_shown_and_accepted(rebase_ws):
+    service, workspace, project, hub, runner = rebase_ws
+    key = 'base:linux:me/base'
+    old = git('rev-parse', 'me/base', cwd=project)
+    record = service.rebase_session(workspace, key, service.rebase(workspace, key, old))
+    assert record.worktree is not None
+    dest = __import__('pathlib').Path(record.worktree.path)
+    # The agent: rebase on b4m/rebased, resolving a.c.
+    git('switch', '-q', '-c', 'b4m/rebased', cwd=dest)
+    run = __import__('subprocess').run(
+        ['git', 'rebase', '-q', 'up/stable'], cwd=dest, capture_output=True
+    )
+    assert run.returncode != 0
+    (dest / 'a.c').write_text('upstream a\na\n')
+    git('add', 'a.c', cwd=dest)
+    git('-c', 'core.editor=true', 'rebase', '--continue', cwd=dest)
+    found = service.snapshot(workspace)
+    item = f'tree:{record.id}'
+    assert found.rebases[item] == record.id
+    rows = found.details[item]
+    assert any('mm: pulled ahead fix' in r.text and r.key for r in rows)
+    diff = next(r for r in rows if r.text.startswith('Range diff'))
+    assert 'mm: pulled ahead fix' in service.show(diff)
+    result = service.accept(workspace, record.id)
+    assert result.ok
+    assert git('rev-parse', 'me/base', cwd=project) == git('rev-parse', 'b4m/rebased', cwd=dest)
+    assert service.accept(workspace, record.id).error  # Not twice: the base moved.

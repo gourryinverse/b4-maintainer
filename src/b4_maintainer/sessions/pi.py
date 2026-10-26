@@ -125,6 +125,11 @@ SANDBOXED_TEXT = (
     'directories (this one, the project checkout, the worktree), read-only except the '
     'output directory'
 )
+REBASE_TREE_TEXT = (
+    'Rebase in the worktree {path} (branch {branch}: a copy of the base, tip {applied}). '
+    "Commits there carry the agent identity as committer; keep each commit's author, "
+    'message, and trailers'
+)
 TREE_TEXT = (
     'Edit, build, and commit in the worktree {path} (branch {branch}: the series applied '
     'on base {base}, its last patch {applied}). Commits there carry the agent identity; '
@@ -154,7 +159,12 @@ def system_prompt(
     writable = tree is not None and record.permissions == 'execute'
     if sandboxed:
         facts.append(f'{SANDBOXED_TEXT}{" and the worktree" if writable else ""}.')
-    if tree is not None and writable:
+    if tree is not None and writable and record.scope == 'rebase':
+        facts.append(
+            REBASE_TREE_TEXT.format(path=tree.path, branch=tree.branch, applied=tree.applied[:12])
+            + '.'
+        )
+    elif tree is not None and writable:
         facts.append(
             TREE_TEXT.format(
                 path=tree.path, branch=tree.branch, base=tree.base[:12], applied=tree.applied[:12]

@@ -10,11 +10,15 @@ only: a Link:/Message-ID: naming the same message, else an identical subject), s
 blobless checkout fetches nothing to answer. Blocking: call from a worker.
 """
 
+import os
 import pathlib
+import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
+from ..sessions.records import Worktree
+from ..sessions.trees import clone_project
 from ..workspace import MaintainerBase
 from .treematch import message_ids, subject_key
 
@@ -48,6 +52,7 @@ class RebaseResult:
     dropped: tuple[str, ...] = ()  # Subjects: landed upstream, or empty once replayed.
     failed: Optional[BaseCommit] = None  # The commit that did not replay.
     error: str = ''
+    detail: str = ''  # Why it did not: git merge-tree's conflict messages.
 
 
 def _git(repo: pathlib.Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -128,6 +133,23 @@ def base_status(repo: pathlib.Path, base: MaintainerBase) -> BaseStatus:
     )
 
 
+def _conflicts(repo: pathlib.Path, onto: str, commit: BaseCommit) -> str:
+    """git merge-tree's account of replaying *commit* onto *onto* (no worktree, no index):
+    the conflicted files and its CONFLICT messages."""
+    run = _git(
+        repo,
+        'merge-tree',
+        '--write-tree',
+        '--name-only',
+        f'--merge-base={commit.sha}^',
+        onto,
+        commit.sha,
+        check=False,
+    )
+    lines = run.stdout.splitlines()[1:]  # After the tree it would have written.
+    return '\n'.join(line for line in lines if line.strip()) or run.stderr.strip()
+
+
 def rebase_base(
     repo: pathlib.Path, base: MaintainerBase, expected: Optional[str] = None
 ) -> RebaseResult:
@@ -162,7 +184,9 @@ def rebase_base(
         )
         fields = run.stdout.split()
         if run.returncode != 0 or len(fields) < 3 or fields[0] != 'update':
-            return RebaseResult(False, failed=commit, error=run.stderr.strip())
+            return RebaseResult(
+                False, failed=commit, error=run.stderr.strip(), detail=_conflicts(repo, tip, commit)
+            )
         new = fields[2]
         if (
             _git(repo, 'rev-parse', f'{new}^{{tree}}').stdout
@@ -184,3 +208,88 @@ def rebase_base(
     if moved.returncode != 0:
         return RebaseResult(False, error=f'{base.branch} moved meanwhile: {moved.stderr.strip()}')
     return RebaseResult(True, tip, tuple(dropped))
+
+
+INCOMING_REF = 'refs/b4m/incoming'  # A rebase result on its way into the project.
+
+
+def prepare_rebase_tree(
+    repo: pathlib.Path,
+    dest: pathlib.Path,
+    branch: str,
+    base: MaintainerBase,
+    identity: tuple[str, str],
+) -> Worktree:
+    """A session tree for rebasing *base* by hand: a clone with the base checked out on
+    *branch* and its upstream under the same name. Commits made there carry *identity*
+    as committer (authors are kept by a rebase); no hook touches their trailers, which a
+    rebase must keep."""
+    status = base_status(repo, base)
+    if not status.exists or status.error:
+        raise OSError(status.error or f'{base.branch} does not exist')
+    upstream = _git(repo, 'rev-parse', '--symbolic-full-name', base.upstream).stdout.strip()
+    if not upstream:
+        raise OSError(f'{base.upstream} is not a ref')
+    if os.path.lexists(dest):
+        raise OSError(f'{dest} exists')
+    try:
+        clone_project(repo, dest)
+        _git(dest, 'fetch', '--quiet', '--no-tags', str(repo), f'+{upstream}:{upstream}')
+        _git(dest, 'checkout', '--quiet', '-b', branch, status.tip)
+        _git(dest, 'config', 'user.name', identity[0])
+        _git(dest, 'config', 'user.email', identity[1])
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    return Worktree(str(dest), branch, status.fork, status.tip)
+
+
+def accept_rebase(
+    repo: pathlib.Path, base: MaintainerBase, tree: pathlib.Path, result: str, expected: str
+) -> RebaseResult:
+    """Move *base* to the *result* branch of a rebase session's *tree*: only while the base
+    is still at *expected* (its tip when the session started), the result contains the
+    upstream's current tip, and the base is not checked out. The result's commits come in
+    through a scratch ref (never FETCH_HEAD); the project's checkout is not touched."""
+    status = base_status(repo, base)
+    if not status.exists:
+        return RebaseResult(False, error=f'{base.branch} does not exist')
+    if status.checked_out:
+        return RebaseResult(False, error=f'{base.branch} is checked out in {status.checked_out}')
+    if status.tip != expected:
+        return RebaseResult(False, error=f'{base.branch} moved since the session started')
+    new = _commit(tree, f'refs/heads/{result}')
+    if new is None:
+        return RebaseResult(False, error=f'the session left no {result} branch')
+    upstream = _commit(repo, base.upstream)
+    if upstream is None:
+        return RebaseResult(False, error=f'upstream {base.upstream} not found')
+    incoming = f'{INCOMING_REF}/{base.branch}'
+    pushed = _git(
+        tree, 'push', '--quiet', '--no-verify', str(repo), f'+{new}:{incoming}', check=False
+    )
+    if pushed.returncode != 0:
+        return RebaseResult(False, error=f'cannot bring the result in: {pushed.stderr.strip()}')
+    try:
+        on_upstream = _git(repo, 'merge-base', '--is-ancestor', upstream, new, check=False)
+        if on_upstream.returncode != 0:
+            return RebaseResult(
+                False, error=f'the result is not on the current {base.upstream}: rebase again'
+            )
+        moved = _git(
+            repo,
+            'update-ref',
+            '-m',
+            f'b4-maintainer: accept rebase onto {base.upstream}',
+            f'refs/heads/{base.branch}',
+            new,
+            expected,
+            check=False,
+        )
+        if moved.returncode != 0:
+            return RebaseResult(
+                False, error=f'{base.branch} moved meanwhile: {moved.stderr.strip()}'
+            )
+    finally:
+        _git(repo, 'update-ref', '-d', incoming, check=False)
+    return RebaseResult(True, new)

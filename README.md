@@ -85,7 +85,8 @@ Python 3.11 or newer.
   conflict changes nothing). In the app, `F3` opens Branches (`F3` or Escape returns):
   each project's bases, worktrees, session trees (commits by class, artifacts), b4 prep
   and review branches, and other local branches with work not on any remote; `r` rebases
-  a base.
+  a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`
+  on its tree moves the base to its result.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

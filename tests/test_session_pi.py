@@ -165,3 +165,15 @@ def test_worktree_sessions_are_told_they_edit_build_and_commit_in_their_tree(tmp
     prepare_session(store, lightweight, REQUEST, source='', sandboxed=True)
     system = (store.directory('s2') / 'system.md').read_text()
     assert 'read-only except the output directory.' in system and 'Edit, build' not in system
+
+
+def test_rebase_sessions_are_told_to_keep_the_commits_trailers(tmp_path):
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    tree = Worktree('/w/var/worktrees/r1', 'b4m/session/r1', 'f' * 40, 't' * 40)
+    record = make_record(
+        'r1', scope='rebase', mode='worktree', permissions='execute', worktree=tree
+    )
+    prepare_session(store, record, REQUEST, source='', sandboxed=True, items=[])
+    system = (store.directory('r1') / 'system.md').read_text()
+    assert 'Rebase in the worktree /w/var/worktrees/r1' in system
+    assert 'keep each commit' in system and 'never add Signed-off-by' not in system

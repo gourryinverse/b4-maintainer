@@ -146,6 +146,56 @@ def classify_tree(path: pathlib.Path, tree: Worktree) -> TreeCommits:
     return TreeCommits(series, tuple(branches))
 
 
+def _run(repo: pathlib.Path, *args: str) -> str:
+    run = subprocess.run(
+        ['git', *args], cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL
+    )
+    if run.returncode != 0:
+        raise OSError(run.stderr.strip() or f'git {args[0]} failed')
+    return run.stdout.strip()
+
+
+def _promisors(project: pathlib.Path) -> list[str]:
+    """The project's promisor remotes (a blobless clone fetches missing blobs from them)."""
+    run = subprocess.run(
+        ['git', 'config', '--get-regexp', r'^remote\..*\.promisor$'],
+        cwd=project,
+        capture_output=True,
+        text=True,
+    )
+    names = []
+    for line in run.stdout.splitlines():
+        key, _, value = line.partition(' ')
+        if value.strip().lower() in {'true', 'yes', 'on', '1'}:
+            names.append(key.removeprefix('remote.').removesuffix('.promisor'))
+    return names
+
+
+def clone_project(project: pathlib.Path, dest: pathlib.Path) -> None:
+    """A session tree's start: `git clone --shared --no-checkout` of the project (objects
+    borrowed, the project untouched), set up for the sandbox."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _run(dest.parent, 'clone', '--quiet', '--shared', '--no-checkout', str(project), str(dest))
+    # Blobs a blobless project lacks are fetched from its remotes into the clone.
+    promisors = _promisors(project)
+    for name in promisors:
+        _run(dest, 'config', f'remote.{name}.url', _run(project, 'remote', 'get-url', name))
+        _run(dest, 'config', f'remote.{name}.promisor', 'true')
+        filt = _run(
+            project, 'config', '--default', 'blob:none', f'remote.{name}.partialclonefilter'
+        )
+        _run(dest, 'config', f'remote.{name}.partialclonefilter', filt)
+    if promisors:
+        _run(dest, 'config', 'extensions.partialClone', promisors[0])
+    settings = {'commit.gpgSign': 'false', 'tag.gpgSign': 'false', 'gc.auto': '0'}
+    # Files belong to another uid inside the sandbox: without this git re-hashes the whole
+    # tree on its first command there (18 s for a kernel tree).
+    settings['core.checkStat'] = 'minimal'
+    settings['checkout.workers'] = '0'  # Parallel: a kernel tree checks out in about 20 s.
+    for key, value in settings.items():
+        _run(dest, 'config', key, value)
+
+
 def tree_worktrees(path: pathlib.Path) -> list[ExtraCheckout]:
     """The tree's extra checkouts: its linked worktrees, not the tree itself nor b4's
     scratch worktrees."""

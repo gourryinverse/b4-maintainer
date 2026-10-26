@@ -113,7 +113,10 @@ class Pinned(Protocol):
 
 
 def session_label(pinned: Pinned) -> str:
-    """What a session is pinned to: `project: subject vN`, or `workspace`."""
+    """What a session is pinned to: `project: subject vN`, `project: what it does` (a
+    rebase), or `workspace`."""
+    if pinned.scope == 'rebase':
+        return f'{pinned.project}: {pinned.subject}'
     if pinned.scope == 'workspace' or not pinned.series:
         return 'workspace'
     return f'{pinned.project}: {pinned.subject} v{pinned.revision}'

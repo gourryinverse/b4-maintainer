@@ -27,6 +27,8 @@ class FakeBranches:
         self.rebased = []
         self.result = RebaseResult(True, 'tip1', ('mm: landed',))
         self.loads = 0
+        self.sessions = []
+        self.accepted = []
 
     def snapshot(self, workspace):
         self.loads += 1
@@ -45,7 +47,9 @@ class FakeBranches:
                 DetailRow('  s1c  mm/foo: series patch', 's1c', '/tree'),
             ),
         }
-        return BranchesSnapshot(items, details, {'base:linux:me/base': STATUS})
+        return BranchesSnapshot(
+            items, details, {'base:linux:me/base': STATUS}, rebases={'tree:s1': 'r1'}
+        )
 
     def show(self, row):
         return f'shown {row.key}'
@@ -53,6 +57,16 @@ class FakeBranches:
     def rebase(self, workspace, key, expected):
         self.rebased.append((key, expected))
         return self.result
+
+    def rebase_session(self, workspace, key, failed):
+        from sessiondata import make_record
+
+        self.sessions.append((key, failed))
+        return make_record('r1', scope='rebase')
+
+    def accept(self, workspace, sid):
+        self.accepted.append(sid)
+        return RebaseResult(True, 'f' * 40)
 
 
 async def settle(pilot):
@@ -162,3 +176,54 @@ async def test_f3_toggles_back_and_b_does_not_open_it(demo_root):
         await pilot.press('f3')
         await settle(pilot)
         assert not isinstance(app.screen, BranchesScreen)
+
+
+async def test_a_failed_rebase_offers_a_rebase_session_after_a_confirmation(demo_root):
+    service = FakeBranches()
+    service.result = RebaseResult(False, failed=STATUS.commits[1], detail='CONFLICT in b.c')
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('a')  # Nothing failed yet: not offered.
+        await settle(pilot)
+        assert not isinstance(app.screen, Confirm)
+        await pilot.press('r')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        assert 'a rebases it with an agent' in app.screen.status_text()
+        await pilot.press('a')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'rebases a copy' in app.screen.prompt
+        await pilot.press('n')
+        await settle(pilot)
+        assert service.sessions == []  # Declined: no agent.
+        await pilot.press('a')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.sessions == [('base:linux:me/base', service.result)]
+        assert 'Launched rebase session r1' in app.screen.status_text()
+
+
+async def test_a_on_a_rebase_sessions_tree_accepts_its_result(demo_root):
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('A')  # A base, not a rebase session: nothing.
+        await settle(pilot)
+        assert not isinstance(app.screen, Confirm)
+        await pilot.press('down')  # The session tree.
+        await settle(pilot)
+        await pilot.press('A')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'result' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.accepted == ['r1']
+        assert 'Accepted: the base is at ffffffffffff' in app.screen.status_text()

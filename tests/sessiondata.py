@@ -187,12 +187,23 @@ class FakeWorktrees:
         self.states = {}  # Path -> TreeState, as inspect finds it.
         self.removed = []
         self.during = None  # Called with the record while preparing.
+        self.rebases = []  # (session id, base)
 
     def list(self, records):
         return list(self.infos)
 
     def reason(self, project):
         return self.why
+
+    def prepare_rebase(self, record, base):
+        from b4_maintainer.sessions.hub import TreeError
+        from b4_maintainer.sessions.records import Worktree
+
+        if self.fail is not None:
+            raise TreeError(*self.fail)
+        self.rebases.append((record.id, base))
+        path = f'/w/var/worktrees/{record.id}'
+        return Worktree(path, f'b4m/session/{record.id}', 'fork', 'tip')
 
     def bases(self, project):
         return ['HEAD', 'mm/mm-unstable'] if project else []

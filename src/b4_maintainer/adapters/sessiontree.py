@@ -28,6 +28,7 @@ import b4.review
 
 from ..sessions.hub import TreeError
 from ..sessions.records import Worktree
+from ..sessions.trees import clone_project
 from .b4state import b4_repo
 
 TRAILERS = ('Signed-off-by', 'Reviewed-by', 'Acked-by', 'Tested-by', 'Co-developed-by')
@@ -74,43 +75,11 @@ def _captured() -> Generator[io.StringIO, None, None]:
         b4.logger.removeHandler(handler)
 
 
-def _promisors(project: pathlib.Path) -> list[str]:
-    """The project's promisor remotes (a blobless clone fetches missing blobs from them)."""
-    run = subprocess.run(
-        ['git', 'config', '--get-regexp', r'^remote\..*\.promisor$'],
-        cwd=project,
-        capture_output=True,
-        text=True,
-    )
-    names = []
-    for line in run.stdout.splitlines():
-        key, _, value = line.partition(' ')
-        if value.strip().lower() in {'true', 'yes', 'on', '1'}:
-            names.append(key.removeprefix('remote.').removesuffix('.promisor'))
-    return names
-
-
 def _clone(project: pathlib.Path, dest: pathlib.Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    _git(dest.parent, 'clone', '--quiet', '--shared', '--no-checkout', str(project), str(dest))
-    # Blobs a blobless project lacks are fetched from its remotes into the clone.
-    promisors = _promisors(project)
-    for name in promisors:
-        _git(dest, 'config', f'remote.{name}.url', _git(project, 'remote', 'get-url', name))
-        _git(dest, 'config', f'remote.{name}.promisor', 'true')
-        filt = _git(
-            project, 'config', '--default', 'blob:none', f'remote.{name}.partialclonefilter'
-        )
-        _git(dest, 'config', f'remote.{name}.partialclonefilter', filt)
-    if promisors:
-        _git(dest, 'config', 'extensions.partialClone', promisors[0])
-    settings = {'commit.gpgSign': 'false', 'tag.gpgSign': 'false', 'gc.auto': '0'}
-    # Files belong to another uid inside the sandbox: without this git re-hashes the whole
-    # tree on its first command there (18 s for a kernel tree).
-    settings['core.checkStat'] = 'minimal'
-    settings['checkout.workers'] = '0'  # Parallel: a kernel tree checks out in about 20 s.
-    for key, value in settings.items():
-        _git(dest, 'config', key, value)
+    try:
+        clone_project(project, dest)
+    except OSError as ex:
+        raise PrepareError(f'cannot clone {project.name}: {ex}', str(ex)) from ex
 
 
 def _from_review(project: pathlib.Path, change_id: str, revision: int) -> Optional[tuple[str, str]]:

@@ -73,7 +73,6 @@ SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'ses
 WORKTREE_ACTIONS = frozenset({'mark_worktree', 'remove_worktrees'})
 DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit', 'focus_session'})
 LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
-COUNTED_LIVE = LIVE_STATES | {'preparing'}  # Limits count a session from its preparation.
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
@@ -2503,19 +2502,7 @@ def _situation(
     hub: SessionHub, workspace: Workspace, overview: Overview, skills: list[Skill], project: str
 ) -> Situation:
     """What a launch for *project*'s series is checked against (blocking: off the UI thread)."""
-    return Situation(
-        hub.models(workspace.models),
-        workspace.session_limits,
-        live=sum(v.state in COUNTED_LIVE for v in overview.sessions),
-        live_builds=sum(
-            v.state in COUNTED_LIVE and v.record.mode == 'worktree' for v in overview.sessions
-        ),
-        worktrees=len(overview.worktrees),
-        worktree_bytes=overview.worktree_bytes,
-        worktree_reason=(reason := hub.worktree_reason(project)),
-        skills=skills,
-        bases=() if reason else tuple(hub.bases(project)),
-    )
+    return hub.situation(workspace, overview, skills, project)
 
 
 def _target(item: WorkItem) -> Target:

@@ -4,7 +4,9 @@ branches, review branches, and other local work (left), the selected one's commi
 artifacts (middle), and the selected commit or artifact (right).
 
 Everything is read and acted on in workers; the screen only shows results. `r` rebases a
-maintainer base after a confirmation; F5 reloads; Escape returns to the series list.
+maintainer base after a confirmation; when that stops at a conflict, `a` launches a
+rebase session on a copy (after a confirmation), and `A` on that session's tree moves the
+base to its result. F5 reloads; F3 or Escape returns to the series list.
 """
 
 from typing import Optional, Protocol
@@ -18,6 +20,7 @@ from textual.widgets.option_list import Option
 
 from .adapters.bases import RebaseResult
 from .branches import BranchesSnapshot, DetailRow
+from .sessions.records import SessionRecord
 from .workspace import Workspace
 
 
@@ -27,6 +30,12 @@ class Branches(Protocol):
     def show(self, row: DetailRow) -> str: ...
 
     def rebase(self, workspace: Workspace, key: str, expected: str) -> RebaseResult: ...
+
+    def rebase_session(
+        self, workspace: Workspace, key: str, failed: RebaseResult
+    ) -> SessionRecord: ...
+
+    def accept(self, workspace: Workspace, sid: str) -> RebaseResult: ...
 
 
 class BranchesScreen(Screen[None]):
@@ -44,6 +53,8 @@ class BranchesScreen(Screen[None]):
         Binding('tab', 'cycle(1)', 'next pane', priority=True),
         Binding('shift+tab', 'cycle(-1)', 'previous pane', priority=True, show=False),
         Binding('r', 'rebase', 'rebase base'),
+        Binding('a', 'agent_rebase', 'rebase with an agent'),
+        Binding('A', 'accept', 'accept rebase'),
         Binding('f5', 'reload', 'reload', key_display='F5'),
     ]
 
@@ -56,6 +67,7 @@ class BranchesScreen(Screen[None]):
         self._shown = ''
         self._note = ''  # The last action's outcome, kept across the reload it causes.
         self._status_text = ''
+        self._failed: dict[str, RebaseResult] = {}  # Base key -> its last failed rebase.
 
     def compose(self) -> ComposeResult:
         yield Static('Branches', id='branch-title')
@@ -178,9 +190,13 @@ class BranchesScreen(Screen[None]):
     # Actions
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
+        key = self.selected_item() or ''
         if action == 'rebase':
-            key = self.selected_item()
-            return bool(key and key.startswith('base:'))
+            return key.startswith('base:')
+        if action == 'agent_rebase':
+            return key in self._failed
+        if action == 'accept':
+            return key in self.data.rebases
         return True
 
     def action_rebase(self) -> None:
@@ -219,12 +235,91 @@ class BranchesScreen(Screen[None]):
 
     def _rebased(self, key: str, result: RebaseResult) -> None:
         branch = key.split(':', 2)[2]
+        self._failed.pop(key, None)
         if result.ok:
             dropped = f'; dropped: {", ".join(result.dropped)}' if result.dropped else ''
             self._status(f'Rebased {branch}{dropped}')
         elif result.failed is not None:
-            self._status(f'{branch} not rebased: {result.failed.subject} does not apply')
+            self._failed[key] = result
+            self._status(
+                f'{branch} not rebased: {result.failed.subject} does not apply; '
+                'a rebases it with an agent'
+            )
         else:
             self._status(f'{branch} not rebased: {result.error}')
         self._note = self.status_text()
+        self.action_reload()
+
+    def action_agent_rebase(self) -> None:
+        """a, after a failed rebase: a rebase session on a copy of the base (approved
+        here: nothing starts without this confirmation)."""
+        from .app import Confirm
+
+        key = self.selected_item()
+        failed = self._failed.get(key or '')
+        if key is None or failed is None:
+            return
+        status = self.data.statuses.get(key)
+        where = f'{status.base.branch} onto {status.base.upstream}' if status else key
+        prompt = (
+            f"Launch a rebase session for {where} (pi's default model)? It rebases a copy; "
+            'your branch changes only when you accept its result (A). [y|N]'
+        )
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._launch_rebase(key, failed)
+
+        self.app.push_screen(Confirm(prompt), answered)
+
+    def _launch_rebase(self, key: str, failed: RebaseResult) -> None:
+        self._status('Preparing the rebase session…')
+
+        def work() -> None:
+            try:
+                record = self.service.rebase_session(self.workspace, key, failed)
+                note = f'Launched rebase session {record.id}: its tree is listed here'
+            except Exception as exc:
+                note = f'Cannot launch the rebase session: {exc}'
+            self.app.call_from_thread(self._acted, note)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def action_accept(self) -> None:
+        """A, on a rebase session's tree: move the base to the session's result."""
+        from .app import Confirm
+
+        key = self.selected_item()
+        sid = self.data.rebases.get(key or '')
+        if key is None or sid is None:
+            return
+        label = next((i.label for i in self.data.items if i.key == key), sid)
+        prompt = f"Move the base to this session's result ({label})? [y|N]"
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._accept(sid)
+
+        self.app.push_screen(Confirm(prompt), answered)
+
+    def _accept(self, sid: str) -> None:
+        self._status('Accepting…')
+
+        def work() -> None:
+            try:
+                result = self.service.accept(self.workspace, sid)
+            except Exception as exc:
+                result = RebaseResult(False, error=str(exc))
+            note = (
+                f'Accepted: the base is at {result.tip[:12]}; end session {sid} when done'
+                if result.ok
+                else f'Not accepted: {result.error}'
+            )
+            self.app.call_from_thread(self._acted, note)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _acted(self, note: str) -> None:
+        self._status(note)
+        self._note = note
         self.action_reload()
