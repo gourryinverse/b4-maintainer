@@ -323,3 +323,37 @@ def test_plucks_remember_where_commits_came_from(ws):
         if r.text.startswith('Cover')
     )
     assert 'It leaked.' in service.show(cover)  # Through the base, back to the artifact.
+
+
+def test_a_prep_branch_is_signed_off_previewed_and_sent_through_b4(ws, tmp_path):
+    service, workspace, project = ws
+    service.no_sign = True  # No patatt key here (b4 says how to make one otherwise).
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    assert service.cut_prep(workspace, 'tree:s1', [row], 'out', 'up/stable').ok
+    key = 'prep:linux:b4/out'
+    found = service.snapshot(workspace)
+    assert {i.key: i for i in found.items}[key].label == 'b4/out · v1 · 1 commit'
+    assert found.identities['linux'] == 'Example Maintainer <m@example.org>'
+    signed = service.sign_off(workspace, key, found.tips[key])
+    assert signed.ok and signed.signed == 1
+    assert 'Signed-off-by: Example Maintainer <m@example.org>' in git(
+        'log', '-1', '--format=%B', 'b4/out', cwd=project
+    )
+    code, summary = service.preview(workspace, key)
+    assert code == 0, summary
+    assert 'Subject: [PATCH] mm: fix the leak' in summary
+    outgoing = tmp_path / 'ws' / 'var' / 'branches' / 'linux' / 'out.outgoing'
+    assert any(outgoing.iterdir())
+    worktree, branch, args = service.send_args(workspace, key)
+    assert (worktree.name, branch, args) == ('out', 'b4/out', ('send', '--no-sign'))
+
+
+def test_the_apps_dry_run_and_no_sign_reach_b4_send(ws):
+    service, workspace, _project = ws
+    service.email_dryrun, service.no_sign = True, True
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    service.cut_prep(workspace, 'tree:s1', [row], 'dry', 'up/stable')
+    _worktree, _branch, args = service.send_args(workspace, 'prep:linux:b4/dry')
+    assert args == ('send', '-d', '--no-sign')

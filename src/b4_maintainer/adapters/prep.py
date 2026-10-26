@@ -14,13 +14,17 @@ determine cover strategy"), so the worktree starts on a throwaway `b4m/prep-star
 branch, deleted right after. Remove when b4 creates prep branches from a detached HEAD.
 """
 
+import email
+import email.policy
+import json
 import os
 import pathlib
 import re
 import shutil
 import subprocess
 import sys
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 
 NAME = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
 START = 'b4m/prep-start'
@@ -168,3 +172,138 @@ def cover_text(repo: pathlib.Path, branch: str) -> str:
     )
     text = out.stdout.lstrip('\x1e')
     return text.split(TRACKING, 1)[0].strip()
+
+
+@dataclass(frozen=True)
+class SignResult:
+    ok: bool
+    tip: str = ''
+    signed: int = 0  # Commits that got the sign-off.
+    error: str = ''
+
+
+def _cover_commit(repo: pathlib.Path, branch: str) -> str:
+    out = _git(repo, 'log', '--format=%H', f'--grep={TRACKING}', '--fixed-strings', '-n1', branch)
+    return out.stdout.strip()
+
+
+def sign_off(repo: pathlib.Path, branch: str, expected: str, name: str, email: str) -> SignResult:
+    """Add `Signed-off-by: name <email>` to each commit after b4's cover commit that lacks
+    it (the maintainer certifying the DCO). Trees and authors are kept; the cover commit
+    is not touched. No worktree: commits are rewritten with git commit-tree and the
+    branch moves in one update-ref guarded by *expected*; refused while checked out."""
+    tip = _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}', check=False)
+    if tip.returncode != 0:
+        return SignResult(False, error=f'{branch} does not exist')
+    if tip.stdout.strip() != expected:
+        return SignResult(False, error=f'{branch} moved since it was shown')
+    listed = _git(repo, 'worktree', 'list', '--porcelain').stdout
+    if f'branch refs/heads/{branch}\n' in listed + '\n':
+        return SignResult(False, error=f'{branch} is checked out; finish there first')
+    cover = _cover_commit(repo, branch)
+    if not cover:
+        return SignResult(False, error=f'{branch} has no b4 cover commit')
+    line = f'Signed-off-by: {name} <{email}>'
+    shas = _git(repo, 'rev-list', '--reverse', f'{cover}..{branch}').stdout.split()
+    parent, signed = cover, 0
+    for sha in shas:
+        message = _git(repo, 'log', '-1', '--format=%B', sha).stdout
+        fields = _git(repo, 'log', '-1', '--date=raw', '--format=%an%x00%ae%x00%ad%x00%P', sha)
+        author, author_email, date, parents = fields.stdout.rstrip('\n').split('\x00')
+        if line in message.splitlines() and parents == parent:
+            parent = sha  # Signed already, on an unchanged parent: kept as it is.
+            continue
+        if line not in message.splitlines():
+            run = subprocess.run(
+                ['git', 'interpret-trailers', '--trailer', line],
+                cwd=repo,
+                input=message.rstrip() + '\n',
+                capture_output=True,
+                text=True,
+            )
+            if run.returncode != 0:
+                return SignResult(False, error=run.stderr.strip())
+            message, signed = run.stdout, signed + 1
+        tree = _git(repo, 'rev-parse', f'{sha}^{{tree}}').stdout.strip()
+        env = {
+            **os.environ,
+            'GIT_AUTHOR_NAME': author,
+            'GIT_AUTHOR_EMAIL': author_email,
+            'GIT_AUTHOR_DATE': date,
+        }
+        made = subprocess.run(
+            ['git', 'commit-tree', tree, '-p', parent],
+            cwd=repo,
+            input=message,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if made.returncode != 0:
+            return SignResult(False, error=made.stderr.strip())
+        parent = made.stdout.strip()
+    if parent != expected:
+        moved = _git(
+            repo,
+            'update-ref',
+            '-m',
+            'b4-maintainer: sign off',
+            f'refs/heads/{branch}',
+            parent,
+            expected,
+            check=False,
+        )
+        if moved.returncode != 0:
+            return SignResult(False, error=f'{branch} moved meanwhile: {moved.stderr.strip()}')
+    return SignResult(True, parent, signed)
+
+
+def preview_send(
+    worktree: pathlib.Path, branch: str, out: pathlib.Path, no_sign: bool = False
+) -> tuple[int, str, list[pathlib.Path]]:
+    """What b4 send would send, without sending: `b4 send -o <out>` writes each message.
+    *out* is emptied first; it must not be inside the worktree."""
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    code, text = run_b4(
+        worktree, branch, 'send', '-o', str(out), *(['--no-sign'] if no_sign else [])
+    )
+    return code, text, sorted(p for p in out.iterdir() if p.is_file())
+
+
+def outgoing_summary(messages: list[pathlib.Path]) -> str:
+    """Each message's subject and recipients; the first message (the cover letter) whole."""
+    parts = []
+    for n, path in enumerate(messages):
+        msg = email.message_from_bytes(path.read_bytes(), policy=email.policy.default)
+        head = [
+            f'Subject: {msg["subject"]}',
+            f'To: {msg.get("to", "")}',
+            f'Cc: {msg.get("cc", "")}',
+        ]
+        if n == 0:
+            body = msg.get_body(preferencelist=('plain',))
+            head += ['', body.get_content() if body is not None else '']
+        parts.append('\n'.join(head))
+    return '\n\n---\n\n'.join(parts)
+
+
+def prep_tracking(repo: pathlib.Path, branch: str) -> dict[str, Any]:
+    """b4's tracking of a prep branch (read from its cover commit): the revision being
+    prepared and the revisions already sent."""
+    cover = _cover_commit(repo, branch)
+    if not cover:
+        return {'revision': 0, 'sent': ()}
+    message = _git(repo, 'log', '-1', '--format=%B', cover).stdout
+    data = message.split(TRACKING, 1)[1] if TRACKING in message else ''
+    lines = [line for line in data.splitlines() if not line.startswith('#')]
+    try:
+        series = json.loads('\n'.join(lines)).get('series', {})
+    except ValueError:
+        return {'revision': 0, 'sent': ()}
+    history = series.get('history', {}) or {}
+    return {
+        'revision': int(series.get('revision', 0) or 0),
+        'sent': tuple(sorted(history, key=lambda v: int(str(v).lstrip('v') or 0))),
+        'change-id': series.get('change-id', ''),
+    }

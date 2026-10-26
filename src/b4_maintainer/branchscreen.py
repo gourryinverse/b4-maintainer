@@ -6,7 +6,10 @@ artifacts (middle), and the selected commit or artifact (right).
 Everything is read and acted on in workers; the screen only shows results. `r` rebases a
 maintainer base after a confirmation; when that stops at a conflict, `a` launches a
 rebase session on a copy (after a confirmation), and `A` on that session's tree moves the
-base to its result. F5 reloads; F3 or Escape returns to the series list.
+base to its result. Space marks commits, `p` plucks them, `n` makes a prep branch from
+them; on a prep branch `e` `t` `c` `s` `o` `u` `d` edit, address, check, sign off,
+preview, collect trailers, and compare, and `S` sends through b4 in the terminal. F5
+reloads; F3 or Escape returns to the series list.
 """
 
 import pathlib
@@ -21,7 +24,7 @@ from textual.widgets import Footer, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .adapters.bases import PluckResult, RebaseResult
-from .adapters.prep import run_b4
+from .adapters.prep import SignResult, run_b4
 from .branches import BranchesSnapshot, CutResult, DetailRow, is_commit
 from .sessions.records import SessionRecord
 from .workspace import Workspace
@@ -58,6 +61,14 @@ class Branches(Protocol):
     def prep_run(self, workspace: Workspace, item: str, action: str) -> tuple[int, str]: ...
 
     def prep_worktree(self, workspace: Workspace, item: str) -> Optional[pathlib.Path]: ...
+
+    def sign_off(self, workspace: Workspace, item: str, expected: str) -> SignResult: ...
+
+    def preview(self, workspace: Workspace, item: str) -> tuple[int, str]: ...
+
+    def send_args(
+        self, workspace: Workspace, item: str
+    ) -> tuple[pathlib.Path, str, tuple[str, ...]]: ...
 
 
 class Ask(ModalScreen[Optional[str]]):
@@ -148,6 +159,11 @@ class BranchesScreen(Screen[None]):
         Binding('t', 'prep_run("auto-to-cc")', 'to/cc'),
         Binding('c', 'prep_run("check")', 'check'),
         Binding('e', 'edit_cover', 'edit cover'),
+        Binding('s', 'sign_off', 'sign off'),
+        Binding('o', 'preview', 'outgoing'),
+        Binding('S', 'send', 'send'),
+        Binding('u', 'prep_run("trailers")', 'trailers'),
+        Binding('d', 'prep_run("compare")', 'compare'),
         Binding('f5', 'reload', 'reload', key_display='F5'),
     ]
 
@@ -323,7 +339,9 @@ class BranchesScreen(Screen[None]):
             return bool(self._chosen() and self.data.targets.get(key))
         if action == 'new_prep':
             return bool(self._chosen())
-        if action in ('prep_run', 'edit_cover'):
+        if action == 'prep_run' and parameters == ('compare',):
+            return bool(self.data.preps.get(key, {}).get('sent'))
+        if action in ('prep_run', 'edit_cover', 'sign_off', 'preview', 'send'):
             return key.startswith('prep:')
         return True
 
@@ -586,7 +604,12 @@ class BranchesScreen(Screen[None]):
         key = self.selected_item()
         if key is None or not key.startswith('prep:'):
             return
-        label = {'auto-to-cc': 'Collecting recipients', 'check': 'Checking'}.get(action, action)
+        label = {
+            'auto-to-cc': 'Collecting recipients',
+            'check': 'Checking',
+            'trailers': 'Collecting trailers from the list',
+            'compare': 'Comparing with the last sent revision',
+        }.get(action, action)
         self._status(f'{label}…')
 
         def work() -> None:
@@ -602,7 +625,12 @@ class BranchesScreen(Screen[None]):
         self._set_shown(out)
         self._pinned = out
         last = next((line for line in reversed(out.splitlines()) if line.strip()), '')
-        verb = {'auto-to-cc': 'Recipients', 'check': 'Check'}.get(action, action)
+        verb = {
+            'auto-to-cc': 'Recipients',
+            'check': 'Check',
+            'trailers': 'Trailers',
+            'compare': 'Compared',
+        }.get(action, action)
         self._note = f'{verb}: {last}' if code == 0 else f'{verb} failed: {last}'
         self.action_reload()
 
@@ -629,4 +657,105 @@ class BranchesScreen(Screen[None]):
         with self.app.suspend():
             code, _out = run_b4(worktree, branch, 'prep', '--edit-cover', interactive=True)
         self._note = 'Cover letter edited' if code == 0 else 'Cover letter not changed'
+        self.action_reload()
+
+    def action_sign_off(self) -> None:
+        """s: the maintainer's Signed-off-by on each commit lacking it (DCO, confirmed)."""
+        from .app import Confirm
+
+        key = self.selected_item()
+        tip = self.data.tips.get(key or '')
+        if key is None or not key.startswith('prep:') or tip is None:
+            return
+        project = key.split(':', 2)[1]
+        who = self.data.identities.get(project) or 'your git identity'
+        n = sum(1 for r in self.data.details.get(key, ()) if is_commit(r))
+        prompt = (
+            f'Add Signed-off-by: {who} to the {n} commit{"s" if n != 1 else ""} of '
+            f"{key.split(':', 2)[2]} that lack it? You certify the Developer's Certificate "
+            'of Origin for each. [y|N]'
+        )
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._sign_off(key, tip)
+
+        self.app.push_screen(Confirm(prompt), answered)
+
+    def _sign_off(self, key: str, tip: str) -> None:
+        def work() -> None:
+            try:
+                result = self.service.sign_off(self.workspace, key, tip)
+            except Exception as exc:
+                result = SignResult(False, error=str(exc))
+            note = (
+                f'Signed off {result.signed} commit{"s" if result.signed != 1 else ""}'
+                if result.ok
+                else f'Not signed off: {result.error}'
+            )
+            self.app.call_from_thread(self._acted, note)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def action_preview(self) -> None:
+        """o: what b4 send would send, without sending (b4 send -o)."""
+        key = self.selected_item()
+        if key is None or not key.startswith('prep:'):
+            return
+        self._status('Preparing the outgoing messages (nothing is sent)…')
+
+        def work() -> None:
+            try:
+                code, text = self.service.preview(self.workspace, key)
+            except Exception as exc:
+                code, text = 1, str(exc)
+            self.app.call_from_thread(self._previewed, code, text)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _previewed(self, code: int, text: str) -> None:
+        self._set_shown(text)
+        if code == 0:
+            self._status('Outgoing messages on the right; nothing was sent (S sends)')
+        else:
+            last = next((line for line in reversed(text.splitlines()) if line.strip()), '')
+            self._status(f'b4 cannot prepare them: {last}')
+
+    def action_send(self) -> None:
+        """S: send through b4 send in the terminal; b4 shows its summary and asks first."""
+        from .app import Confirm
+
+        key = self.selected_item()
+        if key is None or not key.startswith('prep:'):
+            return
+        branch = key.split(':', 2)[2]
+        tracking = self.data.preps.get(key, {})
+        prompt = (
+            f'Send {branch} v{tracking.get("revision", "?")} with b4 send? The app steps aside: '
+            'b4 shows what it will send and asks you to press Enter (Ctrl-C aborts). [y|N]'
+        )
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._send(key)
+
+        self.app.push_screen(Confirm(prompt), answered)
+
+    def _send(self, key: str) -> None:
+        def work() -> None:
+            try:
+                worktree, branch, args = self.service.send_args(self.workspace, key)
+            except Exception as exc:
+                self.app.call_from_thread(self._status, f'Cannot send: {exc}')
+                return
+            self.app.call_from_thread(self._send_in_terminal, worktree, branch, args)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _send_in_terminal(self, worktree: pathlib.Path, branch: str, args: tuple[str, ...]) -> None:
+        with self.app.suspend():
+            code, _out = run_b4(worktree, branch, *args, interactive=True)
+            if code == 0:
+                input('Press Enter to return to b4-maintainer…')
+        self._note = f'b4 send finished for {branch}' if code == 0 else f'b4 send stopped ({code})'
         self.action_reload()

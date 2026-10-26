@@ -5,7 +5,16 @@ import pytest
 from gitutil import git
 
 from b4_maintainer.adapters.bases import pluck_onto
-from b4_maintainer.adapters.prep import PrepError, cover_text, cut_prep, run_b4
+from b4_maintainer.adapters.prep import (
+    PrepError,
+    cover_text,
+    cut_prep,
+    outgoing_summary,
+    prep_tracking,
+    preview_send,
+    run_b4,
+    sign_off,
+)
 
 ME = ['-c', 'user.name=Example Maintainer', '-c', 'user.email=maintainer@example.org']
 GET_MAINTAINER = '#!/bin/sh\necho "Subsystem Maintainer <sub@example.org>"\n'
@@ -115,3 +124,46 @@ def test_a_branch_checked_out_elsewhere_is_not_switched_to(project, tmp_path):
     git('switch', '-q', branch, cwd=repo)  # The maintainer works on it in the main checkout.
     code, out = run_b4(wt, branch, 'prep', '--show-info')
     assert code != 0 and 'checked out' in out
+
+
+def test_sign_off_adds_the_maintainers_sign_off_to_each_commit(project, tmp_path):
+    repo, fix = project
+    wt = tmp_path / 'wt'
+    branch = cut_prep(repo, wt, 'so', 'up/stable', None)
+    tip = git('rev-parse', branch, cwd=repo)
+    pluck_onto(repo, branch, repo, [fix], tip, 'agent@b4-maintainer.invalid', 'x')
+    tip = git('rev-parse', branch, cwd=repo)
+    tree_before = git('rev-parse', f'{branch}^{{tree}}', cwd=repo)
+    result = sign_off(repo, branch, tip, 'Example Maintainer', 'maintainer@example.org')
+    assert result.ok and result.signed == 1
+    body = git('log', '-1', '--format=%B', branch, cwd=repo)
+    assert body.rstrip().endswith('Signed-off-by: Example Maintainer <maintainer@example.org>')
+    assert git('rev-parse', f'{branch}^{{tree}}', cwd=repo) == tree_before
+    assert cover_text(repo, branch)  # The cover commit is untouched (b4 still finds it).
+    again = sign_off(repo, branch, result.tip, 'Example Maintainer', 'maintainer@example.org')
+    assert again.ok and again.signed == 0 and again.tip == result.tip
+    stale = sign_off(repo, branch, tip, 'Example Maintainer', 'maintainer@example.org')
+    assert not stale.ok and 'moved' in stale.error
+
+
+def test_the_outgoing_series_is_previewed_by_b4_without_sending(project, tmp_path):
+    repo, fix = project
+    wt = tmp_path / 'wt'
+    branch = cut_prep(repo, wt, 'out', 'up/stable', 'mm: one fix\n\nIt fixes a thing.\n')
+    tip = git('rev-parse', branch, cwd=repo)
+    pluck_onto(repo, branch, repo, [fix], tip, 'agent@b4-maintainer.invalid', 'x')
+    run_b4(wt, branch, 'prep', '--auto-to-cc')
+    out = tmp_path / 'outgoing'
+    code, text, messages = preview_send(wt, branch, out, no_sign=True)
+    assert code == 0, text
+    assert len(messages) == 1  # One patch: b4 sends no separate cover letter.
+    summary = outgoing_summary(messages)
+    assert 'Subject: [PATCH] mm: fix a thing' in summary
+    assert 'sub@example.org' in summary and 'It fixes a thing.' in summary
+
+
+def test_the_revision_and_sent_history_come_from_b4s_tracking(project, tmp_path):
+    repo, _fix = project
+    branch = cut_prep(repo, tmp_path / 'wt', 'rev', 'up/stable', None)
+    tracking = prep_tracking(repo, branch)
+    assert tracking['revision'] == 1 and tracking['sent'] == ()

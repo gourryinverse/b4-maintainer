@@ -15,7 +15,7 @@ import os
 import pathlib
 import subprocess
 from dataclasses import dataclass, field
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .adapters.bases import (
     BaseStatus,
@@ -29,11 +29,16 @@ from .adapters.bases import (
 from .adapters.prep import (
     TRACKING,
     PrepError,
+    SignResult,
     cover_text,
     cut_prep,
     ensure_worktree,
+    outgoing_summary,
+    prep_tracking,
+    preview_send,
     remove_prep,
     run_b4,
+    sign_off,
 )
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
@@ -76,6 +81,8 @@ class BranchesSnapshot:
     rebases: Mapping[str, str] = field(default_factory=dict)  # Item key -> rebase session.
     targets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)  # Item -> targets.
     tips: Mapping[str, str] = field(default_factory=dict)  # Pluck target -> its tip.
+    identities: Mapping[str, str] = field(default_factory=dict)  # Project -> git identity.
+    preps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)  # b4's tracking.
 
 
 def _git(repo: pathlib.Path, *args: str) -> str:
@@ -118,11 +125,15 @@ class BranchService:
         records: Callable[[], Sequence[SessionRecord]],
         out: Callable[[str], pathlib.Path],
         sessions: Optional['SessionHub'] = None,
+        email_dryrun: bool = False,
+        no_sign: bool = False,
     ) -> None:
         self.root = root
         self._records = records
         self._out = out
         self._sessions = sessions  # Launches rebase sessions; None: not offered.
+        self.email_dryrun = email_dryrun  # b4 send -d: print instead of sending.
+        self.no_sign = no_sign  # b4 send --no-sign.
 
     def snapshot(self, workspace: Workspace) -> BranchesSnapshot:
         items: list[BranchItem] = []
@@ -190,12 +201,31 @@ class BranchService:
                     )
                     items.append(BranchItem(key, kind, project.id, f'{name} · {note}'))
                     details[key] = rows
+        identities, preps = {}, {}
+        for project in workspace.projects:
+            repo = self.root / project.path
+            if (repo / '.git').exists():
+                identities[project.id] = _identity(repo)
+        for n, item in enumerate(items):
+            if item.kind != 'prep':
+                continue
+            project = workspace.project(item.project)
+            if project is None:
+                continue
+            branch = item.key.split(':', 2)[2]
+            tracking = prep_tracking(self.root / project.path, branch)
+            preps[item.key] = tracking
+            commits = sum(1 for r in details.get(item.key, ()) if is_commit(r))
+            label = f'{branch} · v{tracking["revision"]} · {_count(commits, "commit")}'
+            if tracking['sent']:
+                label += f' · sent {", ".join(tracking["sent"])}'
+            items[n] = dataclasses.replace(item, label=label)
         targets, tips = {}, {}
         for item in items:
             project = workspace.project(item.project)
             bases = [f'base:{item.project}:{b.branch}' for b in project.bases] if project else []
-            preps = [i.key for i in items if i.kind == 'prep' and i.project == item.project]
-            targets[item.key] = tuple(k for k in (*bases, *preps) if k != item.key)
+            prep_keys = [i.key for i in items if i.kind == 'prep' and i.project == item.project]
+            targets[item.key] = tuple(k for k in (*bases, *prep_keys) if k != item.key)
         for key, status in statuses.items():
             tips[key] = status.tip
         for item in (i for i in items if i.kind == 'prep'):
@@ -205,7 +235,15 @@ class BranchService:
                     self.root / project.path, 'rev-parse', item.key.split(':', 2)[2]
                 ).strip()
         return BranchesSnapshot(
-            tuple(items), details, statuses, tuple(problems), rebases, targets, tips
+            tuple(items),
+            details,
+            statuses,
+            tuple(problems),
+            rebases,
+            targets,
+            tips,
+            identities,
+            preps,
         )
 
     def _tree(
@@ -509,12 +547,66 @@ class BranchService:
         if args is None or project is None:
             return 1, f'cannot {action} {item}'
         repo = self.root / project.path
+        if action == 'compare':
+            sent = prep_tracking(repo, branch)['sent']
+            if not sent:
+                return 1, 'nothing sent yet to compare with'
+            args = (*args, str(sent[-1]).lstrip('v'))
         worktree = self._prep_worktree(project, branch)
         try:
             ensure_worktree(repo, worktree, branch)
         except PrepError as ex:
             return 1, str(ex)
         return run_b4(worktree, branch, *args)
+
+    def _prep(self, workspace: Workspace, item: str) -> tuple[pathlib.Path, pathlib.Path, str]:
+        """(repo, worktree, branch) of a prep item; the worktree made if missing."""
+        _kind, pid, branch = item.split(':', 2)
+        project = workspace.project(pid)
+        if project is None:
+            raise PrepError(f'no project {pid}')
+        repo = self.root / project.path
+        worktree = self._prep_worktree(project, branch)
+        ensure_worktree(repo, worktree, branch)
+        return repo, worktree, branch
+
+    def sign_off(self, workspace: Workspace, item: str, expected: str) -> SignResult:
+        """The maintainer's Signed-off-by on each commit of the prep branch lacking it."""
+        _kind, pid, branch = item.split(':', 2)
+        project = workspace.project(pid)
+        if project is None:
+            return SignResult(False, error=f'no project {pid}')
+        repo = self.root / project.path
+        name, email = _identity_parts(repo)
+        if not name or not email:
+            return SignResult(False, error='no git user.name or user.email for the project')
+        return sign_off(repo, branch, expected, name, email)
+
+    def preview(self, workspace: Workspace, item: str) -> tuple[int, str]:
+        """What b4 send would send (b4 send -o, nothing sent): subjects, recipients, and
+        the first message; b4's own warnings after."""
+        try:
+            repo, worktree, branch = self._prep(workspace, item)
+        except PrepError as ex:
+            return 1, str(ex)
+        out = worktree.with_name(f'{worktree.name}.outgoing')
+        code, text, messages = preview_send(worktree, branch, out, self.no_sign)
+        if code != 0 or not messages:
+            return code or 1, text
+        return 0, outgoing_summary(messages) + '\n\n--- b4 send -o\n' + text
+
+    def send_args(
+        self, workspace: Workspace, item: str
+    ) -> tuple[pathlib.Path, str, tuple[str, ...]]:
+        """(worktree, branch, b4 arguments) for sending the prep branch interactively: b4
+        shows its summary and asks before anything goes out."""
+        _repo, worktree, branch = self._prep(workspace, item)
+        args = (
+            'send',
+            *(('-d',) if self.email_dryrun else ()),
+            *(('--no-sign',) if self.no_sign else ()),
+        )
+        return worktree, branch, args
 
     def prep_worktree(self, workspace: Workspace, item: str) -> Optional[pathlib.Path]:
         """The prep branch's worktree (made if missing), for running b4 interactively."""
@@ -642,7 +734,22 @@ PREP_ACTIONS = {
     'auto-to-cc': ('prep', '--auto-to-cc'),
     'check': ('prep', '--check'),
     'info': ('prep', '--show-info'),
+    'trailers': ('trailers', '-u'),
+    'compare': ('prep', '--compare-to'),  # And the last sent revision's number.
 }
+
+
+def _identity_parts(repo: pathlib.Path) -> tuple[str, str]:
+    def value(key: str) -> str:
+        run = subprocess.run(['git', 'config', key], cwd=repo, capture_output=True, text=True)
+        return run.stdout.strip()
+
+    return value('user.name'), value('user.email')
+
+
+def _identity(repo: pathlib.Path) -> str:
+    name, email = _identity_parts(repo)
+    return f'{name} <{email}>' if name and email else ''
 
 
 def is_commit(row: DetailRow) -> bool:

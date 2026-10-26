@@ -103,7 +103,14 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
         sync=source.sync if source.can_sync() else None,
         sync_timeout=timeout,
         sessions=(hub := _sessions(source.root, workspace, private=True)),
-        branches=BranchService(source.root, hub.records, hub.store.directory, hub),
+        branches=BranchService(
+            source.root,
+            hub.records,
+            hub.store.directory,
+            hub,
+            email_dryrun=source.email_dryrun,
+            no_sign=source.no_sign,
+        ),
         app_pane=_app_pane(),
     )
 

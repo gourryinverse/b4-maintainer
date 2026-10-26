@@ -33,6 +33,9 @@ class FakeBranches:
         self.cuts = []
         self.runs = []
         self.worktrees = []
+        self.signed = []
+        self.previews = []
+        self.sent = ()  # Revisions b4 has sent.
         self.targets = {'tree:s1': ('base:linux:me/base',)}
 
     def snapshot(self, workspace):
@@ -59,9 +62,20 @@ class FakeBranches:
             DetailRow('  p1  mm: fix p', 'p1', '/repo'),
         )
         statuses = {'base:linux:me/base': STATUS, 'base:linux:me/linus': STATUS}
-        tips = {'base:linux:me/base': 'tip0', 'base:linux:me/linus': 'tip0'}
+        tips = {
+            'base:linux:me/base': 'tip0',
+            'base:linux:me/linus': 'tip0',
+            'prep:linux:b4/pa': 'ptip',
+        }
         return BranchesSnapshot(
-            items, details, statuses, rebases={'tree:s1': 'r1'}, targets=self.targets, tips=tips
+            items,
+            details,
+            statuses,
+            rebases={'tree:s1': 'r1'},
+            targets=self.targets,
+            tips=tips,
+            identities={'linux': 'Example Maintainer <m@example.org>'},
+            preps={'prep:linux:b4/pa': {'revision': 1, 'sent': self.sent}},
         )
 
     def show(self, row):
@@ -93,6 +107,19 @@ class FakeBranches:
     def prep_run(self, workspace, item, action):
         self.runs.append((item, action))
         return 0, f'{action} output\nSuccess: 1, Warning: 0, Error: 0'
+
+    def sign_off(self, workspace, item, expected):
+        from b4_maintainer.adapters.prep import SignResult
+
+        self.signed.append((item, expected))
+        return SignResult(True, 'g' * 40, 1)
+
+    def preview(self, workspace, item):
+        self.previews.append(item)
+        return 0, 'Subject: [PATCH] mm: fix p\nTo: sub@example.org'
+
+    def send_args(self, workspace, item):
+        return __import__('pathlib').Path('/w/prep'), 'b4/pa', ('send', '-d')
 
     def prep_worktree(self, workspace, item):
         self.worktrees.append(item)
@@ -401,3 +428,92 @@ async def test_e_edits_the_cover_with_b4_while_the_app_is_suspended(demo_root, m
             True,
         )
         assert 'Cover letter edited' in app.screen.status_text()
+
+
+async def open_prep(pilot):
+    await settle(pilot)
+    await pilot.press('f3')
+    await settle(pilot)
+    await pilot.press('down', 'down')
+    await settle(pilot)
+
+
+async def test_s_signs_off_after_a_dco_confirmation(demo_root):
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_prep(pilot)
+        await pilot.press('s')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm)
+        prompt = app.screen.prompt
+        assert 'Signed-off-by: Example Maintainer <m@example.org>' in prompt
+        assert "Developer's Certificate of Origin" in prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.signed == [('prep:linux:b4/pa', 'ptip')]
+        assert 'Signed off 1 commit' in app.screen.status_text()
+
+
+async def test_o_shows_what_would_be_sent_without_sending(demo_root):
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_prep(pilot)
+        await pilot.press('o')
+        await settle(pilot)
+        assert service.previews == ['prep:linux:b4/pa']
+        assert 'To: sub@example.org' in app.screen.shown_text()
+        assert 'nothing was sent' in app.screen.status_text()
+
+
+async def test_capital_s_sends_through_b4_in_the_terminal_after_a_confirmation(
+    demo_root, monkeypatch
+):
+    import contextlib
+
+    calls = []
+    monkeypatch.setattr(
+        'b4_maintainer.branchscreen.run_b4',
+        lambda wt, branch, *args, interactive=False: (
+            calls.append((branch, args, interactive)) or (0, '')
+        ),
+    )
+    monkeypatch.setattr('builtins.input', lambda prompt='': '')
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    monkeypatch.setattr(type(app), 'suspend', lambda self: contextlib.nullcontext())
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_prep(pilot)
+        await pilot.press('S')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'press Enter' in app.screen.prompt
+        await pilot.press('n')
+        await settle(pilot)
+        assert calls == []  # Declined: b4 never ran.
+        await pilot.press('S')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        assert calls == [('b4/pa', ('send', '-d'), True)]
+        assert 'b4 send finished for b4/pa' in app.screen.status_text()
+
+
+async def test_u_collects_trailers_and_d_compares_once_something_was_sent(demo_root):
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_prep(pilot)
+        await pilot.press('d')  # Nothing sent yet: nothing to compare with.
+        await settle(pilot)
+        await pilot.press('u')
+        await settle(pilot)
+        assert service.runs == [('prep:linux:b4/pa', 'trailers')]
+    service = FakeBranches()
+    service.sent = ('v1',)
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_prep(pilot)
+        await pilot.press('d')
+        await settle(pilot)
+        assert service.runs == [('prep:linux:b4/pa', 'compare')]
