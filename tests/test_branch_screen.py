@@ -517,3 +517,21 @@ async def test_u_collects_trailers_and_d_compares_once_something_was_sent(demo_r
         await pilot.press('d')
         await settle(pilot)
         assert service.runs == [('prep:linux:b4/pa', 'compare')]
+
+
+async def test_a_rebase_says_which_prep_branches_moved_and_which_stayed(demo_root):
+    service = FakeBranches()
+    service.result = RebaseResult(
+        True, 'tip1', moved=('b4/a',), stuck=(('b4/b', 'mm: x does not apply'),)
+    )
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('r')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        text = app.screen.status_text()
+        assert 'moved b4/a' in text and 'b4/b stays: mm: x does not apply' in text

@@ -357,3 +357,22 @@ def test_the_apps_dry_run_and_no_sign_reach_b4_send(ws):
     service.cut_prep(workspace, 'tree:s1', [row], 'dry', 'up/stable')
     _worktree, _branch, args = service.send_args(workspace, 'prep:linux:b4/dry')
     assert args == ('send', '-d', '--no-sign')
+
+
+def test_rebasing_a_base_moves_the_prep_branches_cut_from_it(ws):
+    service, workspace, project = ws
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    assert service.cut_prep(workspace, 'tree:s1', [row], 'on-base', 'me/base').ok
+    assert service.cut_prep(workspace, 'tree:s1', [row], 'on-upstream', 'up/stable').ok
+    git('switch', '-q', '--detach', 'up/stable', cwd=project)
+    tip = commit(project, 'u.c', 'u\n', 'mm: upstream moved')
+    git('update-ref', 'refs/remotes/up/stable', tip, cwd=project)
+    git('switch', '-q', 'main', cwd=project)
+    old = git('rev-parse', 'me/base', cwd=project)
+    result = service.rebase(workspace, 'base:linux:me/base', old)
+    assert result.ok and result.moved == ('b4/on-base',) and result.stuck == ()
+    new_base = git('rev-parse', 'me/base', cwd=project)
+    assert git('merge-base', '--is-ancestor', new_base, 'b4/on-base', cwd=project) == ''
+    # Cut from the upstream, not the base: left where it is.
+    assert tip not in git('rev-list', 'b4/on-upstream', cwd=project).split()

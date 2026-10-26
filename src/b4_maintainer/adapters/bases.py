@@ -53,6 +53,8 @@ class RebaseResult:
     failed: Optional[BaseCommit] = None  # The commit that did not replay.
     error: str = ''
     detail: str = ''  # Why it did not: git merge-tree's conflict messages.
+    moved: tuple[str, ...] = ()  # Prep branches moved along with the base.
+    stuck: tuple[tuple[str, str], ...] = ()  # (prep branch, why it did not move).
 
 
 def _git(repo: pathlib.Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -326,6 +328,61 @@ def _agent_message(message: str, assisted: str, repo: pathlib.Path) -> str:
     return run.stdout
 
 
+def _replay(
+    repo: pathlib.Path,
+    tip: str,
+    shas: Sequence[str],
+    agent_email: Optional[str] = None,
+    assisted: str = '',
+) -> PluckResult:
+    """Each commit's change merged onto *tip* in turn (git merge-tree, no worktree) and
+    committed (git commit-tree): commits by *agent_email* become the maintainer's with
+    Assisted-by: *assisted*; others keep author, date, and message. Changes *tip* already
+    has are dropped; a conflict stops it all. Moves no ref."""
+    picked: list[tuple[str, str]] = []
+    dropped: list[str] = []
+    for sha in shas:
+        fields = _git(repo, 'log', '-1', '--date=raw', '--format=%s%x00%an%x00%ae%x00%ad', sha)
+        subject, name, email, date = fields.stdout.rstrip('\n').split('\x00')
+        merged = _git(
+            repo,
+            'merge-tree',
+            '--write-tree',
+            '--name-only',
+            f'--merge-base={sha}^',
+            tip,
+            sha,
+            check=False,
+        )
+        if merged.returncode != 0:
+            detail = '\n'.join(line for line in merged.stdout.splitlines()[1:] if line.strip())
+            return PluckResult(False, failed=subject, detail=detail or merged.stderr.strip())
+        tree = merged.stdout.splitlines()[0]
+        if tree == _git(repo, 'rev-parse', f'{tip}^{{tree}}').stdout.strip():
+            dropped.append(subject)
+            continue
+        message = _git(repo, 'log', '-1', '--format=%B', sha).stdout
+        if agent_email and email.lower() == agent_email.lower():
+            message, env = _agent_message(message, assisted, repo), dict(os.environ)
+            for key in ('GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE'):
+                env.pop(key, None)  # The maintainer, now.
+        else:
+            env = _env(GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email, GIT_AUTHOR_DATE=date)
+        made = subprocess.run(
+            ['git', 'commit-tree', tree, '-p', tip],
+            cwd=repo,
+            input=message,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if made.returncode != 0:
+            return PluckResult(False, error=f'cannot commit {subject}: {made.stderr.strip()}')
+        tip = made.stdout.strip()
+        picked.append((sha, tip))
+    return PluckResult(True, tip, tuple(picked), tuple(dropped))
+
+
 def pluck(
     repo: pathlib.Path,
     base: MaintainerBase,
@@ -379,48 +436,10 @@ def pluck_onto(
                 return PluckResult(
                     False, error=f'cannot bring the commits in: {pushed.stderr.strip()}'
                 )
-        tip = tip0
-        picked: list[tuple[str, str]] = []
-        dropped: list[str] = []
-        for sha in shas:
-            fields = _git(repo, 'log', '-1', '--date=raw', '--format=%s%x00%an%x00%ae%x00%ad', sha)
-            subject, name, email, date = fields.stdout.rstrip('\n').split('\x00')
-            merged = _git(
-                repo,
-                'merge-tree',
-                '--write-tree',
-                '--name-only',
-                f'--merge-base={sha}^',
-                tip,
-                sha,
-                check=False,
-            )
-            if merged.returncode != 0:
-                detail = '\n'.join(line for line in merged.stdout.splitlines()[1:] if line.strip())
-                return PluckResult(False, failed=subject, detail=detail or merged.stderr.strip())
-            tree = merged.stdout.splitlines()[0]
-            if tree == _git(repo, 'rev-parse', f'{tip}^{{tree}}').stdout.strip():
-                dropped.append(subject)
-                continue
-            message = _git(repo, 'log', '-1', '--format=%B', sha).stdout
-            if email.lower() == agent_email.lower():
-                message, env = _agent_message(message, assisted, repo), dict(os.environ)
-                for key in ('GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE'):
-                    env.pop(key, None)  # The maintainer, now.
-            else:
-                env = _env(GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email, GIT_AUTHOR_DATE=date)
-            made = subprocess.run(
-                ['git', 'commit-tree', tree, '-p', tip],
-                cwd=repo,
-                input=message,
-                capture_output=True,
-                text=True,
-                env=env,
-            )
-            if made.returncode != 0:
-                return PluckResult(False, error=f'cannot commit {subject}: {made.stderr.strip()}')
-            tip = made.stdout.strip()
-            picked.append((sha, tip))
+        replayed = _replay(repo, tip0, shas, agent_email, assisted)
+        if not replayed.ok:
+            return replayed
+        tip, picked = replayed.tip, replayed.picked
         if tip != tip0:
             moved = _git(
                 repo,
@@ -434,7 +453,7 @@ def pluck_onto(
             )
             if moved.returncode != 0:
                 return PluckResult(False, error=f'{branch} moved meanwhile: {moved.stderr.strip()}')
-        return PluckResult(True, tip, tuple(picked), tuple(dropped))
+        return replayed
     finally:
         refs = _git(
             repo, 'for-each-ref', '--format=%(refname)', incoming, check=False

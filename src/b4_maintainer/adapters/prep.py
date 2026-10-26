@@ -26,6 +26,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .bases import PluckResult, _replay  # The same replay as plucking.
+
 NAME = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
 START = 'b4m/prep-start'
 TRACKING = '--- b4-submit-tracking ---'
@@ -307,3 +309,67 @@ def prep_tracking(repo: pathlib.Path, branch: str) -> dict[str, Any]:
         'sent': tuple(sorted(history, key=lambda v: int(str(v).lstrip('v') or 0))),
         'change-id': series.get('change-id', ''),
     }
+
+
+def prep_fork(repo: pathlib.Path, branch: str) -> str:
+    """Where the prep branch forks: the parent of b4's cover commit."""
+    cover = _cover_commit(repo, branch)
+    if not cover:
+        return ''
+    return _git(repo, 'rev-parse', f'{cover}^', check=False).stdout.strip()
+
+
+def move_prep(repo: pathlib.Path, branch: str, onto: str, expected: str) -> PluckResult:
+    """Move a prep branch onto *onto* (e.g. its rebased maintainer base): b4's cover
+    commit recreated there with its message (and tracking) intact, then each commit
+    replayed; a change *onto* already has is dropped. A conflict, a moved branch, or a
+    checked-out one changes nothing. No worktree; one guarded update-ref."""
+    tip = _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}', check=False)
+    if tip.returncode != 0:
+        return PluckResult(False, error=f'{branch} does not exist')
+    if tip.stdout.strip() != expected:
+        return PluckResult(False, error=f'{branch} moved since it was shown')
+    if (
+        f'branch refs/heads/{branch}\n'
+        in _git(repo, 'worktree', 'list', '--porcelain').stdout + '\n'
+    ):
+        return PluckResult(False, error=f'{branch} is checked out')
+    cover = _cover_commit(repo, branch)
+    if not cover:
+        return PluckResult(False, error=f'{branch} has no b4 cover commit')
+    fields = _git(repo, 'log', '-1', '--date=raw', '--format=%an%x00%ae%x00%ad', cover).stdout
+    name, author_email, date = fields.rstrip('\n').split('\x00')
+    message = _git(repo, 'log', '-1', '--format=%B', cover).stdout
+    tree = _git(repo, 'rev-parse', f'{onto}^{{tree}}').stdout.strip()
+    made = subprocess.run(
+        ['git', 'commit-tree', tree, '-p', onto],
+        cwd=repo,
+        input=message,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            'GIT_AUTHOR_NAME': name,
+            'GIT_AUTHOR_EMAIL': author_email,
+            'GIT_AUTHOR_DATE': date,
+        },
+    )
+    if made.returncode != 0:
+        return PluckResult(False, error=made.stderr.strip())
+    shas = _git(repo, 'rev-list', '--reverse', f'{cover}..{branch}').stdout.split()
+    replayed = _replay(repo, made.stdout.strip(), shas)
+    if not replayed.ok:
+        return replayed
+    moved = _git(
+        repo,
+        'update-ref',
+        '-m',
+        f'b4-maintainer: move onto {onto[:12]}',
+        f'refs/heads/{branch}',
+        replayed.tip,
+        expected,
+        check=False,
+    )
+    if moved.returncode != 0:
+        return PluckResult(False, error=f'{branch} moved meanwhile: {moved.stderr.strip()}')
+    return replayed

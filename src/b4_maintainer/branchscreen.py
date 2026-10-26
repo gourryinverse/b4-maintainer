@@ -384,7 +384,7 @@ class BranchesScreen(Screen[None]):
         self._failed.pop(key, None)
         if result.ok:
             dropped = f'; dropped: {", ".join(result.dropped)}' if result.dropped else ''
-            self._status(f'Rebased {branch}{dropped}')
+            self._status(f'Rebased {branch}{dropped}{_moved(result)}')
         elif result.failed is not None:
             self._failed[key] = result
             self._status(
@@ -457,7 +457,8 @@ class BranchesScreen(Screen[None]):
             except Exception as exc:
                 result = RebaseResult(False, error=str(exc))
             note = (
-                f'Accepted: the base is at {result.tip[:12]}; end session {sid} when done'
+                f'Accepted: the base is at {result.tip[:12]}{_moved(result)}; '
+                f'end session {sid} when done'
                 if result.ok
                 else f'Not accepted: {result.error}'
             )
@@ -759,3 +760,11 @@ class BranchesScreen(Screen[None]):
                 input('Press Enter to return to b4-maintainer…')
         self._note = f'b4 send finished for {branch}' if code == 0 else f'b4 send stopped ({code})'
         self.action_reload()
+
+
+def _moved(result: RebaseResult) -> str:
+    """What happened to the prep branches cut from a rebased base."""
+    text = f'; moved {", ".join(result.moved)}' if result.moved else ''
+    for branch, why in result.stuck:
+        text += f'; {branch} stays: {why}'
+    return text

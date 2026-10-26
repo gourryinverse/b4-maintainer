@@ -33,7 +33,9 @@ from .adapters.prep import (
     cover_text,
     cut_prep,
     ensure_worktree,
+    move_prep,
     outgoing_summary,
+    prep_fork,
     prep_tracking,
     preview_send,
     remove_prep,
@@ -359,13 +361,16 @@ class BranchService:
         base = next((b for b in project.bases if b.branch == branch), None) if project else None
         if project is None or base is None:
             return RebaseResult(False, error=f'no maintainer base {branch} in {record.project}')
-        return accept_rebase(
-            self.root / project.path,
+        repo = self.root / project.path
+        before = base_status(repo, base)
+        result = accept_rebase(
+            repo,
             base,
             pathlib.Path(record.worktree.path),
             RESULT,
             record.choices.get('expected', ''),
         )
+        return self._move_preps(repo, before, result) if result.ok else result
 
     def targets(self, workspace: Workspace, item: str) -> list[str]:
         """Where commits shown under *item* may be plucked: its project's bases, not itself."""
@@ -662,12 +667,36 @@ class BranchService:
         return '\n'.join(lines[:SHOW_LINES]) + cut
 
     def rebase(self, workspace: Workspace, key: str, expected: str) -> RebaseResult:
-        """Rebase the base named by *key*, if it is still at *expected* (its tip as shown)."""
+        """Rebase the base named by *key*, if it is still at *expected* (its tip as shown),
+        then move the prep branches cut from it."""
         try:
             project, base = self._base(workspace, key)
         except SessionError as ex:
             return RebaseResult(False, error=str(ex))
-        return rebase_base(self.root / project.path, base, expected)
+        repo = self.root / project.path
+        before = base_status(repo, base)
+        result = rebase_base(repo, base, expected)
+        return self._move_preps(repo, before, result) if result.ok else result
+
+    def _move_preps(
+        self, repo: pathlib.Path, before: BaseStatus, result: RebaseResult
+    ) -> RebaseResult:
+        """Prep branches forked from the base as it was (its tip or one of its own
+        commits) moved onto its new tip; those that conflict stay and are named."""
+        old = {before.tip, *(c.sha for c in before.commits)}
+        names = _git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/b4/').split()
+        moved, stuck = [], []
+        for name in (n for n in names if not n.startswith('b4/review/')):
+            if prep_fork(repo, name) not in old:
+                continue
+            tip = _git(repo, 'rev-parse', name).strip()
+            outcome = move_prep(repo, name, result.tip, tip)
+            if outcome.ok:
+                moved.append(name)
+            else:
+                why = f'{outcome.failed} does not apply' if outcome.failed else outcome.error
+                stuck.append((name, why))
+        return dataclasses.replace(result, moved=tuple(moved), stuck=tuple(stuck))
 
 
 def _base_label(status: BaseStatus) -> str:

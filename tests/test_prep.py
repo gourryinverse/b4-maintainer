@@ -9,7 +9,9 @@ from b4_maintainer.adapters.prep import (
     PrepError,
     cover_text,
     cut_prep,
+    move_prep,
     outgoing_summary,
+    prep_fork,
     prep_tracking,
     preview_send,
     run_b4,
@@ -167,3 +169,39 @@ def test_the_revision_and_sent_history_come_from_b4s_tracking(project, tmp_path)
     branch = cut_prep(repo, tmp_path / 'wt', 'rev', 'up/stable', None)
     tracking = prep_tracking(repo, branch)
     assert tracking['revision'] == 1 and tracking['sent'] == ()
+
+
+def test_a_prep_branch_moves_onto_a_new_base_keeping_b4s_cover(project, tmp_path):
+    repo, fix = project
+    git('branch', 'me/base', 'up/stable', cwd=repo)
+    branch = cut_prep(repo, tmp_path / 'wt', 'mv', 'me/base', 'mm: moving\n\nBody.\n')
+    tip = git('rev-parse', branch, cwd=repo)
+    pluck_onto(repo, branch, repo, [fix], tip, 'agent@b4-maintainer.invalid', 'x')
+    git('switch', '-q', '--detach', 'me/base', cwd=repo)
+    new_base = commit(repo, 'other.c', 'o\n', 'mm: the base moved')
+    git('switch', '-q', 'main', cwd=repo)
+    assert prep_fork(repo, branch) == git('rev-parse', 'up/stable', cwd=repo)
+    old = git('rev-parse', branch, cwd=repo)
+    result = move_prep(repo, branch, new_base, old)
+    assert result.ok
+    assert prep_fork(repo, branch) == new_base
+    assert git('log', '--format=%s', f'{new_base}..{branch}', cwd=repo).splitlines() == [
+        'mm: fix a thing',
+        'mm: moving',  # b4's cover commit, recreated.
+    ]
+    assert cover_text(repo, branch).startswith('mm: moving')
+    assert prep_tracking(repo, branch)['revision'] == 1  # b4's tracking survives.
+
+
+def test_a_prep_branch_that_conflicts_with_the_new_base_is_left_alone(project, tmp_path):
+    repo, fix = project
+    branch = cut_prep(repo, tmp_path / 'wt', 'stuck', 'up/stable', None)
+    tip = git('rev-parse', branch, cwd=repo)
+    pluck_onto(repo, branch, repo, [fix], tip, 'agent@b4-maintainer.invalid', 'x')
+    git('switch', '-q', '--detach', 'up/stable', cwd=repo)
+    clash = commit(repo, 'mm/fix.c', 'different\n', 'mm: clash')
+    git('switch', '-q', 'main', cwd=repo)
+    old = git('rev-parse', branch, cwd=repo)
+    result = move_prep(repo, branch, clash, old)
+    assert not result.ok and result.failed == 'mm: fix a thing'
+    assert git('rev-parse', branch, cwd=repo) == old
