@@ -9,17 +9,20 @@ rebase session on a copy (after a confirmation), and `A` on that session's tree 
 base to its result. F5 reloads; F3 or Escape returns to the series list.
 """
 
+import pathlib
+import re
 from typing import Optional, Protocol, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, OptionList, Static
+from textual.widgets import Footer, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .adapters.bases import PluckResult, RebaseResult
-from .branches import BranchesSnapshot, DetailRow
+from .adapters.prep import run_b4
+from .branches import BranchesSnapshot, CutResult, DetailRow, is_commit
 from .sessions.records import SessionRecord
 from .workspace import Workspace
 
@@ -45,6 +48,47 @@ class Branches(Protocol):
         target: str,
         expected: str,
     ) -> PluckResult: ...
+
+    def fork_points(self, workspace: Workspace, item: str) -> list[str]: ...
+
+    def cut_prep(
+        self, workspace: Workspace, item: str, rows: Sequence[DetailRow], name: str, fork: str
+    ) -> CutResult: ...
+
+    def prep_run(self, workspace: Workspace, item: str, action: str) -> tuple[int, str]: ...
+
+    def prep_worktree(self, workspace: Workspace, item: str) -> Optional[pathlib.Path]: ...
+
+
+class Ask(ModalScreen[Optional[str]]):
+    """One line of text: Enter answers, Escape cancels."""
+
+    DEFAULT_CSS = """
+    Ask { align: center middle; }
+    Ask > Vertical { width: 70; height: auto; border: solid $accent; background: $panel; }
+    Ask Input { border: none; }
+    """
+    BINDINGS = [Binding('escape', 'cancel', 'cancel')]
+
+    def __init__(self, title: str, value: str = '') -> None:
+        super().__init__()
+        self.title_text = title
+        self.value = value
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(self.title_text, markup=False)
+            yield Input(value=self.value)
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.dismiss(event.value.strip() or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class Pick(ModalScreen[Optional[str]]):
@@ -99,7 +143,11 @@ class BranchesScreen(Screen[None]):
         Binding('a', 'agent_rebase', 'rebase with an agent'),
         Binding('A', 'accept', 'accept rebase'),
         Binding('space', 'mark', 'mark'),
-        Binding('p', 'pluck', 'pluck onto a base'),
+        Binding('p', 'pluck', 'pluck'),
+        Binding('n', 'new_prep', 'new prep branch'),
+        Binding('t', 'prep_run("auto-to-cc")', 'to/cc'),
+        Binding('c', 'prep_run("check")', 'check'),
+        Binding('e', 'edit_cover', 'edit cover'),
         Binding('f5', 'reload', 'reload', key_display='F5'),
     ]
 
@@ -114,6 +162,7 @@ class BranchesScreen(Screen[None]):
         self._status_text = ''
         self._failed: dict[str, RebaseResult] = {}  # Base key -> its last failed rebase.
         self._marks: set[int] = set()  # Marked commit rows of the selected item.
+        self._pinned = ''  # Shown on the right after the next reload instead of the row.
 
     def compose(self) -> ComposeResult:
         yield Static('Branches', id='branch-title')
@@ -156,9 +205,12 @@ class BranchesScreen(Screen[None]):
         keys = [i.key for i in data.items]
         if keys:
             target = selected if selected in keys else keys[0]
-            items.highlighted = next(
-                n for n in range(items.option_count) if items.get_option_at_index(n).id == target
-            )
+            with self.prevent(OptionList.OptionHighlighted):  # Shown below, once.
+                items.highlighted = next(
+                    n
+                    for n in range(items.option_count)
+                    if items.get_option_at_index(n).id == target
+                )
         self._show_rows()
         empty = '' if keys else 'No projects with a checkout.'
         self._status('; '.join(p for p in (self._note, *data.problems, empty) if p))
@@ -189,7 +241,11 @@ class BranchesScreen(Screen[None]):
         self._rows = tuple(self.data.details.get(key, ())) if key else ()
         self._marks = set()
         self._render_rows(next((n for n, r in enumerate(self._rows) if r.key), None))
-        self._show(self.selected_row())
+        if self._pinned:  # A b4 run's output, kept across the reload it caused.
+            self._set_shown(self._pinned)
+            self._pinned = ''
+        else:
+            self._show(self.selected_row())
 
     def _render_rows(self, highlighted: Optional[int]) -> None:
         rows = self.query_one('#branch-rows', OptionList)
@@ -198,13 +254,19 @@ class BranchesScreen(Screen[None]):
         for n, row in enumerate(self._rows):
             prefix = ('* ' if n in self._marks else '  ') if marks else ''
             rows.add_option(Option(prefix + row.text, disabled=not row.key))
-        rows.highlighted = highlighted
+        with self.prevent(OptionList.OptionHighlighted):  # The caller shows what it needs.
+            rows.highlighted = highlighted
 
     def marked_rows(self) -> list[DetailRow]:
         return [self._rows[n] for n in sorted(self._marks)]
 
     def _is_commit(self, row: Optional[DetailRow]) -> bool:
-        return row is not None and bool(row.key) and not row.git_args and row.artifact is None
+        return row is not None and is_commit(row)
+
+    def _chosen(self) -> list[DetailRow]:
+        """The marked commits, else the selected one."""
+        selected = self.selected_row()
+        return self.marked_rows() or ([selected] if selected and self._is_commit(selected) else [])
 
     def _show(self, row: Optional[DetailRow]) -> None:
         if row is None or not row.key:
@@ -258,8 +320,11 @@ class BranchesScreen(Screen[None]):
             rows = self.query_one('#branch-rows', OptionList)
             return self.focused is rows and self._is_commit(self.selected_row())
         if action == 'pluck':
-            chosen = self._marks or self._is_commit(self.selected_row())
-            return bool(chosen and self.data.targets.get(key))
+            return bool(self._chosen() and self.data.targets.get(key))
+        if action == 'new_prep':
+            return bool(self._chosen())
+        if action in ('prep_run', 'edit_cover'):
+            return key.startswith('prep:')
         return True
 
     def action_rebase(self) -> None:
@@ -401,8 +466,7 @@ class BranchesScreen(Screen[None]):
         key = self.selected_item()
         if key is None:
             return
-        selected = self.selected_row()
-        rows = self.marked_rows() or ([selected] if selected and self._is_commit(selected) else [])
+        rows = self._chosen()
         targets = list(self.data.targets.get(key, ()))
         if not rows or not targets:
             return
@@ -415,14 +479,14 @@ class BranchesScreen(Screen[None]):
             if target is not None:
                 self._confirm_pluck(key, rows, target)
 
-        self.app.push_screen(Pick('Pluck onto which base?', labels), picked)
+        self.app.push_screen(Pick('Pluck onto which branch?', labels), picked)
 
     def _confirm_pluck(self, key: str, rows: list[DetailRow], target: str) -> None:
         from .app import Confirm
 
-        status = self.data.statuses.get(target)
+        tip = self.data.tips.get(target)
         branch = target.split(':', 2)[2]
-        if status is None:
+        if tip is None:
             self._status(f'{branch}: not known yet; reload with F5')
             return
         n = len(rows)
@@ -433,7 +497,7 @@ class BranchesScreen(Screen[None]):
 
         def answered(confirmed: Optional[bool]) -> None:
             if confirmed:
-                self._pluck(key, rows, target, status.tip)
+                self._pluck(key, rows, target, tip)
 
         self.app.push_screen(Confirm(prompt), answered)
 
@@ -459,3 +523,110 @@ class BranchesScreen(Screen[None]):
             self.app.call_from_thread(self._acted, note)
 
         self.run_worker(work, thread=True, group='branches-act')
+
+    def action_new_prep(self) -> None:
+        """n: a prep branch from the marked commits: its name, its fork point, then a
+        confirmation."""
+        key = self.selected_item()
+        rows = self._chosen()
+        if key is None or not rows:
+            return
+        first = rows[0].text.split('  ', 2)[-1]
+        suggested = re.sub(r'[^a-z0-9]+', '-', first.split(':', 1)[-1].lower()).strip('-')[:40]
+
+        def named(name: Optional[str]) -> None:
+            if not name:
+                return
+            points = self.service.fork_points(self.workspace, key)
+            choices = [(p, p) for p in points]
+
+            def forked(fork: Optional[str]) -> None:
+                if fork:
+                    self._confirm_cut(key, rows, name, fork)
+
+            self.app.push_screen(Pick(f'Fork b4/{name} from?', choices), forked)
+
+        self.app.push_screen(Ask('Prep branch name (b4/<name>):', suggested), named)
+
+    def _confirm_cut(self, key: str, rows: list[DetailRow], name: str, fork: str) -> None:
+        from .app import Confirm
+
+        n = len(rows)
+        prompt = (
+            f'Make prep branch b4/{name} from {fork} with {n} commit{"s" if n != 1 else ""} '
+            '(cover letter drafted from their summaries)? [y|N]'
+        )
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._cut(key, rows, name, fork)
+
+        self.app.push_screen(Confirm(prompt), answered)
+
+    def _cut(self, key: str, rows: list[DetailRow], name: str, fork: str) -> None:
+        self._status(f'Making b4/{name}…')
+
+        def work() -> None:
+            try:
+                result = self.service.cut_prep(self.workspace, key, rows, name, fork)
+            except Exception as exc:
+                result = CutResult(False, error=str(exc))
+            note = (
+                f'Made {result.branch} with {result.picked} commits; edit its cover (e), '
+                'add recipients (t), check it (c)'
+                if result.ok
+                else f'No prep branch: {result.error}'
+            )
+            self.app.call_from_thread(self._acted, note)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def action_prep_run(self, action: str) -> None:
+        """t, c: b4 prep --auto-to-cc or --check on the selected prep branch."""
+        key = self.selected_item()
+        if key is None or not key.startswith('prep:'):
+            return
+        label = {'auto-to-cc': 'Collecting recipients', 'check': 'Checking'}.get(action, action)
+        self._status(f'{label}…')
+
+        def work() -> None:
+            try:
+                code, out = self.service.prep_run(self.workspace, key, action)
+            except Exception as exc:
+                code, out = 1, str(exc)
+            self.app.call_from_thread(self._prep_ran, action, code, out)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _prep_ran(self, action: str, code: int, out: str) -> None:
+        self._set_shown(out)
+        self._pinned = out
+        last = next((line for line in reversed(out.splitlines()) if line.strip()), '')
+        verb = {'auto-to-cc': 'Recipients', 'check': 'Check'}.get(action, action)
+        self._note = f'{verb}: {last}' if code == 0 else f'{verb} failed: {last}'
+        self.action_reload()
+
+    def action_edit_cover(self) -> None:
+        """e: the cover letter in the editor, through b4 prep --edit-cover (its worktree
+        made in a worker first if missing; the app is suspended while the editor runs)."""
+        key = self.selected_item()
+        if key is None or not key.startswith('prep:'):
+            return
+
+        def work() -> None:
+            try:
+                worktree = self.service.prep_worktree(self.workspace, key)
+            except Exception as exc:
+                self.app.call_from_thread(self._status, f'Cannot edit the cover: {exc}')
+                return
+            if worktree is not None:
+                self.app.call_from_thread(self._edit_cover, key, worktree)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _edit_cover(self, key: str, worktree: pathlib.Path) -> None:
+        branch = key.split(':', 2)[2]
+        with self.app.suspend():
+            code, _out = run_b4(worktree, branch, 'prep', '--edit-cover', interactive=True)
+        self._note = 'Cover letter edited' if code == 0 else 'Cover letter not changed'
+        self.action_reload()

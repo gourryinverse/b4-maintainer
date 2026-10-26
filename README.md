@@ -87,8 +87,11 @@ Python 3.11 or newer.
   and review branches, and other local branches with work not on any remote; `r` rebases
   a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`
   on its tree moves the base to its result. Space marks commits and `p` plucks them onto
-  a base: an agent's become yours with `Assisted-by:` (`[sessions] assisted_by`, default
-  the session's model); others keep their authors.
+  a base or a prep branch: an agent's become yours with `Assisted-by:` (`[sessions]
+  assisted_by`, default the session's model); others keep their authors. `n` makes a b4
+  prep branch from the marked commits (name, fork point, cover drafted from the agents'
+  summaries) in a sparse worktree under `var/branches/`; on it, `t` adds recipients,
+  `c` checks, and `e` edits the cover letter, all by running b4.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

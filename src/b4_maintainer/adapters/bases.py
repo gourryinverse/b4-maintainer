@@ -335,22 +335,38 @@ def pluck(
     agent_email: str,
     assisted: str,
 ) -> PluckResult:
-    """Copy *shas* (oldest first) from *source* (a session tree, or the project itself)
-    onto *base*, which must still be at *expected* and not checked out.
+    """Pluck onto a maintainer base (see pluck_onto)."""
+    return pluck_onto(repo, base.branch, source, shas, expected, agent_email, assisted)
 
-    Each commit's change is merged onto the base's tip with git merge-tree (no worktree,
-    no index) and committed with git commit-tree: commits by *agent_email* become the
-    maintainer's (author from the project's git identity, Assisted-by: *assisted*); any
-    other commit keeps its author, date, and message. A change the base already has is
-    dropped; a conflict stops it all and changes nothing. The base moves in one guarded
-    update-ref; source commits come in through scratch refs, deleted after."""
-    status = base_status(repo, base)
-    if not status.exists:
-        return PluckResult(False, error=f'{base.branch} does not exist')
-    if status.checked_out:
-        return PluckResult(False, error=f'{base.branch} is checked out in {status.checked_out}')
-    if status.tip != expected:
-        return PluckResult(False, error=f'{base.branch} moved since it was shown')
+
+def pluck_onto(
+    repo: pathlib.Path,
+    branch: str,
+    source: pathlib.Path,
+    shas: Sequence[str],
+    expected: str,
+    agent_email: str,
+    assisted: str,
+) -> PluckResult:
+    """Copy *shas* (oldest first) from *source* (a session tree, or the project itself)
+    onto *branch* (a maintainer base, a prep branch), which must still be at *expected*
+    and not checked out.
+
+    Each commit's change is merged onto the branch's tip with git merge-tree (no
+    worktree, no index) and committed with git commit-tree: commits by *agent_email*
+    become the maintainer's (author from the project's git identity, Assisted-by:
+    *assisted*); any other commit keeps its author, date, and message. A change the
+    branch already has is dropped; a conflict stops it all and changes nothing. The
+    branch moves in one guarded update-ref; source commits come in through scratch refs,
+    deleted after."""
+    tip0 = _commit(repo, f'refs/heads/{branch}')
+    if tip0 is None:
+        return PluckResult(False, error=f'{branch} does not exist')
+    checked_out = _checked_out(repo, branch)
+    if checked_out:
+        return PluckResult(False, error=f'{branch} is checked out in {checked_out}')
+    if tip0 != expected:
+        return PluckResult(False, error=f'{branch} moved since it was shown')
     incoming = f'{INCOMING_REF}/pluck'
     same = source.resolve() == repo.resolve()
     try:
@@ -363,7 +379,7 @@ def pluck(
                 return PluckResult(
                     False, error=f'cannot bring the commits in: {pushed.stderr.strip()}'
                 )
-        tip = status.tip
+        tip = tip0
         picked: list[tuple[str, str]] = []
         dropped: list[str] = []
         for sha in shas:
@@ -405,21 +421,19 @@ def pluck(
                 return PluckResult(False, error=f'cannot commit {subject}: {made.stderr.strip()}')
             tip = made.stdout.strip()
             picked.append((sha, tip))
-        if tip != status.tip:
+        if tip != tip0:
             moved = _git(
                 repo,
                 'update-ref',
                 '-m',
                 f'b4-maintainer: pluck {len(picked)} commits',
-                f'refs/heads/{base.branch}',
+                f'refs/heads/{branch}',
                 tip,
                 expected,
                 check=False,
             )
             if moved.returncode != 0:
-                return PluckResult(
-                    False, error=f'{base.branch} moved meanwhile: {moved.stderr.strip()}'
-                )
+                return PluckResult(False, error=f'{branch} moved meanwhile: {moved.stderr.strip()}')
         return PluckResult(True, tip, tuple(picked), tuple(dropped))
     finally:
         refs = _git(

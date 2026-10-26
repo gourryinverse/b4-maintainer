@@ -9,6 +9,8 @@ GIT_OPTIONAL_LOCKS=0 so looking at a checkout does not refresh its index. Prep b
 are b4's (`b4/<name>`); its review branches (`b4/review/*`) are listed apart, read-only.
 """
 
+import dataclasses
+import json
 import os
 import pathlib
 import subprocess
@@ -21,8 +23,17 @@ from .adapters.bases import (
     RebaseResult,
     accept_rebase,
     base_status,
-    pluck,
+    pluck_onto,
     rebase_base,
+)
+from .adapters.prep import (
+    TRACKING,
+    PrepError,
+    cover_text,
+    cut_prep,
+    ensure_worktree,
+    remove_prep,
+    run_b4,
 )
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
@@ -52,6 +63,8 @@ class DetailRow:
     repo: str = ''  # Where the commit is.
     artifact: Optional[Artifact] = None
     git_args: tuple[str, ...] = ()  # Shown by running git with these in repo instead.
+    branch: str = ''  # The session tree branch a commit is on.
+    show_text: str = ''  # Shown as is (e.g. a cover letter).
 
 
 @dataclass(frozen=True)
@@ -61,7 +74,8 @@ class BranchesSnapshot:
     statuses: Mapping[str, BaseStatus] = field(default_factory=dict)
     problems: tuple[str, ...] = ()
     rebases: Mapping[str, str] = field(default_factory=dict)  # Item key -> rebase session.
-    targets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)  # Item -> bases.
+    targets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)  # Item -> targets.
+    tips: Mapping[str, str] = field(default_factory=dict)  # Pluck target -> its tip.
 
 
 def _git(repo: pathlib.Path, *args: str) -> str:
@@ -84,6 +98,14 @@ def _count(n: int, one: str) -> str:
 
 def _commit_row(sha: str, subject: str, repo: pathlib.Path, note: str = '') -> DetailRow:
     return DetailRow(f'  {sha[:12]}  {subject}' + (f'  ({note})' if note else ''), sha, str(repo))
+
+
+@dataclass(frozen=True)
+class CutResult:
+    ok: bool
+    branch: str = ''
+    picked: int = 0
+    error: str = ''
 
 
 class BranchService:
@@ -157,8 +179,8 @@ class BranchService:
             for kind, group in (('prep', prep), ('review', review), ('branch', other)):
                 for name in group:
                     key = f'{kind}:{project.id}:{name}'
-                    rows = _unpushed_rows(repo, name)
-                    commits = sum(1 for r in rows if r.key)
+                    rows = _prep_rows(repo, name) if kind == 'prep' else _unpushed_rows(repo, name)
+                    commits = sum(1 for r in rows if r.key and not r.show_text)
                     if kind == 'branch' and not commits:
                         continue  # Nothing of ours on it: not worth a row.
                     note = (
@@ -168,12 +190,23 @@ class BranchService:
                     )
                     items.append(BranchItem(key, kind, project.id, f'{name} · {note}'))
                     details[key] = rows
-        targets = {}
+        targets, tips = {}, {}
         for item in items:
             project = workspace.project(item.project)
             bases = [f'base:{item.project}:{b.branch}' for b in project.bases] if project else []
-            targets[item.key] = tuple(k for k in bases if k != item.key)
-        return BranchesSnapshot(tuple(items), details, statuses, tuple(problems), rebases, targets)
+            preps = [i.key for i in items if i.kind == 'prep' and i.project == item.project]
+            targets[item.key] = tuple(k for k in (*bases, *preps) if k != item.key)
+        for key, status in statuses.items():
+            tips[key] = status.tip
+        for item in (i for i in items if i.kind == 'prep'):
+            project = workspace.project(item.project)
+            if project is not None:
+                tips[item.key] = _git(
+                    self.root / project.path, 'rev-parse', item.key.split(':', 2)[2]
+                ).strip()
+        return BranchesSnapshot(
+            tuple(items), details, statuses, tuple(problems), rebases, targets, tips
+        )
 
     def _tree(
         self, record: SessionRecord, tree: pathlib.Path
@@ -189,7 +222,10 @@ class BranchService:
             rows.append(DetailRow(f'{branch.kind} {branch.name}'))
             if branch.problem:
                 rows.append(DetailRow(f'  ! {branch.problem}'))
-            rows += [_commit_row(c.sha, c.subject, tree) for c in branch.commits]
+            rows += [
+                dataclasses.replace(_commit_row(c.sha, c.subject, tree), branch=branch.name)
+                for c in branch.commits
+            ]
         extras = [e for e in tree_worktrees(tree) if pathlib.Path(e.path).is_dir()]
         if extras:
             rows.append(DetailRow('Extra checkouts'))
@@ -308,6 +344,23 @@ class BranchService:
         parts = item.split(':', 2)
         return workspace.project(parts[1]) if len(parts) == 3 else None
 
+    def _model(self, item: str) -> str:
+        if item.startswith('tree:'):
+            record = next((r for r in self._records() if r.id == item.removeprefix('tree:')), None)
+            if record is not None:
+                return record.model or record.preset or 'LLM'
+        return 'LLM'
+
+    def _target(self, workspace: Workspace, target: str) -> tuple[Project, str]:
+        """(project, branch) of a pluck target: a base or a prep branch."""
+        kind, pid, branch = target.split(':', 2)
+        project = workspace.project(pid)
+        if project is None or kind not in ('base', 'prep'):
+            raise SessionError(f'cannot pluck onto {target}')
+        if kind == 'base' and not any(b.branch == branch for b in project.bases):
+            raise SessionError(f'no maintainer base {branch} in {pid}')
+        return project, branch
+
     def pluck(
         self,
         workspace: Workspace,
@@ -316,31 +369,162 @@ class BranchService:
         target: str,
         expected: str,
     ) -> PluckResult:
-        """Copy the commits of *rows* (shown under *item*) onto the base *target*."""
+        """Copy the commits of *rows* (shown under *item*) onto *target* (a base or a prep
+        branch), remembering where each came from."""
         try:
-            project, base = self._base(workspace, target)
+            project, branch = self._target(workspace, target)
         except SessionError as ex:
             return PluckResult(False, error=str(ex))
-        commits = [r for r in rows if r.key and r.repo and not r.git_args and r.artifact is None]
+        commits = [r for r in rows if is_commit(r)]
         if not commits:
             return PluckResult(False, error='no commits marked')
         sources = {r.repo for r in commits}
         if len(sources) != 1:
             return PluckResult(False, error='mark commits from one place at a time')
-        model = 'LLM'
-        if item.startswith('tree:'):
-            record = next((r for r in self._records() if r.id == item.removeprefix('tree:')), None)
-            if record is not None:
-                model = record.model or record.preset or model
-        return pluck(
-            self.root / project.path,
-            base,
+        repo = self.root / project.path
+        result = pluck_onto(
+            repo,
+            branch,
             pathlib.Path(sources.pop()),
             [r.key for r in commits],
             expected,
             workspace.agent_email,
-            workspace.assisted_by.replace('{model}', model),
+            workspace.assisted_by.replace('{model}', self._model(item)),
         )
+        if result.ok:
+            self._remember(project, item, commits, result)
+        return result
+
+    # Where plucked commits came from: var/branches/<project>/plucked.json, local.
+
+    def _provenance_path(self, project: Project) -> pathlib.Path:
+        return self.root / 'var' / 'branches' / project.id / 'plucked.json'
+
+    def _provenance(self, project: Project) -> dict[str, dict[str, str]]:
+        try:
+            data = json.loads(self._provenance_path(project).read_text())
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _origin(self, project: Project, item: str, row: DetailRow) -> dict[str, str]:
+        """What is known about a commit: the artifact describing it (through earlier
+        plucks, or its session tree's manifest)."""
+        known = self._provenance(project).get(row.key)
+        if known:
+            return known
+        if item.startswith('tree:') and row.branch:
+            sid = item.removeprefix('tree:')
+            names = {row.branch}
+            artifacts, _problems = load_artifacts(self._out(sid) / 'work' / 'out', names)
+            for a in artifacts:
+                if a.branch == row.branch:
+                    return {
+                        'session': sid,
+                        'title': a.title,
+                        'summary': a.summary,
+                        'tested': a.tested,
+                    }
+        return {}
+
+    def _remember(
+        self, project: Project, item: str, rows: Sequence[DetailRow], result: PluckResult
+    ) -> None:
+        data = self._provenance(project)
+        by_source = {r.key: r for r in rows}
+        for source, new in result.picked:
+            row = by_source.get(source)
+            origin = self._origin(project, item, row) if row is not None else {}
+            data[new] = {**origin, 'source': source}
+        path = self._provenance_path(project)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f'.{path.name}.tmp')
+        tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
+        os.replace(tmp, path)
+
+    def cover_draft(self, project: Project, item: str, rows: Sequence[DetailRow]) -> str:
+        """A cover letter to edit: the subject marked EDITME (b4 then reports it as
+        needing edits), each artifact's summary, the commits without one."""
+        commits = [r for r in rows if is_commit(r)]
+        subjects = [r.text.split('  ', 2)[-1].rsplit('  (', 1)[0] for r in commits]
+        subject = subjects[0] if len(subjects) == 1 else 'cover title'
+        parts, seen, bare = [], set(), []
+        for row, line in zip(commits, subjects):
+            origin = self._origin(project, item, row)
+            title = origin.get('title', '')
+            if not title:
+                bare.append(f'- {line}')
+                continue
+            if title in seen:
+                continue
+            seen.add(title)
+            text = f'{title}\n\n{origin.get("summary", "").strip()}'
+            if origin.get('tested'):
+                text += f'\n\nTested: {origin["tested"]}'
+            parts.append(text)
+        if bare:
+            parts.append('\n'.join(bare))
+        return f'EDITME: {subject}\n\n' + '\n\n'.join(parts) + '\n'
+
+    def fork_points(self, workspace: Workspace, item: str) -> list[str]:
+        """Where a new prep branch may fork: each base's upstream, each base, the
+        project's refs."""
+        project = self._project_of(workspace, item)
+        if project is None:
+            return []
+        points = [b.upstream for b in project.bases] + [b.branch for b in project.bases]
+        points += [r.name for r in project.refs]
+        return list(dict.fromkeys(points))
+
+    def _prep_worktree(self, project: Project, branch: str) -> pathlib.Path:
+        return self.root / 'var' / 'branches' / project.id / branch.removeprefix('b4/')
+
+    def cut_prep(
+        self, workspace: Workspace, item: str, rows: Sequence[DetailRow], name: str, fork: str
+    ) -> CutResult:
+        """A new prep branch `b4/<name>` from *fork* with *rows*' commits plucked onto it
+        and a drafted cover letter; if the commits do not apply, no prep branch is left."""
+        project = self._project_of(workspace, item)
+        if project is None:
+            return CutResult(False, error=f'no project for {item}')
+        repo = self.root / project.path
+        worktree = self.root / 'var' / 'branches' / project.id / name
+        try:
+            branch = cut_prep(repo, worktree, name, fork, self.cover_draft(project, item, rows))
+        except PrepError as ex:
+            return CutResult(False, error=str(ex))
+        tip = _git(repo, 'rev-parse', branch).strip()
+        result = self.pluck(workspace, item, rows, f'prep:{project.id}:{branch}', tip)
+        if not result.ok:
+            remove_prep(repo, worktree, branch)
+            why = f'{result.failed} does not apply onto {fork}' if result.failed else result.error
+            return CutResult(False, error=why)
+        return CutResult(True, branch, len(result.picked))
+
+    def prep_run(self, workspace: Workspace, item: str, action: str) -> tuple[int, str]:
+        """b4 on a prep branch: recipients (auto-to-cc), checks (check), or info."""
+        args = PREP_ACTIONS.get(action)
+        _kind, pid, branch = item.split(':', 2)
+        project = workspace.project(pid)
+        if args is None or project is None:
+            return 1, f'cannot {action} {item}'
+        repo = self.root / project.path
+        worktree = self._prep_worktree(project, branch)
+        try:
+            ensure_worktree(repo, worktree, branch)
+        except PrepError as ex:
+            return 1, str(ex)
+        return run_b4(worktree, branch, *args)
+
+    def prep_worktree(self, workspace: Workspace, item: str) -> Optional[pathlib.Path]:
+        """The prep branch's worktree (made if missing), for running b4 interactively."""
+        _kind, pid, branch = item.split(':', 2)
+        project = workspace.project(pid)
+        if project is None:
+            return None
+        worktree = self._prep_worktree(project, branch)
+        ensure_worktree(self.root / project.path, worktree, branch)
+        return worktree
 
     def _base(self, workspace: Workspace, key: str) -> tuple[Project, MaintainerBase]:
         _kind, pid, branch = key.split(':', 2)
@@ -352,7 +536,9 @@ class BranchService:
 
     def show(self, row: DetailRow) -> str:
         """The right pane for a row: a commit's message, stat, and patch; an artifact's
-        description and file."""
+        description and file; a cover letter."""
+        if row.show_text:
+            return row.show_text
         if row.artifact is not None:
             a = row.artifact
             lines = [f'{a.kind}: {a.title}', '', a.summary]
@@ -450,6 +636,40 @@ def _worktree(path: pathlib.Path, branch: str) -> tuple[str, tuple[DetailRow, ..
     rows = [DetailRow('Changes'), *(DetailRow(f'  {line}') for line in changed)] if changed else []
     rows += _unpushed_rows(path, 'HEAD')
     return label, tuple(rows)
+
+
+PREP_ACTIONS = {
+    'auto-to-cc': ('prep', '--auto-to-cc'),
+    'check': ('prep', '--check'),
+    'info': ('prep', '--show-info'),
+}
+
+
+def is_commit(row: DetailRow) -> bool:
+    """A commit row (not a heading, an artifact, a cover letter, or a range-diff)."""
+    return (
+        bool(row.key and row.repo)
+        and not row.git_args
+        and not row.show_text
+        and row.artifact is None
+    )
+
+
+def _prep_rows(repo: pathlib.Path, name: str) -> tuple[DetailRow, ...]:
+    """A prep branch: its cover letter, then its commits after b4's cover commit."""
+    cover = _git(
+        repo, 'log', '--format=%H', f'--grep={TRACKING}', '--fixed-strings', '-n1', name
+    ).strip()
+    if not cover:
+        return _unpushed_rows(repo, name)
+    text = cover_text(repo, name)
+    subject = text.splitlines()[0] if text else ''
+    rows = [DetailRow(f'Cover letter: {subject}', 'cover', str(repo), show_text=text)]
+    log = _git(repo, 'log', '--reverse', '--format=%H%x00%s', f'{cover}..{name}')
+    for line in log.splitlines():
+        sha, _, subject = line.partition('\x00')
+        rows.append(_commit_row(sha, subject, repo))
+    return tuple(rows)
 
 
 def _unpushed_rows(repo: pathlib.Path, name: str) -> tuple[DetailRow, ...]:

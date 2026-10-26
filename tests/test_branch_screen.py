@@ -30,6 +30,9 @@ class FakeBranches:
         self.sessions = []
         self.accepted = []
         self.plucked = []
+        self.cuts = []
+        self.runs = []
+        self.worktrees = []
         self.targets = {'tree:s1': ('base:linux:me/base',)}
 
     def snapshot(self, workspace):
@@ -37,6 +40,7 @@ class FakeBranches:
         items = (
             BranchItem('base:linux:me/base', 'base', 'linux', 'me/base on up/stable · 2 behind'),
             BranchItem('tree:s1', 'tree', 'linux', 'linux: mm: foo v3 · s1 · clean'),
+            BranchItem('prep:linux:b4/pa', 'prep', 'linux', 'b4/pa · 1 commit'),
         )
         details = {
             'base:linux:me/base': (
@@ -50,13 +54,18 @@ class FakeBranches:
             ),
         }
         details['tree:s1'] += (DetailRow('  s2c  mm: agent fix', 's2c', '/tree'),)
+        details['prep:linux:b4/pa'] = (
+            DetailRow('Cover letter: EDITME: x', 'cover', '/repo', show_text='EDITME: x'),
+            DetailRow('  p1  mm: fix p', 'p1', '/repo'),
+        )
         statuses = {'base:linux:me/base': STATUS, 'base:linux:me/linus': STATUS}
+        tips = {'base:linux:me/base': 'tip0', 'base:linux:me/linus': 'tip0'}
         return BranchesSnapshot(
-            items, details, statuses, rebases={'tree:s1': 'r1'}, targets=self.targets
+            items, details, statuses, rebases={'tree:s1': 'r1'}, targets=self.targets, tips=tips
         )
 
     def show(self, row):
-        return f'shown {row.key}'
+        return row.show_text or f'shown {row.key}'
 
     def rebase(self, workspace, key, expected):
         self.rebased.append((key, expected))
@@ -71,6 +80,23 @@ class FakeBranches:
     def accept(self, workspace, sid):
         self.accepted.append(sid)
         return RebaseResult(True, 'f' * 40)
+
+    def fork_points(self, workspace, item):
+        return ['up/stable', 'me/base', 'mm/mm-new']
+
+    def cut_prep(self, workspace, item, rows, name, fork):
+        from b4_maintainer.branches import CutResult
+
+        self.cuts.append((item, [r.key for r in rows], name, fork))
+        return CutResult(True, f'b4/{name}', len(rows))
+
+    def prep_run(self, workspace, item, action):
+        self.runs.append((item, action))
+        return 0, f'{action} output\nSuccess: 1, Warning: 0, Error: 0'
+
+    def prep_worktree(self, workspace, item):
+        self.worktrees.append(item)
+        return __import__('pathlib').Path('/w/prep')
 
     def pluck(self, workspace, item, rows, target, expected):
         from b4_maintainer.adapters.bases import PluckResult
@@ -296,3 +322,82 @@ async def test_pluck_is_not_offered_without_a_target(demo_root):
         await pilot.press('p')
         await settle(pilot)
         assert not isinstance(app.screen, Confirm) and service.plucked == []
+
+
+async def test_n_cuts_a_prep_branch_asking_its_name_and_fork(demo_root):
+    from b4_maintainer.branchscreen import Ask, Pick
+
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_tree_rows(pilot)
+        await pilot.press('space', 'down', 'space', 'n')
+        await settle(pilot)
+        assert isinstance(app.screen, Ask)
+        assert app.screen.query_one('Input').value == 'series-patch'  # From the first subject.
+        app.screen.query_one('Input').value = 'leak-fixes'
+        await pilot.press('enter')
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        await pilot.press('enter')  # The first fork point: the base's upstream.
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm)
+        assert 'b4/leak-fixes from up/stable with 2 commits' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.cuts == [('tree:s1', ['s1c', 's2c'], 'leak-fixes', 'up/stable')]
+        assert 'Made b4/leak-fixes with 2 commits' in app.screen.status_text()
+
+
+async def test_t_and_c_run_b4_on_a_prep_branch_and_show_its_output(demo_root):
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('t')  # A base: not a prep branch.
+        await settle(pilot)
+        assert service.runs == []
+        await pilot.press('down', 'down')
+        await settle(pilot)
+        screen = app.screen
+        assert screen.shown_text() == 'EDITME: x'  # The cover letter, first.
+        await pilot.press('c')
+        await settle(pilot)
+        assert service.runs == [('prep:linux:b4/pa', 'check')]
+        assert 'check output' in screen.shown_text()
+        assert 'Check: Success: 1, Warning: 0, Error: 0' in screen.status_text()
+        await pilot.press('t')
+        await settle(pilot)
+        assert service.runs[-1] == ('prep:linux:b4/pa', 'auto-to-cc')
+
+
+async def test_e_edits_the_cover_with_b4_while_the_app_is_suspended(demo_root, monkeypatch):
+    import contextlib
+
+    calls = []
+    monkeypatch.setattr(
+        'b4_maintainer.branchscreen.run_b4',
+        lambda wt, branch, *args, interactive=False: (
+            calls.append((wt, branch, args, interactive)) or (0, '')
+        ),
+    )
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    monkeypatch.setattr(type(app), 'suspend', lambda self: contextlib.nullcontext())
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('down', 'down', 'e')
+        await settle(pilot)
+        assert service.worktrees == ['prep:linux:b4/pa']
+        [(wt, branch, args, interactive)] = calls
+        assert (str(wt), branch, args, interactive) == (
+            '/w/prep',
+            'b4/pa',
+            ('prep', '--edit-cover'),
+            True,
+        )
+        assert 'Cover letter edited' in app.screen.status_text()

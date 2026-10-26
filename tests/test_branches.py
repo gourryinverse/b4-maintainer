@@ -266,3 +266,60 @@ def test_plucking_onto_a_base_names_its_targets(ws):
     service, workspace, _project = ws
     assert service.targets(workspace, 'tree:s1') == ['base:linux:me/base']
     assert service.targets(workspace, 'base:linux:me/base') == []  # Not onto itself.
+
+
+def test_a_prep_branch_is_cut_from_marked_commits_with_a_drafted_cover(ws, tmp_path):
+    service, workspace, project = ws
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    assert row.branch == 'b4m/pull-ahead/leak'
+    assert 'up/stable' in service.fork_points(workspace, 'tree:s1')
+    result = service.cut_prep(workspace, 'tree:s1', [row], 'leak-fix', 'up/stable')
+    assert result.ok, result.error
+    assert result.branch == 'b4/leak-fix'
+    assert (tmp_path / 'ws' / 'var' / 'branches' / 'linux' / 'leak-fix' / '.git').exists()
+    found = service.snapshot(workspace)
+    key = 'prep:linux:b4/leak-fix'
+    rows = found.details[key]
+    cover = next(r for r in rows if r.text.startswith('Cover letter'))
+    text = service.show(cover)
+    assert text.startswith('EDITME:') and 'It leaked.' in text  # The artifact's summary.
+    assert [r.text.split('  ', 2)[-1] for r in rows if r.key and r is not cover] == [
+        'mm: fix the leak'
+    ]
+    code, info = service.prep_run(workspace, key, 'info')
+    assert code == 0 and 'branch: b4/leak-fix' in info
+    # Prep branches are pluck targets too.
+    assert key in found.targets['tree:s1']
+
+
+def test_a_cut_whose_commits_do_not_apply_leaves_no_prep_branch(ws):
+    service, workspace, project = ws
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm/foo: the series patch' in r.text)
+    # Onto the prep branch's fork the series patch applies; make one that cannot.
+    git('switch', '-q', '--detach', 'up/stable', cwd=project)
+    tip = commit(project, 'foo.c', 'other\n', 'mm: other foo')
+    git('update-ref', 'refs/remotes/up/stable', tip, cwd=project)
+    git('switch', '-q', 'main', cwd=project)
+    result = service.cut_prep(workspace, 'tree:s1', [row], 'nope', 'up/stable')
+    assert not result.ok and 'does not apply' in result.error
+    assert git('branch', '--list', 'b4/nope', cwd=project) == ''
+
+
+def test_plucks_remember_where_commits_came_from(ws):
+    service, workspace, project = ws
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    old = git('rev-parse', 'me/base', cwd=project)
+    service.pluck(workspace, 'tree:s1', [row], 'base:linux:me/base', old)
+    found = service.snapshot(workspace)
+    base_row = next(r for r in found.details['base:linux:me/base'] if 'mm: fix the leak' in r.text)
+    result = service.cut_prep(workspace, 'base:linux:me/base', [base_row], 'from-base', 'up/stable')
+    assert result.ok
+    cover = next(
+        r
+        for r in service.snapshot(workspace).details['prep:linux:b4/from-base']
+        if r.text.startswith('Cover')
+    )
+    assert 'It leaked.' in service.show(cover)  # Through the base, back to the artifact.
