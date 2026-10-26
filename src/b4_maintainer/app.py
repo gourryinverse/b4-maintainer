@@ -33,7 +33,7 @@ from .attachdialog import AttachDialog
 from .attachments import Attachment, gather, git_identity, render
 from .branchscreen import Branches, BranchesScreen
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
-from .launchdialog import LaunchDialog, LaunchResult
+from .launchdialog import Derived, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .package import series_context
@@ -2190,6 +2190,47 @@ class MaintainerApp(App[None]):
         items: dict[str, tuple[ContextItem, ...]] = {'series': series, 'workspace': ()}
         dialog = LaunchDialog(target, profiles, situation, items, problems)
         self.push_screen(dialog, self._launch_chosen)
+
+    def launch_derived(
+        self, parent: str, derived: Derived, context: Optional[ContextItem] = None
+    ) -> None:
+        """The launch dialog for a session derived from *parent*'s output: its series,
+        *context* (the parent's artifact) in the prompt package, its tree at the derived
+        start (Branches, D)."""
+        hub, snapshot = self._sessions, self.snapshot
+        if hub is None or snapshot is None:
+            return
+        workspace, overview = snapshot.workspace, self._overview
+
+        def work() -> None:
+            try:
+                blocker = hub.blocker()
+                if blocker is not None:
+                    self.call_from_thread(self.push_screen, Notice(f'Agent sessions: {blocker}'))
+                    return
+                record = hub.store.record(parent)
+                profiles, problems = hub.profiles()
+                skills, skill_problems = hub.skills()
+                situation = _situation(hub, workspace, overview, skills, record.project)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot derive a session: {exc}')
+                return
+            item = snapshot.item_by_identity(record.series) if record.series else None
+            target = (
+                _target(item)
+                if item is not None
+                else Target(
+                    'series', record.project, record.series, record.revision, record.subject
+                )
+            )
+            series = series_context(item) if item is not None else ()
+            items = {'series': (*series, *([context] if context else [])), 'workspace': ()}
+            dialog = LaunchDialog(
+                target, profiles, situation, items, problems + skill_problems, derived
+            )
+            self.call_from_thread(self.push_screen, dialog, self._launch_chosen)
+
+        self.run_worker(work, thread=True, group='session-action')
 
     def _launch_chosen(self, result: Optional[LaunchResult]) -> None:
         hub, snapshot = self._sessions, self.snapshot

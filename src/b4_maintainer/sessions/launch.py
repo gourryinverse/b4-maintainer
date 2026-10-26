@@ -46,6 +46,11 @@ class LaunchChoice:
     skills_off: frozenset[str] = frozenset()
     # Prompt package sources the maintainer unticked (available ones start ticked).
     context_off: frozenset[str] = frozenset()
+    # A derived session: its tree starts at *start* (no series applied), found in the tree
+    # of session *start_from* (empty: the project); *parent* is the session it came from.
+    start: str = ''
+    start_from: str = ''
+    parent: str = ''
 
 
 @dataclass(frozen=True)
@@ -167,4 +172,5 @@ def new_record(
         permissions=planned.permissions,
         context=tuple(i.id for i in planned.included),
         skills=planned.skills,
+        parent=choice.parent,
     )

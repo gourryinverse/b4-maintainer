@@ -192,3 +192,36 @@ def prepare_tree(
         shutil.rmtree(dest, ignore_errors=True)
         raise
     return Worktree(str(dest), branch, start, applied)
+
+
+def prepare_start_tree(
+    project: pathlib.Path,
+    dest: pathlib.Path,
+    branch: str,
+    start: str,
+    identity: tuple[str, str],
+    source: Optional[pathlib.Path] = None,
+) -> Worktree:
+    """A derived session's tree: the project shared into its own clone, on *branch* at
+    *start* (a commit or ref), no series applied. *source* is another session's tree
+    holding *start* (its own commits are fetched in); else the project. Agent identity
+    and the sign-off hook as for any session tree; on failure nothing is left."""
+    if os.path.lexists(dest):
+        raise PrepareError(f'{dest} exists')
+    try:
+        _clone(project, dest)
+        where = source or project
+        sha = _commit(where, start)
+        if sha is None:
+            raise PrepareError(f'{start} is not a commit in {where.name}')
+        if source is not None:
+            _git(dest, 'fetch', '--quiet', '--no-tags', str(source), sha)
+        _git(dest, 'checkout', '--quiet', '-b', branch, sha)
+        for other in _git(dest, 'branch', '--format=%(refname:short)').splitlines():
+            if other != branch:
+                _git(dest, 'branch', '--quiet', '-D', other)
+        _agent(dest, identity)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    return Worktree(str(dest), branch, sha, sha)

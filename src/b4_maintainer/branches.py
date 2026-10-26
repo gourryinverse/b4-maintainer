@@ -48,6 +48,7 @@ from .adapters.prep import (
 )
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
+from .sessions.policy import ContextItem
 from .sessions.rebase import RESULT
 from .sessions.records import SessionRecord, session_label
 from .sessions.trees import TreeState, classify_tree, inspect_tree, tree_worktrees
@@ -301,7 +302,8 @@ class BranchService:
                 for n, a in enumerate(artifacts)
             ]
         rows += [DetailRow(f'  ! {p}') for p in problems]
-        label = f'{session_label(record)} · {record.id} · {state.describe()}'
+        parent = f' (from {record.parent})' if record.parent else ''
+        label = f'{session_label(record)} · {record.id}{parent} · {state.describe()}'
         if classed.error:
             problems = [*problems, f'{record.id}: {classed.error}']
         return tuple(rows), label, [f'{record.id}: {p}' for p in problems]
@@ -742,6 +744,58 @@ class BranchService:
                 return False, f'{branch} stays: {run.stderr.strip()}'
             return True, f'Removed {branch}'
         return False, f'{item} is not removed from here'
+
+    # Deriving a session from another's output.
+
+    def derive_options(
+        self, workspace: Workspace, item: str, row: Optional[DetailRow]
+    ) -> list[tuple[str, str, str]]:
+        """Where a session derived from a tree's session may start: (start, the session
+        whose tree holds it or '', label). The series base; the parent's tree at the
+        selected commit, or at its session branch; each maintainer base."""
+        record = self._record(item.removeprefix('tree:'))
+        if record is None or record.worktree is None:
+            return []
+        wt, sid = record.worktree, record.id
+        options = [(wt.base, '', f'the series base {wt.base[:12]} (pre-existing bugs)')]
+        if row is not None and is_commit(row) and row.repo == wt.path:
+            subject = row.text.strip().split('  ', 1)[-1]
+            options.append((row.key, sid, f"session {sid}'s tree at {row.key[:12]} {subject}"))
+        try:
+            tip = _git(pathlib.Path(wt.path), 'rev-parse', wt.branch).strip()
+            options.append((tip, sid, f"session {sid}'s tree ({wt.branch}, series applied)"))
+        except OSError:
+            pass
+        project = workspace.project(record.project)
+        for base in project.bases if project else ():
+            options.append((base.branch, '', f'maintainer base {base.branch}'))
+        return options
+
+    def derive_context(self, item: str, row: Optional[DetailRow]) -> Optional[ContextItem]:
+        """What a derived session receives from its parent: the selected artifact, else
+        every artifact's summary from the parent's manifest."""
+        sid = item.removeprefix('tree:')
+        if row is not None and row.artifact is not None:
+            text = self.show(row)
+            return ContextItem('parent', f'From session {sid}: {row.artifact.title}', text=text)
+        record = self._record(sid)
+        names: set[str] = set()
+        if record is not None and record.worktree is not None:
+            try:
+                refs = _git(
+                    pathlib.Path(record.worktree.path),
+                    'for-each-ref',
+                    '--format=%(refname:short)',
+                    'refs/heads/',
+                )
+                names = set(refs.split())
+            except OSError:
+                pass
+        artifacts, _problems = load_artifacts(self._out(sid) / 'work' / 'out', names)
+        if not artifacts:
+            return None
+        text = '\n\n'.join(f'{a.kind}: {a.title}\n\n{a.summary}' for a in artifacts)
+        return ContextItem('parent', f'From session {sid}: its findings', text=text)
 
     def _record(self, sid: str) -> Optional[SessionRecord]:
         return next((r for r in self._records() if r.id == sid), None)

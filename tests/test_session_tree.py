@@ -6,7 +6,12 @@ import pathlib
 import pytest
 from gitutil import git
 
-from b4_maintainer.adapters.sessiontree import PrepareError, base_suggestions, prepare_tree
+from b4_maintainer.adapters.sessiontree import (
+    PrepareError,
+    base_suggestions,
+    prepare_start_tree,
+    prepare_tree,
+)
 from b4_maintainer.sessions.trees import classify_tree, inspect_tree, remove_tree, tree_worktrees
 
 AGENT = ('b4-maintainer agent (dry-run)', 'agent@b4-maintainer.invalid')
@@ -329,3 +334,30 @@ def test_extra_checkouts_are_found_counted_and_removed_with_the_tree(upstream, t
     remove_tree(dest, trees)
     assert not dest.exists() and not extra.exists() and unrelated.exists()
     assert out.exists()  # The rest of the session's output stays.
+
+
+def test_a_derived_tree_starts_where_asked_without_the_series(upstream, tmp_path):
+    project, base, mbox = upstream
+    parent = prepare_tree(project, tmp_path / 'p', BRANCH, str(mbox), 2, identity=AGENT)
+    # The parent's own work: a commit only in its tree.
+    git('switch', '-q', '-c', 'b4m/pull-ahead/readme', parent.base, cwd=tmp_path / 'p')
+    write(tmp_path / 'p', 'README', 'demo, fixed\n')
+    git('commit', '-q', '-m', 'demo: fix the README', cwd=tmp_path / 'p')
+    only_parent = git('rev-parse', 'HEAD', cwd=tmp_path / 'p')
+    before = snapshot(project)
+    at_base = prepare_start_tree(project, tmp_path / 'a', 'b4m/session/d1', base, AGENT)
+    assert git('rev-parse', 'HEAD', cwd=tmp_path / 'a') == base
+    assert (at_base.base, at_base.applied) == (base, base)  # No series applied.
+    assert not (tmp_path / 'a' / 'mm/bar.c').exists()
+    from_parent = prepare_start_tree(
+        project, tmp_path / 'b', 'b4m/session/d2', only_parent, AGENT, source=tmp_path / 'p'
+    )
+    assert git('rev-parse', 'HEAD', cwd=tmp_path / 'b') == only_parent
+    assert (tmp_path / 'b' / 'README').read_text() == 'demo, fixed\n'
+    assert from_parent.branch == 'b4m/session/d2'
+    assert git('config', 'user.email', cwd=tmp_path / 'b') == AGENT[1]
+    assert (tmp_path / 'b' / '.git' / 'hooks' / 'commit-msg').exists()
+    assert snapshot(project) == before
+    with pytest.raises(PrepareError):
+        prepare_start_tree(project, tmp_path / 'c', 'b4m/session/d3', 'nope', AGENT)
+    assert not (tmp_path / 'c').exists()

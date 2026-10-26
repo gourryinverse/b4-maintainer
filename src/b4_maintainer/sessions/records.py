@@ -67,6 +67,7 @@ class SessionRecord:
     provenance: dict[str, str] = field(default_factory=dict)
     context: tuple[str, ...] = ()  # Public context items given (ids).
     skills: tuple[str, ...] = ()
+    parent: str = ''  # The session this one was derived from.
 
     def replace(self, **changes: Any) -> 'SessionRecord':
         return dataclasses.replace(self, **changes)

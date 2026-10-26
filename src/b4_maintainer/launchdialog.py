@@ -51,6 +51,17 @@ MODE_LABELS = {
 
 
 @dataclass(frozen=True)
+class Derived:
+    """A session started from another's output: where its tree starts (no series
+    applied) and the session it came from."""
+
+    parent: str
+    start: str  # A commit or ref.
+    start_from: str = ''  # The session whose tree holds *start*; empty: the project.
+    label: str = ''  # Where it starts, as the maintainer reads it.
+
+
+@dataclass(frozen=True)
 class LaunchResult:
     target: Target
     profile: Profile
@@ -96,9 +107,11 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         situation: Situation,
         items: dict[str, tuple[ContextItem, ...]],
         problems: Sequence[str] = (),
+        derived: Optional[Derived] = None,
     ) -> None:
         super().__init__()
         self.target = target  # The selected or open series; None offers the workspace only.
+        self.derived = derived  # A session derived from another's output.
         self.profiles = list(profiles)
         self.situation = situation
         self.items = items  # By scope.
@@ -163,7 +176,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         profiles = self._of_scope(self.scope)
         if self.profile not in profiles:
             self.profile = profiles[0] if profiles else None
-        self._explicit_mode = None
+        # A derived session works in its own tree.
+        self._explicit_mode = 'worktree' if self.derived is not None else None
         self._skills_on.clear()
         self._skills_off.clear()
         body = self.query_one('#launch-body', Vertical)
@@ -376,7 +390,14 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             frozenset(self._skills_on),
             frozenset(self._skills_off),
             self._context_off(),
+            *self._derived_choice(),
         )
+
+    def _derived_choice(self) -> tuple[str, str, str]:
+        """(start, start_from, parent) of a derived session (the start only matters to a
+        worktree session)."""
+        d = self.derived
+        return (d.start, d.start_from, d.parent) if d is not None else ('', '', '')
 
     def _context_off(self) -> frozenset[str]:
         """Available sources the maintainer unticked."""
@@ -523,6 +544,12 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         lines = [
             f'Session:  {session_label(self._target())} · {p.mode}',
             f'Model:    {_model_text(p.model, p.thinking)}',
+        ]
+        if self.derived is not None:
+            where = self.derived.label or self.derived.start
+            tree = f'; tree starts at {where}, no series applied' if p.mode == 'worktree' else ''
+            lines.append(f'Derived:  from session {self.derived.parent}{tree}')
+        lines += [
             f'Receives: {", ".join(i.label for i in p.included) or "the task prompt only"}',
         ]
         if p.request is not None and p.request.files:

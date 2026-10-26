@@ -30,6 +30,7 @@ class FakeBranches:
         self.sessions = []
         self.accepted = []
         self.plucked = []
+        self.rebases = {'tree:s1': 'r1'}  # The fake tree belongs to a rebase session.
         self.cuts = []
         self.runs = []
         self.worktrees = []
@@ -74,7 +75,7 @@ class FakeBranches:
             items,
             details,
             statuses,
-            rebases={'tree:s1': 'r1'},
+            rebases=self.rebases,
             targets=self.targets,
             tips=tips,
             identities={'linux': 'Example Maintainer <m@example.org>'},
@@ -594,3 +595,60 @@ async def test_p_copies_to_another_session_tree_with_its_own_wording(demo_root):
         assert isinstance(app.screen, Confirm) and "Copy 1 commit to session s9's tree" in (
             app.screen.prompt
         )
+
+
+async def test_d_derives_a_session_starting_where_chosen(demo_root, tmp_path):
+    from sessiondata import FakeSessionRunner, FakeWorktrees, make_record
+
+    from b4_maintainer.branchscreen import Pick
+    from b4_maintainer.launchdialog import LaunchDialog
+    from b4_maintainer.sessions.hub import SessionHub
+    from b4_maintainer.sessions.policy import ContextItem
+    from b4_maintainer.sessions.store import SessionStore
+
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees, catalog=lambda: None, sandbox=lambda: True)
+    service = FakeBranches()
+    service.rebases = {}  # A review session's tree, not a rebase session's.
+    service.derive_options = lambda workspace, item, row: [
+        ('base0', '', 'the series base base0'),
+        ('tip1', 's1', "session s1's tree"),
+    ]
+    service.derive_context = lambda item, row: ContextItem(
+        'parent', 'From session s1: its findings', text='A pre-existing leak.'
+    )
+    app = MaintainerApp(FixtureSource(demo_root).load, branches=service, sessions=hub)
+    async with app.run_test(size=(180, 50)) as pilot:
+        await settle(pilot)
+        item = app.snapshot.items[0]
+        runner.add(
+            make_record('s1', series=item.identity, subject=item.series.subject), alive=False
+        )
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('down', 'D')  # The session tree.
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        await pilot.press('enter')  # The series base.
+        await settle(pilot)
+        dialog = app.screen
+        assert isinstance(dialog, LaunchDialog)
+        summary = dialog.summary_text()
+        assert 'Derived:  from session s1; tree starts at the series base base0' in summary
+        assert 'From session s1: its findings' in summary  # In the prompt package.
+        await act(pilot, dialog.pick, 'goal', 'bugs')
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        assert trees.starts == [(sid, 'base0', '')]
+        record = store.record(sid)
+        assert record.parent == 's1' and record.mode == 'worktree'
+        context = store.directory(sid) / 'work' / 'context' / 'parent.md'
+        assert context.read_text() == 'A pre-existing leak.'
+
+
+async def act(pilot, method, *args):
+    method(*args)
+    for _ in range(3):
+        await pilot.pause()

@@ -444,3 +444,20 @@ def test_commits_copy_to_another_session_tree_on_branches_of_the_same_name(ws, t
     git('switch', '-q', '-c', 'b4m/session/s1', cwd=tree2)  # Same name as the source branch.
     busy = service.pluck(workspace, 'tree:s1', [series_row], 'tree:s2', found.tips['tree:s2'])
     assert not busy.ok and 'checked out' in busy.error
+
+
+def test_a_derived_session_may_start_at_the_base_the_parents_tree_or_a_maintainer_base(ws):
+    service, workspace, project = ws
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    options = service.derive_options(workspace, 'tree:s1', row)
+    starts = [(start_from, label.split(' ')[0]) for _start, start_from, label in options]
+    assert starts == [('', 'the'), ('s1', 'session'), ('s1', 'session'), ('', 'maintainer')]
+    assert options[0][0] == git('rev-parse', 'up/stable', cwd=project)  # The series base.
+    assert options[1][0] == row.key and options[3][0] == 'me/base'
+    context = service.derive_context('tree:s1', None)
+    assert context is not None and context.id == 'parent'
+    assert 'It leaked.' in context.text and 'All pass.' in context.text
+    artifact = next(r for r in found.details['tree:s1'] if r.artifact is not None)
+    one = service.derive_context('tree:s1', artifact)
+    assert one is not None and artifact.artifact.title in one.label

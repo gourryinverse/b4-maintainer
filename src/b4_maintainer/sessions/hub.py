@@ -110,6 +110,11 @@ class Worktrees(Protocol):
         """A rebase session's tree: a copy of *base* and its upstream."""
         ...
 
+    def prepare_start(self, record: SessionRecord, start: str, start_from: str) -> Worktree:
+        """A derived session's tree at *start* (in session *start_from*'s tree, or the
+        project's), no series applied."""
+        ...
+
     def bases(self, project: str) -> Sequence[str]:
         """Suggested bases for the project's series (b4's)."""
         ...
@@ -187,6 +192,25 @@ class RecordWorktrees:
             change_id=change_id if change_id != record.series else '',
             base=base or None,
             identity=(name, self.agent[1]),
+        )
+
+    def prepare_start(self, record: SessionRecord, start: str, start_from: str) -> Worktree:
+        from ..adapters.sessiontree import prepare_start_tree
+
+        checkout, directory = self.checkouts.get(record.project), self.directory
+        if not checkout or directory is None:
+            raise TreeError(self.reason(record.project))
+        source = directory / start_from if start_from else None
+        if source is not None and not (source / '.git').exists():
+            raise TreeError(f'session {start_from} has no tree to start from')
+        name = self.agent[0].format(model=record.model or record.preset)
+        return prepare_start_tree(
+            pathlib.Path(checkout),
+            directory / record.id,
+            f'b4m/session/{record.id}',
+            start,
+            (name, self.agent[1]),
+            source=source,
         )
 
     def prepare_rebase(self, record: SessionRecord, base: MaintainerBase) -> Worktree:
@@ -423,6 +447,8 @@ class SessionHub:
             raise SessionError('worktree sessions apply a series; this session has none')
 
         def tree(r: SessionRecord) -> Worktree:
+            if choice.start:
+                return self.worktrees.prepare_start(r, choice.start, choice.start_from)
             return self.worktrees.prepare(r, target.source, choice.base)
 
         return self._start(

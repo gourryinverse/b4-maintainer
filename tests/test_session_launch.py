@@ -314,3 +314,13 @@ def test_the_built_in_series_profile_gives_worktree_sessions_the_branches_skill(
     assert series.worktree_skills == ('b4m-branches',)
     installed, problems = load_skills(SKILLS_DIR, None)
     assert problems == [] and 'b4m-branches' in {s.id for s in installed}
+
+
+def test_a_derived_session_starts_its_tree_where_asked_and_names_its_parent(store, profile):
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees)
+    derived = choice(mode='worktree', start='abc123', start_from='s0', parent='s0')
+    record = hub.launch(TARGET, profile, derived, situation(worktree_reason=''), ITEMS)
+    assert trees.starts == [(record.id, 'abc123', 's0')] and trees.prepared == []
+    assert record.parent == 's0' and store.record(record.id).parent == 's0'
+    assert record.worktree is not None and record.worktree.base == 'abc123'
