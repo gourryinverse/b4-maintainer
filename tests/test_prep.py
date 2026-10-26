@@ -1,12 +1,15 @@
 """Contract: prep branches are b4's own, made and worked on by running b4 prep in a sparse
 worktree of the project; the branch is checked out there only while b4 runs."""
 
+import subprocess
+
 import pytest
 from gitutil import git
 
 from b4_maintainer.adapters.bases import pluck_onto
 from b4_maintainer.adapters.prep import (
     PrepError,
+    cleanup_prep,
     cover_text,
     cut_prep,
     move_prep,
@@ -205,3 +208,33 @@ def test_a_prep_branch_that_conflicts_with_the_new_base_is_left_alone(project, t
     result = move_prep(repo, branch, clash, old)
     assert not result.ok and result.failed == 'mm: fix a thing'
     assert git('rev-parse', branch, cwd=repo) == old
+
+
+def test_cleanup_archives_and_removes_a_prep_branch_the_b4_way(project, tmp_path):
+    repo, fix = project
+    wt = tmp_path / 'var' / 'branches' / 'linux' / 'gone'
+    branch = cut_prep(repo, wt, 'gone', 'up/stable', 'mm: gone\n\nBody.\n')
+    tip = git('rev-parse', branch, cwd=repo)
+    pluck_onto(repo, branch, repo, [fix], tip, 'agent@b4-maintainer.invalid', 'x')
+    (wt.parent / 'gone.outgoing').mkdir()
+    code, out = cleanup_prep(repo, wt, branch)
+    assert code == 0, out
+    assert git('branch', '--list', branch, cwd=repo) == ''
+    assert not wt.exists() and not (wt.parent / 'gone.outgoing').exists()
+    assert git('worktree', 'list', '--porcelain', cwd=repo).count('worktree ') == 1
+
+
+def test_cleanup_of_an_empty_prep_branch_removes_it_directly(project, tmp_path):
+    repo, _fix = project
+    wt = tmp_path / 'wt'
+    branch = cut_prep(repo, wt, 'empty', 'up/stable', None)
+    code, out = cleanup_prep(repo, wt, branch)
+    assert code == 0, out
+    assert git('branch', '--list', branch, cwd=repo) == ''
+    left = subprocess.run(
+        ['git', 'config', '--get-regexp', 'branch.b4/empty'],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert left.stdout == ''

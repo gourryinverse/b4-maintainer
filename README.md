@@ -98,7 +98,9 @@ Python 3.11 or newer.
   DCO), `o` previews exactly what would be sent (`b4 send -o`), `u` collects trailers
   from the list, `d` compares with the last sent revision, and `S` runs `b4 send` in the
   terminal, where b4 shows its summary and asks before anything goes out
-  (`--email-dry-run` and `--no-sign` pass through). All by running b4.
+  (`--email-dry-run` and `--no-sign` pass through). All by running b4. `x` removes a prep
+  branch (`b4 prep --cleanup`, which archives it), another local branch, or a session tree,
+  after saying what goes; rebasing a base moves the prep branches cut from it.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

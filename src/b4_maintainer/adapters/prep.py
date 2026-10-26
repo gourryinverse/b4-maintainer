@@ -373,3 +373,21 @@ def move_prep(repo: pathlib.Path, branch: str, onto: str, expected: str) -> Pluc
     if moved.returncode != 0:
         return PluckResult(False, error=f'{branch} moved meanwhile: {moved.stderr.strip()}')
     return replayed
+
+
+def cleanup_prep(repo: pathlib.Path, worktree: pathlib.Path, branch: str) -> tuple[int, str]:
+    """Remove a prep branch the b4 way: `b4 prep --cleanup` archives it (cover, tracking,
+    patches) in b4's data directory and deletes the branch and its sent/ tags (its prompt
+    answered yes: the maintainer confirmed in the app). b4 refuses a branch with only a
+    cover letter; that one is deleted directly. Its worktree and outgoing preview go too."""
+    try:
+        ensure_worktree(repo, worktree, branch)
+        code, out = _b4(worktree, 'prep', '--cleanup', branch, stdin='y\n')
+    except PrepError as ex:
+        code, out = 1, str(ex)
+    exists = _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}', check=False)
+    if exists.returncode == 0 and 'appears to be an empty branch' not in out:
+        return code or 1, out
+    remove_prep(repo, worktree, branch)
+    shutil.rmtree(worktree.with_name(f'{worktree.name}.outgoing'), ignore_errors=True)
+    return 0, out

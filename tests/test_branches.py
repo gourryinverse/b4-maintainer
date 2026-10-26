@@ -376,3 +376,31 @@ def test_rebasing_a_base_moves_the_prep_branches_cut_from_it(ws):
     assert git('merge-base', '--is-ancestor', new_base, 'b4/on-base', cwd=project) == ''
     # Cut from the upstream, not the base: left where it is.
     assert tip not in git('rev-list', 'b4/on-upstream', cwd=project).split()
+
+
+def test_reaping_says_what_goes_then_removes_it(rebase_ws, tmp_path):
+    service, workspace, project, hub, runner = rebase_ws
+    found = service.snapshot(workspace)
+    row = next(r for r in found.details['tree:s1'] if 'mm: fix the leak' in r.text)
+    assert service.cut_prep(workspace, 'tree:s1', [row], 'reap-me', 'up/stable').ok
+    git('branch', 'forgotten', 'up/stable', cwd=project)
+    git('switch', '-q', 'forgotten', cwd=project)
+    commit(project, 'f.c', 'f\n', 'mm: forgotten work')
+    git('switch', '-q', 'main', cwd=project)
+    found = service.snapshot(workspace)
+    assert service.reapable(found, 'prep:linux:b4/reap-me')
+    assert service.reapable(found, 'branch:linux:forgotten')
+    assert service.reapable(found, 'tree:s1')
+    assert not service.reapable(found, 'base:linux:me/base')
+    assert not service.reapable(found, f'worktree:linux:{project}')
+    loss = service.losses(workspace, 'prep:linux:b4/reap-me')
+    assert 'b4/reap-me' in loss and '1 commit' in loss and 'archives' in loss
+    assert 'mm: forgotten work' in service.losses(workspace, 'branch:linux:forgotten')
+    assert 'pull-ahead' in service.losses(workspace, 'tree:s1')
+    for key in ('prep:linux:b4/reap-me', 'branch:linux:forgotten', 'tree:s1'):
+        ok, message = service.reap(workspace, key)
+        assert ok, message
+    assert git('branch', '--list', 'b4/reap-me', 'forgotten', cwd=project) == ''
+    assert not (tmp_path / 'ws' / 'var' / 'worktrees' / 's1').exists()
+    keys = {i.key for i in service.snapshot(workspace).items}
+    assert not keys & {'prep:linux:b4/reap-me', 'branch:linux:forgotten', 'tree:s1'}

@@ -34,6 +34,8 @@ class FakeBranches:
         self.runs = []
         self.worktrees = []
         self.signed = []
+        self.reaped = []
+        self.loss = {}
         self.previews = []
         self.sent = ()  # Revisions b4 has sent.
         self.targets = {'tree:s1': ('base:linux:me/base',)}
@@ -120,6 +122,16 @@ class FakeBranches:
 
     def send_args(self, workspace, item):
         return __import__('pathlib').Path('/w/prep'), 'b4/pa', ('send', '-d')
+
+    def reapable(self, data, item):
+        return item.split(':', 1)[0] in ('prep', 'tree')
+
+    def losses(self, workspace, item):
+        return self.loss.get(item, f'{item}: clean')
+
+    def reap(self, workspace, item):
+        self.reaped.append(item)
+        return True, f'Removed {item}'
 
     def prep_worktree(self, workspace, item):
         self.worktrees.append(item)
@@ -535,3 +547,30 @@ async def test_a_rebase_says_which_prep_branches_moved_and_which_stayed(demo_roo
         await settle(pilot)
         text = app.screen.status_text()
         assert 'moved b4/a' in text and 'b4/b stays: mm: x does not apply' in text
+
+
+async def test_x_removes_after_saying_what_goes_and_asks_twice_for_changes(demo_root):
+    service = FakeBranches()
+    service.loss = {'tree:s1': 'session tree /w/s1: 1 uncommitted file'}
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('x')  # A base: not removable here.
+        await settle(pilot)
+        assert not isinstance(app.screen, Confirm)
+        await pilot.press('down', 'down', 'x')  # The prep branch.
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'prep:linux:b4/pa: clean' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.reaped == ['prep:linux:b4/pa']
+        await pilot.press('up', 'x')  # The session tree, with changes.
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'This will be lost' in app.screen.prompt
+        await pilot.press('n')
+        await settle(pilot)
+        assert service.reaped == ['prep:linux:b4/pa']

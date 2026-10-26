@@ -30,6 +30,7 @@ from .adapters.prep import (
     TRACKING,
     PrepError,
     SignResult,
+    cleanup_prep,
     cover_text,
     cut_prep,
     ensure_worktree,
@@ -612,6 +613,77 @@ class BranchService:
             *(('--no-sign',) if self.no_sign else ()),
         )
         return worktree, branch, args
+
+    # Reaping: removing what is no longer needed, after the maintainer saw what goes.
+
+    def reapable(self, data: BranchesSnapshot, item: str) -> bool:
+        """Prep branches, other local branches, and session trees may be removed here;
+        bases, b4's review branches, and the project's worktrees may not."""
+        kind = item.split(':', 1)[0]
+        return kind in ('prep', 'branch', 'tree') and any(i.key == item for i in data.items)
+
+    def losses(self, workspace: Workspace, item: str) -> str:
+        """What removing *item* would lose, for the confirmation."""
+        kind, _, rest = item.partition(':')
+        if kind == 'tree':
+            record = self._record(rest)
+            if self._sessions is None or record is None or record.worktree is None:
+                return f'session tree {rest}'
+            state = self._sessions.worktree_losses([record.worktree.path])[record.worktree.path]
+            return f'session tree {record.worktree.path}: {state.describe()}'
+        pid, _, branch = rest.partition(':')
+        project = workspace.project(pid)
+        if project is None:
+            return item
+        repo = self.root / project.path
+        if kind == 'prep':
+            tracking = prep_tracking(repo, branch)
+            rows = _prep_rows(repo, branch)
+            n = sum(1 for r in rows if is_commit(r))
+            sent = f', sent {", ".join(tracking["sent"])}' if tracking['sent'] else ', never sent'
+            return (
+                f'{branch}: {_count(n, "commit")}, v{tracking["revision"]}{sent}. b4 archives it '
+                'in its data directory, then deletes the branch and its sent/ tags; its '
+                'worktree goes too'
+            )
+        rows = _unpushed_rows(repo, branch)
+        subjects = [r.text.strip().split('  ', 1)[-1] for r in rows if is_commit(r)]
+        listed = '\n'.join(f'  {s}' for s in subjects[:20])
+        more = f'\n  … {len(subjects) - 20} more' if len(subjects) > 20 else ''
+        return f'{branch}: {_count(len(subjects), "commit")} on no remote:\n{listed}{more}'
+
+    def reap(self, workspace: Workspace, item: str) -> tuple[bool, str]:
+        """Remove *item* (the maintainer confirmed its losses)."""
+        kind, _, rest = item.partition(':')
+        if kind == 'tree':
+            record = self._record(rest)
+            if self._sessions is None or record is None or record.worktree is None:
+                return False, f'no session tree {rest}'
+            try:
+                self._sessions.remove_worktrees([record.worktree.path])
+            except SessionError as ex:
+                return False, str(ex)
+            return True, f'Removed the tree of session {rest}'
+        pid, _, branch = rest.partition(':')
+        project = workspace.project(pid)
+        if project is None:
+            return False, f'no project {pid}'
+        repo = self.root / project.path
+        if kind == 'prep':
+            code, out = cleanup_prep(repo, self._prep_worktree(project, branch), branch)
+            last = next((line for line in reversed(out.splitlines()) if line.strip()), '')
+            return code == 0, f'Removed {branch}' if code == 0 else f'{branch} stays: {last}'
+        if kind == 'branch':
+            run = subprocess.run(
+                ['git', 'branch', '-D', branch], cwd=repo, capture_output=True, text=True
+            )
+            if run.returncode != 0:
+                return False, f'{branch} stays: {run.stderr.strip()}'
+            return True, f'Removed {branch}'
+        return False, f'{item} is not removed from here'
+
+    def _record(self, sid: str) -> Optional[SessionRecord]:
+        return next((r for r in self._records() if r.id == sid), None)
 
     def prep_worktree(self, workspace: Workspace, item: str) -> Optional[pathlib.Path]:
         """The prep branch's worktree (made if missing), for running b4 interactively."""

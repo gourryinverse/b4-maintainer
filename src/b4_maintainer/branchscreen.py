@@ -8,8 +8,9 @@ maintainer base after a confirmation; when that stops at a conflict, `a` launche
 rebase session on a copy (after a confirmation), and `A` on that session's tree moves the
 base to its result. Space marks commits, `p` plucks them, `n` makes a prep branch from
 them; on a prep branch `e` `t` `c` `s` `o` `u` `d` edit, address, check, sign off,
-preview, collect trailers, and compare, and `S` sends through b4 in the terminal. F5
-reloads; F3 or Escape returns to the series list.
+preview, collect trailers, and compare, and `S` sends through b4 in the terminal. `x`
+removes a prep branch (b4 prep --cleanup), a local branch, or a session tree, after saying
+what goes. F5 reloads; F3 or Escape returns to the series list.
 """
 
 import pathlib
@@ -69,6 +70,12 @@ class Branches(Protocol):
     def send_args(
         self, workspace: Workspace, item: str
     ) -> tuple[pathlib.Path, str, tuple[str, ...]]: ...
+
+    def reapable(self, data: BranchesSnapshot, item: str) -> bool: ...
+
+    def losses(self, workspace: Workspace, item: str) -> str: ...
+
+    def reap(self, workspace: Workspace, item: str) -> tuple[bool, str]: ...
 
 
 class Ask(ModalScreen[Optional[str]]):
@@ -164,6 +171,7 @@ class BranchesScreen(Screen[None]):
         Binding('S', 'send', 'send'),
         Binding('u', 'prep_run("trailers")', 'trailers'),
         Binding('d', 'prep_run("compare")', 'compare'),
+        Binding('x', 'reap', 'remove'),
         Binding('f5', 'reload', 'reload', key_display='F5'),
     ]
 
@@ -339,6 +347,8 @@ class BranchesScreen(Screen[None]):
             return bool(self._chosen() and self.data.targets.get(key))
         if action == 'new_prep':
             return bool(self._chosen())
+        if action == 'reap':
+            return self.service.reapable(self.data, key)
         if action == 'prep_run' and parameters == ('compare',):
             return bool(self.data.preps.get(key, {}).get('sent'))
         if action in ('prep_run', 'edit_cover', 'sign_off', 'preview', 'send'):
@@ -760,6 +770,55 @@ class BranchesScreen(Screen[None]):
                 input('Press Enter to return to b4-maintainer…')
         self._note = f'b4 send finished for {branch}' if code == 0 else f'b4 send stopped ({code})'
         self.action_reload()
+
+    def action_reap(self) -> None:
+        """x: remove the selected prep branch, local branch, or session tree, after a
+        confirmation saying what goes (a session tree with changes asks twice)."""
+        key = self.selected_item()
+        if key is None or not self.service.reapable(self.data, key):
+            return
+
+        def work() -> None:
+            try:
+                text = self.service.losses(self.workspace, key)
+            except Exception as exc:
+                self.app.call_from_thread(self._status, f'Cannot tell what goes: {exc}')
+                return
+            self.app.call_from_thread(self._confirm_reap, key, text)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _confirm_reap(self, key: str, text: str) -> None:
+        from .app import Confirm
+
+        changed = key.startswith('tree:') and not text.endswith(': clean')
+
+        def again(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._reap(key)
+
+        def first(confirmed: Optional[bool]) -> None:
+            if not confirmed:
+                return
+            if changed:
+                prompt = f'This will be lost: {text.split(": ", 1)[-1]}. Remove anyway? [y|N]'
+                self.app.push_screen(Confirm(prompt), again)
+            else:
+                self._reap(key)
+
+        self.app.push_screen(Confirm(f'Remove {text}? [y|N]'), first)
+
+    def _reap(self, key: str) -> None:
+        self._status('Removing…')
+
+        def work() -> None:
+            try:
+                _ok, note = self.service.reap(self.workspace, key)
+            except Exception as exc:
+                note = f'Not removed: {exc}'
+            self.app.call_from_thread(self._acted, note)
+
+        self.run_worker(work, thread=True, group='branches-act')
 
 
 def _moved(result: RebaseResult) -> str:
