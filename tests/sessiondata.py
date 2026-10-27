@@ -190,6 +190,8 @@ class FakeWorktrees:
         self.rebases = []  # (session id, base)
         self.starts = []  # (session id, start, the session whose tree holds it)
         self.also = []  # Further series per prepared tree.
+        self.unapplied = []  # (session id, source, base): the agent applies the series.
+        self.with_mbox = []  # (session id, mbox bytes, base): an apply session's tree.
 
     def list(self, records):
         return list(self.infos)
@@ -213,6 +215,20 @@ class FakeWorktrees:
         self.rebases.append((record.id, base))
         path = f'/w/var/worktrees/{record.id}'
         return Worktree(path, f'b4m/session/{record.id}', 'fork', 'tip')
+
+    def prepare_unapplied(self, record, source, base):
+        from b4_maintainer.sessions.records import Worktree
+
+        self.unapplied.append((record.id, source, base))
+        path = f'/w/var/worktrees/{record.id}'
+        return Worktree(path, f'b4m/session/{record.id}', base, base, True)
+
+    def prepare_with_mbox(self, record, ambytes, base):
+        from b4_maintainer.sessions.records import Worktree
+
+        self.with_mbox.append((record.id, ambytes, base))
+        path = f'/w/var/worktrees/{record.id}'
+        return Worktree(path, f'b4m/session/{record.id}', base, base, True)
 
     def bases(self, project):
         return ['HEAD', 'mm/mm-unstable'] if project else []

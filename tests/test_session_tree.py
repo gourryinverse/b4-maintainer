@@ -420,3 +420,35 @@ def test_a_further_series_that_does_not_apply_fails_the_whole_tree(upstream, tmp
         prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT, also=[(str(clash), 1)])
     assert 'clash' in str(raised.value) or 'clash' in raised.value.output
     assert not dest.exists()
+
+
+def test_a_conflict_says_where_the_series_would_have_applied(upstream, tmp_path):
+    project, _base, mbox = upstream
+    write(project, 'mm/foo.c', (project / 'mm/foo.c').read_text().replace('line 3\n', 'tres\n'))
+    head = commit(project, 'mm/foo: conflicting change')
+    with pytest.raises(PrepareError) as raised:
+        prepare_tree(project, tmp_path / 'wt', BRANCH, str(mbox), 2, base='HEAD', identity=AGENT)
+    assert raised.value.base == head  # Where an agent can apply it by hand.
+
+
+def test_an_unapplied_tree_leaves_the_series_to_the_agent(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_unapplied_tree, series_mbox
+    from b4_maintainer.sessions.trees import series_tip
+
+    project, base, mbox = upstream
+    before = snapshot(project)
+    dest = tmp_path / 'var' / 'worktrees' / 's1'
+    ambytes = series_mbox(project, str(mbox), 2)
+    tree = prepare_unapplied_tree(project, dest, BRANCH, ambytes, base, AGENT)
+    assert tree.agent_applies and tree.base == base == tree.applied
+    assert git('rev-parse', 'HEAD', cwd=dest) == base
+    assert git('symbolic-ref', '--short', 'HEAD', cwd=dest) == BRANCH
+    assert (dest / '.git' / 'b4m' / 'series.mbx').read_bytes() == ambytes
+    assert git('status', '--porcelain', cwd=dest) == ''  # Not in the working tree.
+    assert snapshot(project) == before
+    # The agent applies it on the session branch: that is the series from then on.
+    git('am', '-q', '-3', str(dest / '.git' / 'b4m' / 'series.mbx'), cwd=dest)
+    assert series_tip(dest, tree) == git('rev-parse', 'HEAD', cwd=dest)
+    classed = classify_tree(dest, tree)
+    assert [c.subject for c in classed.series] == ['mm/foo: name line three', 'mm/bar: add bar']
+    assert [b.commits for b in classed.branches if b.name == BRANCH] == [()]

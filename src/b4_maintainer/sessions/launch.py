@@ -53,6 +53,9 @@ class LaunchChoice:
     parent: str = ''
     # A combined tree: further series (source, revision, subject) applied after this one.
     also: tuple[tuple[str, int, str], ...] = ()
+    # b4 could not apply the series at this base: the tree starts there without it, and the
+    # agent applies it by hand.
+    agent_apply: str = ''
 
 
 @dataclass(frozen=True)

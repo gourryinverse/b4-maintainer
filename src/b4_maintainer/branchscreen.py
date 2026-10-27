@@ -35,6 +35,7 @@ from .branches import (
     is_commit,
 )
 from .launchdialog import Derived
+from .sessions.launch import Target
 from .sessions.policy import ContextItem
 from .sessions.records import SessionRecord
 from .workspace import Workspace
@@ -112,6 +113,15 @@ class Branches(Protocol):
     def drop_choices(
         self, workspace: Workspace, project_id: str, patches: Sequence[tuple[str, str]]
     ) -> DropChoices: ...
+
+    def apply_session(
+        self,
+        workspace: Workspace,
+        target: str,
+        series: Target,
+        numbers: Sequence[int],
+        failed: 'ApplyResult',
+    ) -> SessionRecord: ...
 
     def drop(
         self, workspace: Workspace, target: str, shas: Sequence[str], expected: str
@@ -199,7 +209,7 @@ class BranchesScreen(Screen[None]):
         Binding('shift+tab', 'cycle(-1)', 'previous pane', priority=True, show=False),
         Binding('r', 'rebase', 'rebase base'),
         Binding('a', 'agent_rebase', 'rebase with an agent'),
-        Binding('A', 'accept', 'accept rebase'),
+        Binding('A', 'accept', 'accept result'),
         Binding('space', 'mark', 'mark'),
         Binding('p', 'pluck', 'pluck'),
         Binding('n', 'new_prep', 'new prep branch'),
@@ -485,7 +495,7 @@ class BranchesScreen(Screen[None]):
         self.run_worker(work, thread=True, group='branches-act')
 
     def action_accept(self) -> None:
-        """A, on a rebase session's tree: move the base to the session's result."""
+        """A, on a rebase or apply session's tree: move the base to the session's result."""
         from .app import Confirm
 
         key = self.selected_item()

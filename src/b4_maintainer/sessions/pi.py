@@ -18,6 +18,7 @@ from .policy import ContextItem
 from .profiles import Request
 from .records import SessionRecord, session_label
 from .store import EVENTS, SessionStore
+from .trees import AGENT_MBOX
 
 EXTENSION = pathlib.Path(__file__).parent / 'extension' / 'b4m.ts'
 # The agent's own directory (its working directory in lightweight sessions): context/ and
@@ -137,6 +138,17 @@ TREE_TEXT = (
     'never add Signed-off-by or review trailers'
 )
 
+APPLY_TREE_TEXT = (
+    'The worktree {path} (branch {branch}) is at {base}, without the series: b4 could not '
+    "apply the series there. Apply it first, on {branch}: git am -3 {mbox} (b4's am-ready "
+    'mbox, the patches as they will be taken). Resolve each conflict so the patch keeps its '
+    "intent on this base, then git am --continue, which keeps each patch's author, message, "
+    'and trailers; never skip, squash, or reorder a patch: if one cannot be applied, git am '
+    '--abort and say why. Record one artifact in out/artifacts.toml, kind = "analysis": '
+    'each conflict and how you resolved it. Then do the task. Commits there carry the '
+    'agent identity as committer; never add Signed-off-by or review trailers'
+)
+
 
 def system_prompt(
     record: SessionRecord,
@@ -164,6 +176,14 @@ def system_prompt(
     if tree is not None and writable and record.scope == 'rebase':
         facts.append(
             REBASE_TREE_TEXT.format(path=tree.path, branch=tree.branch, applied=tree.applied[:12])
+            + '.'
+        )
+    elif tree is not None and writable and tree.agent_applies:
+        mbox = f'{tree.path}/{AGENT_MBOX}'
+        facts.append(
+            APPLY_TREE_TEXT.format(
+                path=tree.path, branch=tree.branch, base=tree.base[:12], mbox=mbox
+            )
             + '.'
         )
     elif tree is not None and writable:

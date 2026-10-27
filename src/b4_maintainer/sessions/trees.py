@@ -10,6 +10,7 @@ Commit classes follow the branch names the b4m-branches skill gives agents: the 
 on top of it); anything else beyond the series is "other".
 """
 
+import dataclasses
 import os
 import pathlib
 import shutil
@@ -123,9 +124,26 @@ def _kind(name: str) -> str:
     return next((kind for prefix, kind in PREFIXES if name.startswith(prefix)), 'other')
 
 
+# Where a tree b4 could not apply the series in keeps b4's mbox for the agent: under .git,
+# so it is readable but never part of a commit.
+AGENT_MBOX = '.git/b4m/series.mbx'
+
+
+def series_tip(path: pathlib.Path, tree: Worktree) -> str:
+    """The series' last commit in the tree: as recorded, or (when the agent applies the
+    series itself) the session branch's tip."""
+    if not tree.agent_applies:
+        return tree.applied
+    try:
+        return _git(path, 'rev-parse', '--verify', '--quiet', f'refs/heads/{tree.branch}')[0]
+    except (OSError, IndexError):
+        return tree.applied
+
+
 def classify_tree(path: pathlib.Path, tree: Worktree) -> TreeCommits:
     """The series, then each branch's own commits (beyond the base, the series, and the
     refs the tree was cloned with) with its class and whether it sits where it should."""
+    tree = dataclasses.replace(tree, applied=series_tip(path, tree))
     try:
         series = _commits(path, f'{tree.base}..{tree.applied}')
         names = _git(path, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/')

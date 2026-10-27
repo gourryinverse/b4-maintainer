@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from ..adapters.bases import BaseCommit, BaseStatus
 from ..workspace import MaintainerBase, Workspace
+from .applysession import apply_record, apply_request
 from .guidance import provenance
 from .launch import LaunchChoice, Situation, Target, new_record, plan
 from .models import ModelChoice, model_choices, parse_catalog
@@ -32,24 +33,28 @@ from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
 from .store import SessionStore, SessionView
-from .trees import TreeState, inspect_tree, remove_tree
+from .trees import TreeState, inspect_tree, remove_tree, series_tip
 
 RESUMABLE = frozenset({'stopped', 'gone'})
 COUNTED_LIVE = LIVE | {'preparing'}  # Limits count a session from its preparation.
 
 
 class SessionError(Exception):
-    def __init__(self, message: str, detail: str = '') -> None:
+    def __init__(self, message: str, detail: str = '', base: str = '') -> None:
         super().__init__(message)
         self.detail = detail  # Tool output behind the message (b4's, for a tree).
+        self.base = base  # A series that conflicts: where it would have applied.
 
 
 class TreeError(Exception):
-    """A session tree could not be prepared; *output* is what b4 or git said."""
+    """A session tree could not be prepared; *output* is what b4 or git said; *base*, for
+    a series that conflicts, the commit it would have applied on (an agent can take it
+    from there)."""
 
-    def __init__(self, message: str, output: str = '') -> None:
+    def __init__(self, message: str, output: str = '', base: str = '') -> None:
         super().__init__(message)
         self.output = output
+        self.base = base
 
 
 class SessionRunner(Protocol):
@@ -112,6 +117,15 @@ class Worktrees(Protocol):
     ) -> Worktree:
         """The series applied in the session's own tree (*base* empty: b4 detects it),
         then any further series (*also*: source, revision, subject) in order."""
+        ...
+
+    def prepare_unapplied(self, record: SessionRecord, source: str, base: str) -> Worktree:
+        """A tree at *base* without the series (b4 could not apply it there): b4's mbox
+        of it is left for the agent."""
+        ...
+
+    def prepare_with_mbox(self, record: SessionRecord, ambytes: bytes, base: str) -> Worktree:
+        """A tree at *base* with *ambytes* (an am-ready mbox) left for the agent."""
         ...
 
     def prepare_rebase(self, record: SessionRecord, base: MaintainerBase) -> Worktree:
@@ -228,6 +242,32 @@ class RecordWorktrees:
             source=source,
         )
 
+    def prepare_unapplied(self, record: SessionRecord, source: str, base: str) -> Worktree:
+        from ..adapters.sessiontree import series_mbox
+
+        checkout = self.checkouts.get(record.project)
+        if not checkout:
+            raise TreeError(self.reason(record.project))
+        return self.prepare_with_mbox(
+            record, series_mbox(pathlib.Path(checkout), source, record.revision), base
+        )
+
+    def prepare_with_mbox(self, record: SessionRecord, ambytes: bytes, base: str) -> Worktree:
+        from ..adapters.sessiontree import prepare_unapplied_tree
+
+        checkout, directory = self.checkouts.get(record.project), self.directory
+        if not checkout or directory is None:
+            raise TreeError(self.reason(record.project))
+        name = self.agent[0].format(model=record.model or record.preset)
+        return prepare_unapplied_tree(
+            pathlib.Path(checkout),
+            directory / record.id,
+            f'b4m/session/{record.id}',
+            ambytes,
+            base,
+            (name, self.agent[1]),
+        )
+
     def prepare_rebase(self, record: SessionRecord, base: MaintainerBase) -> Worktree:
         from ..adapters.bases import prepare_rebase_tree
 
@@ -255,7 +295,7 @@ class RecordWorktrees:
             if wt is None or not os.path.isdir(wt.path):
                 continue
             named.add(os.path.realpath(wt.path))
-            size, state = self._measure(wt.path, wt.applied, wt)
+            size, state = self._measure(wt.path, series_tip(pathlib.Path(wt.path), wt), wt)
             infos.append(WorktreeInfo(wt.path, wt.branch, record.id, size, state))
         if self.directory is not None and self.directory.is_dir():
             for entry in sorted(self.directory.iterdir()):
@@ -289,7 +329,8 @@ class RecordWorktrees:
         return base_suggestions(pathlib.Path(checkout)) if checkout else []
 
     def inspect(self, path: str, tree: Optional[Worktree]) -> TreeState:
-        return inspect_tree(pathlib.Path(path), tree.applied if tree else '', tree)
+        tip = series_tip(pathlib.Path(path), tree) if tree else ''
+        return inspect_tree(pathlib.Path(path), tip, tree)
 
     def remove(self, path: str) -> None:
         if self.directory is None:
@@ -474,6 +515,8 @@ class SessionHub:
             raise SessionError('worktree sessions apply a series; this session has none')
 
         def tree(r: SessionRecord) -> Worktree:
+            if choice.agent_apply:
+                return self.worktrees.prepare_unapplied(r, target.source, choice.agent_apply)
             if choice.start:
                 return self.worktrees.prepare_start(r, choice.start, choice.start_from)
             if choice.also:
@@ -511,7 +554,7 @@ class SessionHub:
         except TreeError as exc:
             self._preparing.discard(record.id)
             self.store.set_state(record.id, 'failed')
-            raise SessionError(f'Session {record.id}: {exc}', exc.output) from exc
+            raise SessionError(f'Session {record.id}: {exc}', exc.output, exc.base) from exc
         except Exception as exc:
             self._preparing.discard(record.id)
             self.store.set_state(record.id, 'failed')
@@ -558,6 +601,50 @@ class SessionHub:
             spec,
             lambda r: self.worktrees.prepare_rebase(r, base),
             lambda r: (None, ()),
+        )
+
+    def launch_apply(
+        self,
+        target: Target,
+        branch: str,
+        expected: str,
+        ambytes: bytes,
+        numbers: Sequence[int],
+        detail: str,
+        situation: Situation,
+        model_id: str = 'default',
+        now: Optional[datetime.datetime] = None,
+    ) -> SessionRecord:
+        """An apply session for a series b4 could not apply to *branch* (a base at
+        *expected*): the agent applies *ambytes* on a copy; the base changes only when the
+        maintainer accepts."""
+        blockers = []
+        if situation.worktree_reason:
+            blockers.append(f'apply sessions unavailable: {situation.worktree_reason}')
+        limit_blockers, _warnings = launch_check(
+            situation.limits,
+            situation.live,
+            situation.worktrees,
+            situation.worktree_bytes,
+            'worktree',
+            situation.live_builds,
+        )
+        blockers += limit_blockers
+        model = next((m for m in situation.models if m.id == model_id), None)
+        if model is None or not model.available:
+            blockers.append(f'model {model_id}: {model.reason if model else "unknown"}')
+        if blockers:
+            raise SessionError('; '.join(blockers))
+        assert model is not None
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        record = apply_record(target, branch, expected, numbers, model, now)
+        request = apply_request(target, branch, expected, numbers, detail)
+        spec = LaunchSpec(request, (), model.args, model.env, bool(self._sandbox()))
+        return self._start(
+            record,
+            spec,
+            lambda r: self.worktrees.prepare_with_mbox(r, ambytes, expected),
+            lambda r: (target.source, ()),
         )
 
     def _ready(self, sid: str) -> SessionRecord:

@@ -42,6 +42,7 @@ class ApplyResult:
     applied: tuple[str, ...] = ()  # The new commits, oldest first.
     error: str = ''
     output: str = ''  # b4's and git's output, for a failure.
+    conflict: bool = False  # The patches do not apply there: an agent can take it.
 
 
 def _series(source: str, revision: int, lookup: bool) -> 'b4.LoreSeries':
@@ -65,6 +66,28 @@ def series_patches(project: pathlib.Path, source: str, revision: int) -> list[Se
         for n, p in enumerate(lser.patches)
         if n and p is not None
     ]
+
+
+def _am_ready(lser: 'b4.LoreSeries', numbers: Sequence[int]) -> bytes:
+    """b4's am-ready mbox of patches *numbers*: trailers from the list, a Link each."""
+    msgs = lser.get_am_ready(addlink=True, cherrypick=list(numbers))
+    if not msgs:
+        return b''
+    out = io.BytesIO()
+    b4.save_git_am_mbox(msgs, out)
+    return out.getvalue()
+
+
+def apply_mbox(project: pathlib.Path, source: str, revision: int, numbers: Sequence[int]) -> bytes:
+    """The mbox apply_series would apply (for an agent to apply by hand instead)."""
+    with b4_repo(project), _captured() as log:
+        try:
+            ambytes = _am_ready(_series(source, revision, lookup=True), numbers)
+        except Exception as ex:  # b4 reports through its log and exceptions alike.
+            raise ValueError(f'b4 could not prepare v{revision}: {ex}\n{log.getvalue()}') from ex
+    if not ambytes:
+        raise ValueError(f'v{revision}: no patches ready to apply')
+    return ambytes
 
 
 def apply_series(
@@ -95,20 +118,21 @@ def apply_series(
         try:
             lser = _series(source, revision, lookup=True)
             subject = f'{lser.subject} v{revision}'
-            msgs = lser.get_am_ready(addlink=True, cherrypick=list(numbers))
-            if not msgs:
+            ambytes = _am_ready(lser, numbers)
+            if not ambytes:
                 return ApplyResult(False, error=f'{subject}: no patches ready to apply')
-            out = io.BytesIO()
-            b4.save_git_am_mbox(msgs, out)
             b4.git_fetch_am_into_repo(
-                str(project), out.getvalue(), at_base=tip0, am_flags=['-3'], resolve=True
+                str(project), ambytes, at_base=tip0, am_flags=['-3'], resolve=True
             )
             tip = _git(project, 'rev-parse', 'FETCH_HEAD').stdout.strip()
         except b4.AmConflictError as ex:
             _git(project, 'worktree', 'remove', '--force', ex.worktree_path, check=False)
             shutil.rmtree(ex.worktree_path, ignore_errors=True)
             return ApplyResult(
-                False, error=f'{subject} does not apply on {branch}', output=ex.output
+                False,
+                error=f'{subject} does not apply on {branch}',
+                output=ex.output,
+                conflict=True,
             )
         except Exception as ex:  # b4 reports through its log and exceptions alike.
             return ApplyResult(

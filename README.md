@@ -82,7 +82,10 @@ Python 3.11 or newer.
   (and, online, on other postings of the same patches) and a Link added (`b4.linkmask`),
   you as committer, no sign-off added. The branch must not be checked out; it moves only
   if every patch applies. Your FETCH_HEAD is left as it was; b4 records the series for
-  `b4 ty`.
+  `b4 ty`. When the patches conflict you choose: hand them to an agent (an apply session
+  applies b4's mbox on a copy of the branch and resolves the conflicts; `A` on its tree in
+  `F3` accepts the result, only while the branch has not moved), or leave the branch as
+  it is.
 - `d` drops that series from a maintainer base again: its commits there (found by their
   Link, else subject) are taken out and the later commits replayed onto what remains,
   after a confirmation; if one does not replay without them, nothing changes. Your own
@@ -101,6 +104,10 @@ Python 3.11 or newer.
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
 - A ref's `authority` is `mainline`, `acceptance`, or `preliminary` (highest first); an
   unknown one is reported, and a reload with it keeps the current view.
+- When b4 cannot apply the series for an F1 worktree session, you choose: hand it to the
+  agent (the tree starts at that base without the series, with b4's mbox in its `.git`;
+  the agent applies it with `git am -3`, resolves the conflicts, records how, then does
+  the task), or launch nothing.
 - F1's Command field puts its text (e.g. `/goal`) at the very start of the session's
   initial prompt, before the composed task.
 - Guidance: agent sessions get the review-prompts kernel skill (review, bug analysis,
@@ -118,7 +125,7 @@ Python 3.11 or newer.
   each project's bases, worktrees, session trees (commits by class, artifacts), b4 prep
   and review branches, and other local branches with work not on any remote; `r` rebases
   a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`
-  on its tree moves the base to its result. Space marks commits and `p` plucks them onto
+  on its tree (or an apply session's) moves the base to its result. Space marks commits and `p` plucks them onto
   a base or a prep branch: an agent's become yours with `Assisted-by:` (`[sessions]
   assisted_by`, default the session's model); others keep their authors. `n` makes a b4
   prep branch from the marked commits (name, fork point, cover drafted from the agents'

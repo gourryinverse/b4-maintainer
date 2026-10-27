@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Browse screen (Views | Series | Summary) and pre-apply reader, with a session drawer."""
 
+import dataclasses
 import pathlib
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Protocol
 
 from b4._textwidth import pad_display
 from b4.review_tui._reply import preview_and_send, reply_quote
@@ -72,6 +73,9 @@ from .sessions.trees import TreeState
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TextPane, printable
 from .workspace import Snapshot, Workspace
+
+if TYPE_CHECKING:
+    from .adapters.apply import ApplyResult  # b4: only when applying.
 
 SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
 WORKTREE_ACTIONS = frozenset({'mark_worktree', 'remove_worktrees'})
@@ -2306,17 +2310,67 @@ class MaintainerApp(App[None]):
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot apply: {exc}')
                 return
+            if result.conflict:
+                self.call_from_thread(self._set_notice, '')
+                self.call_from_thread(
+                    self._offer_apply_handoff, item, target, branch, numbers, result
+                )
+                return
             if result.ok:
                 n = len(result.applied)
                 notice = f'Applied {n} patch{"es" if n != 1 else ""} to {branch} · F3 shows it'
-            elif 'does not apply' in result.error:
-                notice = f'{result.error}; nothing changed · F1 starts a session to work it out'
             else:
                 notice = f'Not applied: {result.error}'
             self.call_from_thread(self._action_done, notice, result.ok)
 
         self._set_notice(f'Applying to {branch}…')
         self.run_worker(work, thread=True, group='apply')
+
+    def _offer_apply_handoff(
+        self,
+        item: WorkItem,
+        target: str,
+        branch: str,
+        numbers: list[int],
+        failed: 'ApplyResult',
+    ) -> None:
+        """The patches do not apply to *branch*: hand them to an agent (an apply session on
+        a copy; A in F3 accepts its result), or leave the branch as it is."""
+        service = self._branches
+
+        def picked(choice: Optional[str]) -> None:
+            if choice != 'agent' or service is None or self.snapshot is None:
+                self._set_notice(f'Not applied: {branch} is unchanged')
+                return
+            workspace = self.snapshot.workspace
+
+            def work() -> None:
+                try:
+                    record = service.apply_session(
+                        workspace, target, _target(item), numbers, failed
+                    )
+                except Exception as exc:
+                    self.call_from_thread(self._set_notice, f'Cannot hand it off: {exc}')
+                    return
+                self.call_from_thread(self._after_launch, record)
+                self.call_from_thread(
+                    self._set_notice,
+                    f'Launched apply session {record.id}: when it is done, A in F3 accepts its '
+                    f'result onto {branch}',
+                )
+
+            self._set_notice(f'Preparing an apply session for {branch}…')
+            self.run_worker(work, thread=True, group='apply')
+
+        options = [
+            (
+                'agent',
+                f'Hand it to an agent: a session applies the patches on a copy of {branch} and '
+                f'resolves the conflicts; A in F3 accepts its result onto {branch}',
+            ),
+            ('none', f"Don't apply: leave {branch} as it is"),
+        ]
+        self.push_screen(Pick(_conflict_text(failed.error, failed.output), options), picked)
 
     def action_drop_series(self) -> None:
         """d: take the open or selected series' commits off a maintainer base (after a
@@ -2535,6 +2589,9 @@ class MaintainerApp(App[None]):
             try:
                 record = hub.launch(target, result.profile, result.choice, situation, result.items)
             except SessionError as exc:
+                if exc.base and not result.choice.also and not result.choice.agent_apply:
+                    self.call_from_thread(self._offer_handoff, result, exc)
+                    return None
                 if not exc.detail:
                     raise
                 text = f'{exc}\n\n{exc.detail.strip()}\n\nA lightweight session needs no tree.'
@@ -2544,6 +2601,29 @@ class MaintainerApp(App[None]):
             return f'Launched session {record.id}: {label}'
 
         self._session_call(launch)
+
+    def _offer_handoff(self, result: LaunchResult, exc: SessionError) -> None:
+        """b4 could not apply the series for a session: hand it to the agent (its tree at
+        that base, without the series), or launch nothing."""
+        base = exc.base
+
+        def picked(choice: Optional[str]) -> None:
+            if choice == 'agent':
+                again = dataclasses.replace(result.choice, agent_apply=base)
+                self._launch_chosen(dataclasses.replace(result, choice=again))
+            else:
+                self._set_notice('Not launched: the series does not apply there')
+
+        title = _conflict_text(str(exc), exc.detail)
+        options = [
+            (
+                'agent',
+                f'Hand it to the agent: its tree starts at {base[:12]} without the series; it '
+                'applies the patches (git am -3), resolves the conflicts, then does the task',
+            ),
+            ('none', "Don't apply: launch nothing"),
+        ]
+        self.push_screen(Pick(title, options), picked)
 
     # The column beside the app: changed only by the maintainer's moves, never by polling.
 
@@ -2958,3 +3038,9 @@ def _replace_rows(rows: OptionList, entries: list[tuple[str, str]], empty: str) 
     rows.add_options(Option(text, id=key) for key, text in entries)
     keys = [key for key, _text in entries]
     rows.highlighted = keys.index(keep) if keep in keys else min(position, len(keys) - 1)
+
+
+def _conflict_text(message: str, detail: str, lines: int = 12, width: int = 110) -> str:
+    """A conflict for a choice: the message, the end of b4's output, the question."""
+    tail = [line[:width] for line in detail.strip().splitlines()[-lines:]]
+    return '\n'.join([message, '', *tail, '', 'What now?'] if tail else [message, '', 'What now?'])

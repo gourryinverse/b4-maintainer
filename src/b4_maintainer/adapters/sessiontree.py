@@ -15,6 +15,7 @@ hook strips Signed-off-by and review trailers. Blocking: call from a worker.
 """
 
 import contextlib
+import dataclasses
 import io
 import logging
 import os
@@ -28,7 +29,7 @@ import b4.review
 
 from ..sessions.hub import TreeError
 from ..sessions.records import Worktree
-from ..sessions.trees import clone_project
+from ..sessions.trees import AGENT_MBOX, clone_project
 from .b4state import b4_repo
 
 TRAILERS = ('Signed-off-by', 'Reviewed-by', 'Acked-by', 'Tested-by', 'Co-developed-by')
@@ -124,6 +125,7 @@ def _apply(
     project: pathlib.Path, dest: pathlib.Path, source: str, revision: int, base: Optional[str]
 ) -> tuple[str, str]:
     """(base, last series commit), applying the series from its mail."""
+    sha: Optional[str] = None
     with b4_repo(project), _captured() as log:
         try:
             lser, ambytes = _am_bytes(source, revision)
@@ -137,7 +139,7 @@ def _apply(
             )
         except b4.AmConflictError as ex:
             raise PrepareError(
-                f'v{revision} does not apply at {base}', ex.output or log.getvalue()
+                f'v{revision} does not apply at {base}', ex.output or log.getvalue(), sha or ''
             ) from ex
         except PrepareError:
             raise
@@ -178,6 +180,17 @@ def _agent(dest: pathlib.Path, identity: tuple[str, str]) -> None:
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text(COMMIT_MSG)
     hook.chmod(0o755)
+
+
+def series_mbox(project: pathlib.Path, source: str, revision: int) -> bytes:
+    """b4's am-ready mbox of the series, as a session tree applies it."""
+    with b4_repo(project), _captured() as log:
+        try:
+            return _am_bytes(source, revision)[1]
+        except PrepareError:
+            raise
+        except Exception as ex:
+            raise PrepareError(f'b4 could not read v{revision}: {ex}', log.getvalue()) from ex
 
 
 def base_suggestions(project: pathlib.Path) -> list[str]:
@@ -254,3 +267,25 @@ def prepare_start_tree(
         shutil.rmtree(dest, ignore_errors=True)
         raise
     return Worktree(str(dest), branch, sha, sha)
+
+
+def prepare_unapplied_tree(
+    project: pathlib.Path,
+    dest: pathlib.Path,
+    branch: str,
+    ambytes: bytes,
+    base: str,
+    identity: tuple[str, str],
+) -> Worktree:
+    """A tree for a series b4 could not apply: on *branch* at *base*, with b4's am-ready
+    mbox (*ambytes*) at .git/b4m/series.mbx for the agent to apply and resolve by hand.
+    On failure nothing is left."""
+    tree = prepare_start_tree(project, dest, branch, base, identity)
+    try:
+        mbox = dest / AGENT_MBOX
+        mbox.parent.mkdir(parents=True, exist_ok=True)
+        mbox.write_bytes(ambytes)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    return dataclasses.replace(tree, agent_applies=True)

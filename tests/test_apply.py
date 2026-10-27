@@ -4,6 +4,7 @@ in one guarded update; the project's HEAD, index, FETCH_HEAD, and worktrees unto
 
 import email.utils
 import re
+import subprocess
 
 import pytest
 from gitutil import git
@@ -274,3 +275,128 @@ def test_the_service_finds_the_series_on_bases_and_drops_it(posted, tmp_path):
     assert result.ok and git('rev-parse', 'me/base^{tree}', cwd=project) == git(
         'rev-parse', f'{base}^{{tree}}', cwd=project
     )
+
+
+def test_a_conflict_is_marked_and_its_mbox_can_go_to_an_agent(posted, tmp_path):
+    from b4_maintainer.adapters.apply import apply_mbox
+    from b4_maintainer.adapters.bases import accept_onto
+    from b4_maintainer.adapters.sessiontree import prepare_unapplied_tree
+
+    project, _base, mbox, first = posted
+    git('checkout', '-q', 'me/base', cwd=project)
+    write(project, 'mm/foo.c', (project / 'mm/foo.c').read_text().replace('line 3\n', 'tres\n'))
+    tip = commit(project, 'mm/foo: conflicting change')
+    git('checkout', '-q', 'master', cwd=project)
+    failed = apply_series(project, 'me/base', str(mbox), 2, [1, 2], tip)
+    assert not failed.ok and failed.conflict
+    # The agent gets the same patches apply would have taken: picked, trailers, a Link.
+    ambytes = apply_mbox(project, str(mbox), 2, [1])
+    text = ambytes.decode()
+    assert 'mm/foo: name line three' in text and 'mm/bar: add bar' not in text
+    assert 'Reviewed-by: Rev Iewer' in text and f'Link: https://patch.msgid.link/{first}' in text
+    agent = ('b4-maintainer agent (dry-run)', 'agent@b4-maintainer.invalid')
+    dest = tmp_path / 'var' / 'worktrees' / 'a1'
+    tree = prepare_unapplied_tree(project, dest, 'b4m/session/a1', ambytes, tip, agent)
+    am = ['git', '-c', 'user.name=Agent', '-c', 'user.email=agent@b4-maintainer.invalid', 'am']
+    mbx = str(dest / '.git' / 'b4m' / 'series.mbx')
+    assert subprocess.run([*am, '-q', '-3', mbx], cwd=dest, capture_output=True).returncode
+    # The agent's resolution: the patch's intent (line three named) on this base.
+    base_text = git('show', f'{tip}:mm/foo.c', cwd=project)
+    (dest / 'mm/foo.c').write_text(base_text.replace('tres', 'three') + '\n')
+    git('add', 'mm/foo.c', cwd=dest)
+    subprocess.run([*am, '--continue'], cwd=dest, check=True, capture_output=True)
+    result_tip = git('rev-parse', tree.branch, cwd=dest)
+    # Accepted onto the base only while it is still where the session started.
+    git('branch', '-f', 'me/other', tip, cwd=project)
+    assert not accept_onto(project, 'me/base', dest, tree.branch, 'f' * 40).ok
+    accepted = accept_onto(project, 'me/base', dest, tree.branch, tip)
+    assert accepted.ok, accepted.error
+    assert git('rev-parse', 'me/base', cwd=project) == result_tip
+    message = git('log', '-1', '--format=%B', 'me/base', cwd=project)
+    assert 'Reviewed-by: Rev Iewer' in message  # git am keeps the trailers.
+    assert git('log', '-1', '--format=%an', 'me/base', cwd=project) == 'Con Tributor'
+    assert not git('for-each-ref', 'refs/b4m/', cwd=project)  # No scratch refs left.
+
+
+class FakeHub:
+    def __init__(self):
+        self.launched = []
+
+    def overview(self):
+        return None
+
+    def situation(self, workspace, overview, skills, project, bases=True):
+        return 'situation'
+
+    def launch_apply(self, target, branch, expected, ambytes, numbers, detail, situation):
+        from sessiondata import make_record
+
+        self.launched.append((target, branch, expected, ambytes, tuple(numbers), detail))
+        return make_record('a1', scope='apply')
+
+
+def test_the_service_hands_a_conflict_to_an_apply_session_and_accepts_it(posted, tmp_path):
+    from b4_maintainer.adapters.apply import ApplyResult
+    from b4_maintainer.adapters.sessiontree import prepare_unapplied_tree
+    from b4_maintainer.branches import BranchService
+    from b4_maintainer.sessions.launch import Target
+    from b4_maintainer.sessions.records import SessionRecord, Worktree
+    from b4_maintainer.workspace import Workspace
+
+    project, base, mbox, _first = posted
+    workspace = Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': 'demo',
+                    'path': 'projects/demo',
+                    'bases': [{'branch': 'me/base', 'upstream': 'master'}],
+                }
+            ]
+        }
+    )
+    records: list[SessionRecord] = []
+    hub = FakeHub()
+    service = BranchService(tmp_path, lambda: records, lambda sid: tmp_path / sid, hub)
+    target = Target('series', 'demo', 'id', 2, 'mm: foo and bar', str(mbox))
+    failed = ApplyResult(
+        False, error='does not apply', output='CONFLICT in mm/foo.c', conflict=True
+    )
+    record = service.apply_session(workspace, 'base:demo:me/base', target, [1, 2], failed)
+    assert record.id == 'a1'
+    [(got, branch, expected, ambytes, numbers, detail)] = hub.launched
+    assert (got, branch, expected, numbers, detail) == (
+        target,
+        'me/base',
+        base,
+        (1, 2),
+        'CONFLICT in mm/foo.c',
+    )
+    assert b'Link: https://patch.msgid.link/' in ambytes
+    # The agent applied it in its tree; A accepts the result onto the base.
+    agent = ('Agent', 'agent@b4-maintainer.invalid')
+    dest = tmp_path / 'var' / 'worktrees' / 'a1'
+    tree = prepare_unapplied_tree(project, dest, 'b4m/session/a1', ambytes, base, agent)
+    git(
+        '-c',
+        'user.name=Agent',
+        '-c',
+        'user.email=a@x',
+        'am',
+        '-q',
+        '-3',
+        str(dest / '.git' / 'b4m' / 'series.mbx'),
+        cwd=dest,
+    )
+    records.append(
+        record.replace(
+            project='demo',
+            choices={'base': 'me/base', 'expected': base, 'patches': '1, 2'},
+            worktree=tree,
+        )
+    )
+    assert service.snapshot(workspace).rebases.get('tree:a1') == 'a1'  # A applies to it.
+    accepted = service.accept(workspace, 'a1')
+    assert accepted.ok, accepted.error
+    assert git('rev-parse', 'me/base', cwd=project) == git('rev-parse', tree.branch, cwd=dest)
+    assert isinstance(tree, Worktree)

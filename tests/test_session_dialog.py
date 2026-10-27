@@ -528,3 +528,34 @@ async def test_a_limit_that_blocks_the_launch_is_said_first(demo_root, store, ru
         await act(pilot, dialog.pick, 'apparatus', 'vng')
         await act(pilot, dialog.pick, 'mode', 'lightweight')
         assert dialog.can_launch() and str(button.label) == 'Launch (ctrl+s)'
+
+
+async def test_a_series_that_conflicts_offers_to_hand_it_to_the_agent(demo_root, store, runner):
+    from b4_maintainer.branchscreen import Pick
+
+    trees = FakeWorktrees()
+    trees.fail = ('v3 does not apply at HEAD', 'error: patch failed: mm/foo.c:3', 'b' * 40)
+    app = make_app(demo_root, store, runner, trees, sandbox=lambda: True)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'reproduce')
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        assert runner.launches == []
+        offer = app.screen
+        assert isinstance(offer, Pick)
+        assert 'does not apply' in offer.title_text and 'patch failed' in offer.title_text
+        assert [key for key, _label in offer.choices] == ['agent', 'none']
+        await pilot.press('down', 'enter')  # Don't apply.
+        await settle(pilot)
+        assert runner.launches == [] and trees.unapplied == []
+        assert 'Not launched' in app.status_text()
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'reproduce')
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        await pilot.press('enter')  # Hand it to the agent.
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        assert trees.unapplied == [(sid, trees.unapplied[0][1], 'b' * 40)]
+        assert store.record(sid).worktree.agent_applies

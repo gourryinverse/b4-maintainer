@@ -42,6 +42,14 @@ class FakeBranches:
     )
     dropped = ()
 
+    handoffs = ()
+
+    def apply_session(self, workspace, target, series, numbers, failed):
+        from sessiondata import make_record
+
+        self.handoffs += ((target, series, tuple(numbers), failed),)
+        return make_record('a1', scope='apply')
+
     def drop_choices(self, workspace, project_id, patches):
         self.asked.append(('drop', project_id, tuple(patches)))
         return self.drop_found
@@ -137,7 +145,7 @@ async def test_a_problem_or_a_failure_is_said(demo_root):
         await pilot.press('enter')
         await settle(pilot)
         text = app.status_text()
-        assert 'mm: foo v3 does not apply on me/base' in text and 'F1' in text
+        assert 'Not applied: mm: foo v3 does not apply on me/base' in text
 
 
 async def test_d_drops_the_series_from_a_base_after_a_confirmation(demo_root):
@@ -181,3 +189,40 @@ async def test_a_drop_that_does_not_replay_or_finds_nothing_is_said(demo_root):
         await settle(pilot)
         text = app.status_text()
         assert 'mm: later work' in text and 'nothing changed' in text
+
+
+async def test_a_conflict_on_a_base_offers_to_hand_it_to_an_agent(demo_root):
+    conflict = ApplyResult(
+        False,
+        error='mm: foo v3 does not apply on me/base',
+        output='CONFLICT in mm/foo.c',
+        conflict=True,
+    )
+    service = FakeBranches(ApplyChoices(PATCHES, TARGETS[:1], TIPS), conflict)
+    app = MaintainerApp(FixtureSource(demo_root).load, branches=service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        item = app.query_one('SeriesList').highlighted_item
+        await pilot.press('a')
+        await settle(pilot)
+        await pilot.press('enter')  # All patches.
+        await settle(pilot)
+        offer = app.screen
+        assert isinstance(offer, Pick)
+        assert 'does not apply on me/base' in offer.title_text
+        assert 'CONFLICT in mm/foo.c' in offer.title_text
+        assert [key for key, _label in offer.choices] == ['agent', 'none']
+        assert 'A in F3' in offer.choices[0][1]
+        await pilot.press('down', 'enter')  # Don't apply.
+        await settle(pilot)
+        assert service.handoffs == () and 'Not applied' in app.status_text()
+        await pilot.press('a')
+        await settle(pilot)
+        await pilot.press('enter')
+        await settle(pilot)
+        await pilot.press('enter')  # Hand it to an agent.
+        await settle(pilot)
+        [(target, series, numbers, failed)] = service.handoffs
+        assert target == 'base:linux:me/base' and numbers == (1, 2, 3) and failed is conflict
+        assert (series.series, series.source) == (item.identity, item.series.source)
+        assert 'apply session a1' in app.status_text()

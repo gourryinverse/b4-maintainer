@@ -24,6 +24,7 @@ from .adapters.bases import (
     BaseStatus,
     PluckResult,
     RebaseResult,
+    accept_onto,
     accept_rebase,
     base_status,
     copy_to_tree,
@@ -52,10 +53,11 @@ from .adapters.prep import (
 from .attachments import Attachment, preview
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
+from .sessions.launch import Target
 from .sessions.policy import ContextItem
 from .sessions.rebase import RESULT
 from .sessions.records import SessionRecord, session_label
-from .sessions.trees import TreeState, classify_tree, inspect_tree, tree_worktrees
+from .sessions.trees import TreeState, classify_tree, inspect_tree, series_tip, tree_worktrees
 from .workspace import MaintainerBase, Project, Workspace
 
 if TYPE_CHECKING:
@@ -202,6 +204,9 @@ class BranchService:
                 if record.scope == 'rebase':
                     rebases[key] = record.id
                     rows, label, found = self._rebase_tree(record, tree)
+                elif record.scope == 'apply':
+                    rebases[key] = record.id  # A accepts its result onto the base.
+                    rows, label, found = self._tree(record, tree)
                 else:
                     rows, label, found = self._tree(record, tree)
                 problems += found
@@ -270,7 +275,9 @@ class BranchService:
             tips[key] = status.tip
         for record in records:
             if record.worktree is not None:
-                tips[f'tree:{record.id}'] = record.worktree.applied  # Per branch, at copy time.
+                tips[f'tree:{record.id}'] = series_tip(  # Per branch, at copy time.
+                    pathlib.Path(record.worktree.path), record.worktree
+                )
         for item in (i for i in items if i.kind == 'prep'):
             project = workspace.project(item.project)
             if project is not None:
@@ -294,7 +301,7 @@ class BranchService:
     ) -> tuple[tuple[DetailRow, ...], str, list[str]]:
         assert record.worktree is not None
         classed = classify_tree(tree, record.worktree)
-        state: TreeState = inspect_tree(tree, record.worktree.applied, record.worktree)
+        state: TreeState = inspect_tree(tree, series_tip(tree, record.worktree), record.worktree)
         rows = self._prompt_rows(record, tree) + [DetailRow('Series')]
         rows += [
             dataclasses.replace(_commit_row(c.sha, c.subject, tree), branch=record.worktree.branch)
@@ -397,13 +404,50 @@ class BranchService:
             project.id, base, status, failed.failed, failed.detail or failed.error, situation
         )
 
+    def apply_session(
+        self,
+        workspace: Workspace,
+        target: str,
+        series: Target,
+        numbers: Sequence[int],
+        failed: 'ApplyResult',
+    ) -> SessionRecord:
+        """An apply session for a series that did not apply to *target* (a base or a prep
+        branch): b4's mbox of the picked patches, applied by an agent on a copy."""
+        from .adapters.apply import apply_mbox
+
+        if self._sessions is None:
+            raise SessionError('agent sessions are not available here')
+        project, branch = self._target(workspace, target)
+        repo = self.root / project.path
+        expected = _git(repo, 'rev-parse', f'refs/heads/{branch}').strip()
+        ambytes = apply_mbox(repo, series.source, series.revision, numbers)
+        hub = self._sessions
+        situation = hub.situation(workspace, hub.overview(), (), project.id, bases=False)
+        return hub.launch_apply(
+            series, branch, expected, ambytes, numbers, failed.output or failed.error, situation
+        )
+
     def accept(self, workspace: Workspace, sid: str) -> RebaseResult:
-        """Move the rebase session's base to its result (see accept_rebase's guards)."""
-        record = next((r for r in self._records() if r.id == sid and r.scope == 'rebase'), None)
+        """Move the session's base to its result: a rebase session's (see accept_rebase's
+        guards) or an apply session's (accept_onto's)."""
+        record = next(
+            (r for r in self._records() if r.id == sid and r.scope in ('rebase', 'apply')), None
+        )
         if record is None or record.worktree is None:
-            return RebaseResult(False, error=f'no rebase session {sid}')
+            return RebaseResult(False, error=f'no rebase or apply session {sid}')
         branch = record.choices.get('base', '')
         project = workspace.project(record.project)
+        if record.scope == 'apply':
+            if project is None:
+                return RebaseResult(False, error=f'no project {record.project}')
+            return accept_onto(
+                self.root / project.path,
+                branch,
+                pathlib.Path(record.worktree.path),
+                record.worktree.branch,
+                record.choices.get('expected', ''),
+            )
         base = next((b for b in project.bases if b.branch == branch), None) if project else None
         if project is None or base is None:
             return RebaseResult(False, error=f'no maintainer base {branch} in {record.project}')
@@ -511,7 +555,7 @@ class BranchService:
             start = (
                 record.worktree.base
                 if name.startswith('b4m/pull-ahead/')
-                else record.worktree.applied
+                else series_tip(tree, record.worktree)
             )
             result = copy_to_tree(
                 pathlib.Path(group[0].repo), tree, [r.key for r in group], name, start

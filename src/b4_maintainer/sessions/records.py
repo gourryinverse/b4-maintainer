@@ -39,6 +39,9 @@ class Worktree:
     branch: str
     base: str
     applied: str  # The last series commit on the session branch.
+    # b4 could not apply the series: the agent applies it on the branch, whose tip is then
+    # the series' last commit (see trees.series_tip).
+    agent_applies: bool = False
 
 
 @dataclass(frozen=True)
@@ -115,8 +118,8 @@ class Pinned(Protocol):
 
 def session_label(pinned: Pinned) -> str:
     """What a session is pinned to: `project: subject vN`, `project: what it does` (a
-    rebase), or `workspace`."""
-    if pinned.scope == 'rebase':
+    rebase or an apply session), or `workspace`."""
+    if pinned.scope in ('rebase', 'apply'):
         return f'{pinned.project}: {pinned.subject}'
     if pinned.scope == 'workspace' or not pinned.series:
         return 'workspace'

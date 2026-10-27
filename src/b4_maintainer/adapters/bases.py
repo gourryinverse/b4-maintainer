@@ -526,6 +526,51 @@ def drop_commits(
     return PluckResult(True, replayed.tip, replayed.picked, subjects)
 
 
+def accept_onto(
+    repo: pathlib.Path, branch: str, tree: pathlib.Path, ref: str, expected: str
+) -> RebaseResult:
+    """Move *branch* to *ref* of a session's *tree* (an apply session's result): only while
+    the branch is still at *expected* (its tip when the session started), *ref* builds on
+    it, and the branch is not checked out. The commits come in through a scratch ref."""
+    tip = _commit(repo, f'refs/heads/{branch}')
+    if tip is None:
+        return RebaseResult(False, error=f'{branch} does not exist')
+    checked_out = _checked_out(repo, branch)
+    if checked_out:
+        return RebaseResult(False, error=f'{branch} is checked out in {checked_out}')
+    if tip != expected:
+        return RebaseResult(False, error=f'{branch} moved since the session started')
+    new = _commit(tree, f'refs/heads/{ref}')
+    if new is None:
+        return RebaseResult(False, error=f'the session has no {ref} branch')
+    if new == expected:
+        return RebaseResult(False, error='the session has applied nothing yet')
+    incoming = f'{INCOMING_REF}/{branch}'
+    pushed = _git(
+        tree, 'push', '--quiet', '--no-verify', str(repo), f'+{new}:{incoming}', check=False
+    )
+    if pushed.returncode != 0:
+        return RebaseResult(False, error=f'cannot bring the result in: {pushed.stderr.strip()}')
+    try:
+        if _git(repo, 'merge-base', '--is-ancestor', expected, new, check=False).returncode:
+            return RebaseResult(False, error=f'the result does not build on {branch}')
+        moved = _git(
+            repo,
+            'update-ref',
+            '-m',
+            'b4-maintainer: accept an apply session',
+            f'refs/heads/{branch}',
+            new,
+            expected,
+            check=False,
+        )
+        if moved.returncode != 0:
+            return RebaseResult(False, error=f'{branch} moved meanwhile: {moved.stderr.strip()}')
+    finally:
+        _git(repo, 'update-ref', '-d', incoming, check=False)
+    return RebaseResult(True, new)
+
+
 ZERO = '0' * 40
 
 

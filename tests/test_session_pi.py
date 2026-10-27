@@ -204,3 +204,16 @@ def test_guidance_repositories_are_readable_to_the_session(tmp_path):
     root = tmp_path / 'guidance'
     _store, cmd = command(tmp_path, spec=LaunchSpec(REQUEST, readable=(root,)))
     assert str(root) in cmd.env['B4M_READABLE'].split('\n')
+
+
+def test_a_tree_without_the_series_tells_the_agent_to_apply_it_first(tmp_path):
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    tree = Worktree('/w/var/worktrees/s1', 'b4m/session/s1', 'b' * 40, 'b' * 40, True)
+    record = make_record('s1', mode='worktree', permissions='execute', worktree=tree)
+    prepare_session(store, record, REQUEST, source='', sandboxed=True)
+    system = (store.directory('s1') / 'system.md').read_text()
+    assert 'b4 could not apply the series' in system
+    assert 'git am -3 /w/var/worktrees/s1/.git/b4m/series.mbx' in system
+    assert 'git am --continue' in system and 'kind = "analysis"' in system
+    assert 'never skip' in system
+    assert 'its last patch' not in system  # There is none yet.
