@@ -155,3 +155,72 @@ def test_real_trees_sit_side_by_side_and_are_listed_and_removed_together(tmp_pat
     for info in infos:
         trees.remove(info.path)
     assert not (directory / 'w1').exists()
+
+
+def test_branches_shows_each_tree_under_its_project_and_acts_on_it(tmp_path, home):
+    from sessiondata import make_record
+
+    from b4_maintainer.branches import BranchService
+    from b4_maintainer.sessions.store import SessionStore
+    from b4_maintainer.workspace import Workspace
+
+    (home / '.gitconfig').write_text(
+        '[user]\n\tname = Example Maintainer\n\temail = m@example.org\n'
+    )
+    root = tmp_path
+    for name in ('linux', 'ndctl'):
+        project(root / 'projects' / name, name)
+        git('branch', 'me/base', cwd=root / 'projects' / name)
+    workspace = Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': p,
+                    'path': f'projects/{p}',
+                    'bases': [{'branch': 'me/base', 'upstream': 'main'}],
+                }
+                for p in ('linux', 'ndctl')
+            ]
+        }
+    )
+    trees = RecordWorktrees(
+        root / 'var' / 'worktrees', {p: str(root / 'projects' / p) for p in ('linux', 'ndctl')}
+    )
+    store = SessionStore(root / 'var' / 'sessions')
+    record = make_record('w1', scope='workbench', mode='worktree', model='dry-run', subject='CXL')
+    made = tuple(trees.prepare_entry(record, TreePlan(p, 'main')) for p in ('linux', 'ndctl'))
+    record = record.replace(trees=made, home=str(root / 'var' / 'worktrees' / 'w1'), workbench='b')
+    store.create(record)
+    ndctl_tree = root / 'var' / 'worktrees' / 'w1' / 'ndctl'
+    git('switch', '-q', '-c', 'b4m/fixup/x', cwd=ndctl_tree)
+    (ndctl_tree / 'fix.c').write_text('fix\n')
+    git('add', '-A', cwd=ndctl_tree)
+    git(
+        '-c',
+        'user.name=Agent',
+        '-c',
+        'user.email=agent@b4-maintainer.invalid',
+        'commit',
+        '-q',
+        '-m',
+        'daxctl: fix x',
+        cwd=ndctl_tree,
+    )
+    service = BranchService(root, lambda: [store.record('w1')], store.directory)
+    data = service.snapshot(workspace)
+    by_key = {i.key: i for i in data.items}
+    assert by_key['tree:w1/linux'].project == 'linux' and by_key['tree:w1/ndctl'].project == 'ndctl'
+    assert '(ndctl)' in by_key['tree:w1/ndctl'].label
+    rows = data.details['tree:w1/ndctl']
+    fix = next(r for r in rows if r.text.strip().endswith('daxctl: fix x'))
+    assert 'base:ndctl:me/base' in data.targets['tree:w1/ndctl']
+    assert 'base:linux:me/base' not in data.targets['tree:w1/ndctl']  # Its own project's.
+    tip = data.tips['base:ndctl:me/base']
+    result = service.pluck(workspace, 'tree:w1/ndctl', [fix], 'base:ndctl:me/base', tip)
+    assert result.ok, result.error
+    assert (
+        git('log', '-1', '--format=%s', 'me/base', cwd=root / 'projects' / 'ndctl')
+        == 'daxctl: fix x'
+    )
+    options = service.derive_options(workspace, 'tree:w1/ndctl', None)
+    assert any(start_from == 'w1/ndctl' for _start, start_from, _label in options)

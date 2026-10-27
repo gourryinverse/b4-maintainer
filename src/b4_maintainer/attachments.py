@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Sequence, Union
 
 from .sessions.artifacts import MANIFEST, load_artifacts
-from .sessions.records import SessionRecord
+from .sessions.records import SessionRecord, session_trees
 from .sessions.trees import classify_tree
 
 MAX_FILES = 100  # Other files listed per session.
@@ -68,7 +68,7 @@ def gather(
     found: list[Attachment] = []
     mine = sorted((r for r in records if r.series == series), key=lambda r: r.created, reverse=True)
     for record in mine:
-        sid, tree = record.id, record.worktree
+        sid = record.id
         task = directory(sid) / 'work' / 'context' / 'task.md'
         if task.is_file():
             try:
@@ -80,7 +80,9 @@ def gather(
                 Attachment('prompt', label, sid, path=task, title='Initial prompt', text=system)
             )
         branches: set[str] = set()
-        if tree is not None and pathlib.Path(tree.path).is_dir():
+        for _project, tree in session_trees(record):
+            if not pathlib.Path(tree.path).is_dir():
+                continue
             classed = classify_tree(pathlib.Path(tree.path), tree)
             for branch in classed.branches:
                 branches.add(branch.name)

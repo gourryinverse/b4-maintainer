@@ -905,7 +905,7 @@ class BranchesScreen(Screen[None]):
         if not options:
             self._status('That session has no tree to derive from')
             return
-        parent = key.removeprefix('tree:')
+        parent = key.removeprefix('tree:').partition('/')[0]  # The session.
         by_key = {f'{n}': option for n, option in enumerate(options)}
 
         def picked(choice: Optional[str]) -> None:

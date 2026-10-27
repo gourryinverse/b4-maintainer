@@ -177,7 +177,7 @@ class BranchService:
         statuses: dict[str, BaseStatus] = {}
         problems: list[str] = []
         rebases: dict[str, str] = {}
-        records = [r for r in self._records() if r.worktree is not None]
+        views = self._tree_views()
         for project in workspace.projects:
             repo = self.root / project.path
             if not (repo / '.git').exists():
@@ -195,12 +195,11 @@ class BranchService:
                 label, rows = _worktree(pathlib.Path(path), branch)
                 items.append(BranchItem(key, 'worktree', project.id, label))
                 details[key] = rows
-            for record in (r for r in records if r.project == project.id):
+            for key, record in ((k, r) for k, r in views if r.project == project.id):
                 assert record.worktree is not None
                 tree = pathlib.Path(record.worktree.path)
                 if not tree.is_dir():
                     continue
-                key = f'tree:{record.id}'
                 if record.scope == 'rebase':
                     rebases[key] = record.id
                     rows, label, found = self._rebase_tree(record, tree)
@@ -273,11 +272,11 @@ class BranchService:
             targets[item.key] = tuple(k for k in keys if k != item.key)
         for key, status in statuses.items():
             tips[key] = status.tip
-        for record in records:
-            if record.worktree is not None:
-                tips[f'tree:{record.id}'] = series_tip(  # Per branch, at copy time.
-                    pathlib.Path(record.worktree.path), record.worktree
-                )
+        for key, record in views:
+            assert record.worktree is not None
+            tips[key] = series_tip(  # Per branch, at copy time.
+                pathlib.Path(record.worktree.path), record.worktree
+            )
         for item in (i for i in items if i.kind == 'prep'):
             project = workspace.project(item.project)
             if project is not None:
@@ -337,7 +336,8 @@ class BranchService:
             ]
         rows += [DetailRow(f'  ! {p}') for p in problems]
         parent = f' (from {record.parent})' if record.parent else ''
-        label = f'{session_label(record)} · {record.id}{parent} · {state.describe()}'
+        which = f' ({record.project})' if record.trees else ''  # A workbench session's tree.
+        label = f'{session_label(record)}{which} · {record.id}{parent} · {state.describe()}'
         if classed.error:
             problems = [*problems, f'{record.id}: {classed.error}']
         return tuple(rows), label, [f'{record.id}: {p}' for p in problems]
@@ -472,14 +472,14 @@ class BranchService:
 
     def _project_of(self, workspace: Workspace, item: str) -> Optional[Project]:
         if item.startswith('tree:'):
-            record = next((r for r in self._records() if r.id == item.removeprefix('tree:')), None)
+            record = self._record(item.removeprefix('tree:'))
             return workspace.project(record.project) if record else None
         parts = item.split(':', 2)
         return workspace.project(parts[1]) if len(parts) == 3 else None
 
     def _model(self, item: str) -> str:
         if item.startswith('tree:'):
-            record = next((r for r in self._records() if r.id == item.removeprefix('tree:')), None)
+            record = self._record(item.removeprefix('tree:'))
             if record is not None:
                 return record.model or record.preset or 'LLM'
         return 'LLM'
@@ -566,7 +566,7 @@ class BranchService:
             dropped += result.dropped
             arrived += [f'- {name}: {r.text.strip().split("  ", 1)[-1]}' for r in group]
         source = item.removeprefix('tree:') if item.startswith('tree:') else item
-        inbox = self._out(sid) / 'work' / 'context' / 'inbox.md'
+        inbox = self._out(record.id) / 'work' / 'context' / 'inbox.md'
         inbox.parent.mkdir(parents=True, exist_ok=True)
         when = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
         with inbox.open('a') as f:
@@ -696,7 +696,7 @@ class BranchService:
         if known:
             return known
         if item.startswith('tree:') and row.branch:
-            sid = item.removeprefix('tree:')
+            sid = item.removeprefix('tree:').partition('/')[0]
             names = {row.branch}
             artifacts, _problems = load_artifacts(self._out(sid) / 'work' / 'out', names)
             for a in artifacts:
@@ -928,10 +928,11 @@ class BranchService:
         """Where a session derived from a tree's session may start: (start, the session
         whose tree holds it or '', label). The series base; the parent's tree at the
         selected commit, or at its session branch; each maintainer base."""
-        record = self._record(item.removeprefix('tree:'))
+        where = item.removeprefix('tree:')  # The tree: <sid>, or <sid>/<project>.
+        record = self._record(where)
         if record is None or record.worktree is None:
             return []
-        wt, sid = record.worktree, record.id
+        wt, sid = record.worktree, where
         options = [(wt.base, '', f'the series base {wt.base[:12]} (pre-existing bugs)')]
         if row is not None and is_commit(row) and row.repo == wt.path:
             subject = row.text.strip().split('  ', 1)[-1]
@@ -949,11 +950,12 @@ class BranchService:
     def derive_context(self, item: str, row: Optional[DetailRow]) -> Optional[ContextItem]:
         """What a derived session receives from its parent: the selected artifact, else
         every artifact's summary from the parent's manifest."""
-        sid = item.removeprefix('tree:')
+        where = item.removeprefix('tree:')
+        sid = where.partition('/')[0]
         if row is not None and row.artifact is not None:
             text = self.show(row)
             return ContextItem('parent', f'From session {sid}: {row.artifact.title}', text=text)
-        record = self._record(sid)
+        record = self._record(where)
         names: set[str] = set()
         if record is not None and record.worktree is not None:
             try:
@@ -986,7 +988,27 @@ class BranchService:
         return [DetailRow('Initial prompt', 'prompt', str(tree), show_text=preview(prompt))]
 
     def _record(self, sid: str) -> Optional[SessionRecord]:
-        return next((r for r in self._records() if r.id == sid), None)
+        """Session *sid*; `<sid>/<project>` names one tree of a workbench session, as a
+        view of the record with that tree as its worktree and that project as its own."""
+        sid, _, project = sid.partition('/')
+        record = next((r for r in self._records() if r.id == sid), None)
+        if record is None or not project:
+            return record
+        tree = next((t for t in record.trees if t.project == project), None)
+        return record.replace(worktree=tree.worktree, project=project) if tree else None
+
+    def _tree_views(self) -> list[tuple[str, SessionRecord]]:
+        """(item key, record) per session tree: `tree:<sid>`, and per workbench tree
+        `tree:<sid>/<project>` with a view record holding that tree."""
+        views: list[tuple[str, SessionRecord]] = []
+        for record in self._records():
+            if record.trees:
+                for t in record.trees:
+                    view = record.replace(worktree=t.worktree, project=t.project)
+                    views.append((f'tree:{record.id}/{t.project}', view))
+            elif record.worktree is not None:
+                views.append((f'tree:{record.id}', record))
+        return views
 
     def prep_worktree(self, workspace: Workspace, item: str) -> Optional[pathlib.Path]:
         """The prep branch's worktree (made if missing), for running b4 interactively."""
