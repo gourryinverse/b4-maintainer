@@ -75,7 +75,8 @@ Python 3.11 or newer.
   in place), `t` tracks the selected series
   through b4 (To Review), `x` hides it, `M` marks it read, `/` filters by regex, `r` drafts a
   reply beside the thread (in the list: to the cover letter), `R` does too after picking
-  what the series' agent sessions produced to add at its end (their commits as inline
+  session output to add at its end (any session's: the series' own first, then its
+  workbenches', then the rest; `/` filters) (their commits as inline
   patches for `git am --scissors`, their results and reproducers as text), and `ctrl+s`
   sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).

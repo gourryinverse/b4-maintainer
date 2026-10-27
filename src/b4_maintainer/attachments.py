@@ -65,61 +65,76 @@ def gather(
     records: Sequence[SessionRecord], series: str, directory: Callable[[str], pathlib.Path]
 ) -> list[Attachment]:
     """Everything the series' sessions (any revision, newest first) left to attach."""
-    found: list[Attachment] = []
     mine = sorted((r for r in records if r.series == series), key=lambda r: r.created, reverse=True)
-    for record in mine:
-        sid = record.id
-        task = directory(sid) / 'work' / 'context' / 'task.md'
-        if task.is_file():
-            try:
-                system = (directory(sid) / 'system.md').read_text(errors='replace')
-            except OSError:
-                system = ''
-            label = f'prompt: the initial prompt  ({sid})'
-            found.append(
-                Attachment('prompt', label, sid, path=task, title='Initial prompt', text=system)
-            )
-        branches: set[str] = set()
-        for _project, tree in session_trees(record):
-            if not pathlib.Path(tree.path).is_dir():
-                continue
-            classed = classify_tree(pathlib.Path(tree.path), tree)
-            for branch in classed.branches:
-                branches.add(branch.name)
-                for c in branch.commits:
-                    label = f'patch · {branch.kind} · {c.subject}  ({branch.name}, {sid})'
-                    found.append(
-                        Attachment('patch', label, sid, repo=tree.path, sha=c.sha, title=c.subject)
-                    )
-        out = (directory(sid) / 'work' / 'out').resolve()
-        if not out.is_dir():
+    return gather_all(mine, directory)
+
+
+def gather_all(
+    records: Sequence[SessionRecord],
+    directory: Callable[[str], pathlib.Path],
+    tags: Optional[Mapping[str, str]] = None,
+) -> list[Attachment]:
+    """Everything *records* (in the order given) left to attach; *tags*: text shown
+    after a session's id in its labels (e.g. its workbench)."""
+    found: list[Attachment] = []
+    for record in records:
+        found += _attachments(record, directory, (tags or {}).get(record.id, ''))
+    return found
+
+
+def _attachments(
+    record: SessionRecord, directory: Callable[[str], pathlib.Path], tag: str
+) -> list[Attachment]:
+    found: list[Attachment] = []
+    sid = record.id
+    who = f'{sid}{tag}'
+    task = directory(sid) / 'work' / 'context' / 'task.md'
+    if task.is_file():
+        try:
+            system = (directory(sid) / 'system.md').read_text(errors='replace')
+        except OSError:
+            system = ''
+        label = f'prompt: the initial prompt  ({who})'
+        found.append(
+            Attachment('prompt', label, sid, path=task, title='Initial prompt', text=system)
+        )
+    branches: set[str] = set()
+    for _project, tree in session_trees(record):
+        if not pathlib.Path(tree.path).is_dir():
             continue
-        artifacts, _problems = load_artifacts(out, branches)
-        named: set[pathlib.Path] = set()
-        for a in artifacts:
-            if a.branch:
-                continue  # Its commits are listed above.
-            if a.path is not None:
-                named.add(a.path.resolve())
-                rel = (
-                    a.path.relative_to(out.parent) if a.path.is_relative_to(out.parent) else a.path
-                )
-                if _text_file(a.path):
-                    label = f'{a.kind}: {a.title}  ({rel}, {sid})'
-                    found.append(
-                        Attachment('file', label, sid, path=a.path, title=a.title, text=a.summary)
-                    )
-            else:
+        classed = classify_tree(pathlib.Path(tree.path), tree)
+        for branch in classed.branches:
+            branches.add(branch.name)
+            for c in branch.commits:
+                label = f'patch · {branch.kind} · {c.subject}  ({branch.name}, {who})'
                 found.append(
-                    Attachment(
-                        'text', f'{a.kind}: {a.title}  ({sid})', sid, title=a.title, text=a.summary
-                    )
+                    Attachment('patch', label, sid, repo=tree.path, sha=c.sha, title=c.subject)
                 )
-        for path in _other_files(out, named):
-            rel = path.relative_to(out.parent)
+    out = (directory(sid) / 'work' / 'out').resolve()
+    if not out.is_dir():
+        return found
+    artifacts, _problems = load_artifacts(out, branches)
+    named: set[pathlib.Path] = set()
+    for a in artifacts:
+        if a.branch:
+            continue  # Its commits are listed above.
+        if a.path is not None:
+            named.add(a.path.resolve())
+            rel = a.path.relative_to(out.parent) if a.path.is_relative_to(out.parent) else a.path
+            if _text_file(a.path):
+                label = f'{a.kind}: {a.title}  ({rel}, {who})'
+                found.append(
+                    Attachment('file', label, sid, path=a.path, title=a.title, text=a.summary)
+                )
+        else:
             found.append(
-                Attachment('file', f'file: {rel}  ({sid})', sid, path=path, title=str(rel))
+                Attachment(
+                    'text', f'{a.kind}: {a.title}  ({who})', sid, title=a.title, text=a.summary
+                )
             )
+    for path in _other_files(out, named):
+        rel = path.relative_to(out.parent)
+        found.append(Attachment('file', f'file: {rel}  ({who})', sid, path=path, title=str(rel)))
     return found
 
 

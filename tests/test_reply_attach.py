@@ -83,7 +83,7 @@ async def test_without_session_output_r_says_so(demo_root, tmp_path):
         await pilot.press('R')
         await settle(pilot)
         assert not isinstance(app.screen, AttachDialog)
-        assert 'No session output for this series' in app.status_text()
+        assert 'No session output yet' in app.status_text()
 
 
 async def test_r_in_the_series_list_opens_the_thread_then_asks(demo_root, tmp_path):

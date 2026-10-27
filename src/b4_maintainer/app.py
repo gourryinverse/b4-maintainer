@@ -32,7 +32,7 @@ from .adapters.b4mbox import load_thread
 from .adapters.drafts import DraftStore, SavedDraft
 from .applydialog import ApplyDialog
 from .attachdialog import AttachDialog
-from .attachments import Attachment, gather, git_identity, preview, render
+from .attachments import Attachment, gather, gather_all, git_identity, preview, render
 from .branches import ApplyChoices, DropChoices
 from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
@@ -1287,7 +1287,7 @@ class MaintainerApp(App[None]):
         def work() -> None:
             try:
                 records = hub.records()
-                offered = gather(records, item.identity, hub.store.directory)
+                offered = self._offered_output(records, item)
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot list session output: {exc}')
                 return
@@ -1295,6 +1295,25 @@ class MaintainerApp(App[None]):
             self.call_from_thread(self._pick_attachments, item, msgid, quote, offered, models)
 
         self.run_worker(work, thread=True, group='session-action')
+
+    def _offered_output(self, records: list[SessionRecord], item: WorkItem) -> list[Attachment]:
+        """What R offers (blocking): every session's output, the series' own first, then
+        that of the workbenches holding the series (labelled with the workbench), then
+        the rest; newest first within each."""
+        hub, service = self._sessions, self._workbenches
+        if hub is None:
+            return []
+        benches = service.store.list()[0] if service is not None else []
+        labels = {b.id: b.label for b in benches}
+        holding = {
+            b.id for b in benches for e in b.entries for i in e.items if i.series == item.identity
+        }
+        newest = sorted(records, key=lambda r: r.created, reverse=True)
+        own = [r for r in newest if r.series == item.identity]
+        near = [r for r in newest if r.workbench in holding and r not in own]
+        rest = [r for r in newest if r not in own and r not in near]
+        tags = {r.id: f', {labels[r.workbench]}' for r in newest if r.workbench in labels}
+        return gather_all([*own, *near, *rest], hub.store.directory, tags)
 
     def _pick_attachments(
         self,
@@ -1305,7 +1324,7 @@ class MaintainerApp(App[None]):
         models: dict[str, str],
     ) -> None:
         if not offered:
-            self._set_notice('No session output for this series yet; r replies without it')
+            self._set_notice('No session output yet; r replies without it')
             return
         workspace = self.snapshot.workspace if self.snapshot else Workspace()
 
