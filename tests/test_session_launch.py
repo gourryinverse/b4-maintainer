@@ -311,7 +311,7 @@ def test_the_built_in_series_profile_gives_worktree_sessions_the_branches_skill(
     from b4_maintainer.sessions.skills import load_skills
 
     series = parse_profile((BUILTIN_DIR / 'series.toml').read_text())
-    assert series.worktree_skills == ('b4m-branches',)
+    assert series.worktree_skills == ('b4m-branches', 'kernel-style')
     installed, problems = load_skills(SKILLS_DIR, None)
     assert problems == [] and 'b4m-branches' in {s.id for s in installed}
 
@@ -334,3 +334,34 @@ def test_a_combined_launch_applies_further_series_and_records_them(store, profil
     record = hub.launch(TARGET, profile, combined, situation(worktree_reason=''), ITEMS)
     assert trees.also == [also]
     assert record.choices['also'] == ['mm: bar v2', 'mm: baz v1']
+
+
+def test_guidance_skills_make_their_repositories_readable_and_are_recorded(
+    store, profile, tmp_path
+):
+    import pathlib
+
+    from gitutil import git
+
+    style = tmp_path / 'kernel-style'
+    (style / 'skills' / 'kernel-style').mkdir(parents=True)
+    (style / 'skills' / 'kernel-style' / 'SKILL.md').write_text(
+        '---\nname: kernel-style\ndescription: Style.\n---\n'
+    )
+    git('init', '-q', '-b', 'main', cwd=style)
+    git('add', '-A', cwd=style)
+    git('-c', 'user.name=E', '-c', 'user.email=e@example.org', 'commit', '-q', '-m', 'x', cwd=style)
+    skill = Skill(
+        'kernel-style', 'Style.', style / 'skills' / 'kernel-style', style, 'kernel-style', 'abc'
+    )
+    runner = FakeSessionRunner(store)
+    hub = SessionHub(store, runner, FakeWorktrees(), guidance=lambda: ([skill], []))
+    found, problems = hub.skills()
+    assert 'kernel-style' in {s.id for s in found} and problems == []
+    picked = choice(skills_on=frozenset({'kernel-style'}))
+    record = hub.launch(TARGET, profile, picked, situation(skills=(skill,)), ITEMS)
+    [spec] = runner.specs
+    assert spec.skills == (style / 'skills' / 'kernel-style',)
+    assert spec.readable == (style,)
+    assert record.provenance == {'kernel-style': git('rev-parse', 'HEAD', cwd=style)}
+    assert isinstance(spec.readable[0], pathlib.Path)

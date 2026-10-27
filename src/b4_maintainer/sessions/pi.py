@@ -43,6 +43,7 @@ class LaunchSpec:
     args: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     sandboxed: bool = False  # Shell commands run in `b4-maintainer sandbox`.
+    readable: tuple[pathlib.Path, ...] = ()  # More read-only roots (guidance repositories).
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,7 @@ def pi_command(
     work = directory / WORK
     worktree = record.worktree.path if record.worktree else ''
     readable = [str(work), worktree, site.checkouts.get(record.project, '')]
-    readable += [str(s) for s in spec.skills]
+    readable += [str(s) for s in spec.skills] + [str(r) for r in spec.readable]
     env = {
         'B4M_SESSION': record.id,
         'B4M_ROOT': str(site.root),

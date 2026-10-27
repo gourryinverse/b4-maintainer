@@ -328,3 +328,12 @@ def test_the_assisted_by_trailer_is_configurable():
     assert Workspace.from_config({}).assisted_by == '{model}'
     ws = Workspace.from_config({'sessions': {'assisted_by': 'Claude:{model}'}})
     assert ws.assisted_by == 'Claude:{model}' and ws.warnings == ()
+
+
+def test_guidance_sources_can_point_at_other_checkouts():
+    ws = Workspace.from_config(
+        {'guidance': [{'id': 'review-prompts', 'path': '~/git/review-prompts'}]}
+    )
+    assert ws.guidance == (('review-prompts', '~/git/review-prompts'),) and ws.warnings == ()
+    bad = Workspace.from_config({'guidance': [{'id': 'kernel-style', 'path': 'x', 'url': 'y'}]})
+    assert bad.warnings == ('unknown key url in [[guidance]] kernel-style',)

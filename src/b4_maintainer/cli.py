@@ -145,12 +145,17 @@ def _sessions(
     agent = (
         (workspace.agent_name, workspace.agent_email) if workspace else (AGENT_NAME, AGENT_EMAIL)
     )
+    from .sessions.guidance import guidance_skills, sources
+
+    overrides = dict(workspace.guidance) if workspace else {}
+    cache = root / 'var' / 'guidance'
     return SessionHub(
         store,
         TmuxRunner(store, site),
         RecordWorktrees(root / 'var' / 'worktrees', site.checkouts, agent),
         profiles_dir=root / 'state' / 'profiles' if private else None,
         skills_dir=root / 'state' / 'skills' if private else None,
+        guidance=lambda: guidance_skills(sources(overrides, root), cache),
     )
 
 

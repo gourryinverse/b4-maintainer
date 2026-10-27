@@ -24,10 +24,10 @@ from b4_maintainer.sessions.store import SessionStore
 PI = shutil.which('pi')
 pytestmark = pytest.mark.skipif(PI is None, reason='pi is not installed')
 HOOK = str(pathlib.Path(sys.executable).parent / 'b4-maintainer')
-REQUEST = Request('Review the series.', 'You assist a maintainer.', (), 'lightweight', ())
+REQUEST = Request('Review the series.', 'You assist a maintainer.', 'lightweight', ())
 
 
-def run(tmp_path, steps=None, permissions='read-only', worktree=None, sandboxed=False):
+def run(tmp_path, steps=None, permissions='read-only', worktree=None, sandboxed=False, readable=()):
     """One print-mode pi run; returns the session's events and pi's transcript."""
     store = SessionStore(tmp_path / 'var' / 'sessions')
     record = make_record('x1', model=DRY_RUN_MODEL, permissions=permissions)
@@ -41,7 +41,9 @@ def run(tmp_path, steps=None, permissions='read-only', worktree=None, sandboxed=
     checkout.mkdir(exist_ok=True)
     (checkout / 'README').write_text('synthetic checkout\n')
     site = Site(tmp_path, HOOK, PI, checkouts={'linux': str(checkout)})
-    cmd = pi_command(store, record, LaunchSpec(REQUEST, sandboxed=sandboxed), site)
+    cmd = pi_command(
+        store, record, LaunchSpec(REQUEST, sandboxed=sandboxed, readable=readable), site
+    )
     launch = {'argv': cmd.argv, 'resume': cmd.argv, 'cwd': cmd.cwd, 'env': cmd.env}
     (store.directory('x1') / 'launch.json').write_text(json.dumps(launch))
     argv = [cmd.argv[0], '-p', '--offline', *cmd.argv[1:]]
@@ -268,3 +270,17 @@ def test_sandboxed_sessions_run_shell_commands_confined(tmp_path, home):
     assert 'no-b4m-env' in transcript  # The agent's environment stays outside.
     assert 'only read-only git' not in transcript  # Nothing was refused.
     assert [e['tool'] for e in events if e['event'] == 'tool'] == ['bash'] * 4
+
+
+def test_a_guidance_repository_is_readable_and_nothing_beside_it(tmp_path, home):
+    guidance = tmp_path / 'review-prompts' / 'kernel'
+    guidance.mkdir(parents=True)
+    (guidance / 'review-core.md').write_text('the review protocol\n')
+    (tmp_path / 'review-prompts' / 'private.md').write_text('not for sessions\n')
+    steps = [
+        {'tool': 'read', 'args': {'path': str(guidance / 'review-core.md')}},
+        {'tool': 'read', 'args': {'path': str(tmp_path / 'review-prompts' / 'private.md')}},
+    ]
+    _events, transcript, _stdout = run(tmp_path, steps, readable=(guidance,))
+    assert 'the review protocol' in transcript
+    assert 'not for sessions' not in transcript and 'outside the session' in transcript

@@ -25,6 +25,9 @@ class Skill:
     id: str
     description: str
     path: Optional[pathlib.Path]  # The skill's directory.
+    root: Optional[pathlib.Path] = None  # Also readable in the sandbox (a guidance repo).
+    source: str = ''  # The guidance source it comes from (review-prompts, kernel-style).
+    version: str = ''  # That source's commit.
 
 
 def _frontmatter(text: str) -> dict[str, str]:

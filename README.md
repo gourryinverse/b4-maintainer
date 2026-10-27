@@ -81,6 +81,11 @@ Python 3.11 or newer.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
+- Guidance: agent sessions get the review-prompts kernel skill (review, bug analysis,
+  debugging, inline replies) and kernel-style (code and changelog style) as pi skills,
+  from the pinned `deps/` checkouts, picked by the F1 choices (adjustable under Advanced);
+  `[[guidance]] id = "review-prompts", path = "~/git/review-prompts"` in `workspace.toml`
+  uses another checkout. Each session records the commits it was given.
 - Maintainer bases: a project's `bases = [{ branch = "BRANCH", upstream = "REMOTE/BRANCH" }]`
   in `workspace.toml` names integration branches on top of upstream branches.
   `b4-maintainer bases` shows how far behind each is and which of its commits have landed

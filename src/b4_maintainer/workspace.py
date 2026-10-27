@@ -75,7 +75,8 @@ TABLE_KEYS = {
         }
     ),
 }
-TOP_KEYS = frozenset({'me', 'projects', 'profiles', 'models', *TABLE_KEYS})
+GUIDANCE_KEYS = frozenset({'id', 'path'})
+TOP_KEYS = frozenset({'me', 'projects', 'profiles', 'models', 'guidance', *TABLE_KEYS})
 
 
 def _unknown(entry: Any, known: frozenset[str], where: str) -> list[str]:
@@ -110,6 +111,9 @@ def config_warnings(config: Mapping[str, Any]) -> tuple[str, ...]:
         warnings += _unknown(p, PROFILE_KEYS, f'in {name}')
     for table, known in TABLE_KEYS.items():
         warnings += _unknown(config.get(table, {}), known, f'in [{table}]')
+    for g in config.get('guidance', []):
+        name = f'[[guidance]] {g.get("id", "?")}' if isinstance(g, Mapping) else '[[guidance]]'
+        warnings += _unknown(g, GUIDANCE_KEYS, f'in {name}')
     for m in config.get('models', []):
         name = f'[[models]] {m.get("id", "?")}' if isinstance(m, Mapping) else '[[models]]'
         warnings += _unknown(m, MODEL_KEYS, f'in {name}')
@@ -193,6 +197,8 @@ class Workspace:
     # The Assisted-by trailer a plucked agent commit gets ([sessions] assisted_by; {model}
     # is the session's model).
     assisted_by: str = '{model}'
+    # Guidance sources pointed at other checkouts ([[guidance]] id, path).
+    guidance: tuple[tuple[str, str], ...] = ()
     warnings: tuple[str, ...] = ()  # Keys in the configuration that nothing reads.
 
     @classmethod
@@ -252,6 +258,11 @@ class Workspace:
                 config.get('sessions', {}).get('sandbox_ionice', cls.sandbox_ionice)
             ),
             assisted_by=str(config.get('sessions', {}).get('assisted_by', cls.assisted_by)),
+            guidance=tuple(
+                (str(g['id']), str(g['path']))
+                for g in config.get('guidance', [])
+                if isinstance(g, Mapping) and 'id' in g and 'path' in g
+            ),
             warnings=config_warnings(config),
         )
 

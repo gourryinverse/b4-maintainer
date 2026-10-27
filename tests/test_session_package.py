@@ -13,7 +13,7 @@ from b4_maintainer.sessions.policy import ContextItem
 from b4_maintainer.sessions.profiles import Request
 from b4_maintainer.sessions.store import SessionStore
 
-REQUEST = Request('Review the series.', 'You assist a maintainer.', (), 'lightweight', ())
+REQUEST = Request('Review the series.', 'You assist a maintainer.', 'lightweight', ())
 LEAK = Finding('high', 'Leaks the folio on error.', 'Memory grows.', False, (('mm/a.c', 10),))
 OLD = Finding('low', 'Old typo.', '', True, ())
 REVIEW = SashikoReview(

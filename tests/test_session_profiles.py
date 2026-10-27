@@ -24,7 +24,7 @@ def test_choices_compose_the_prompts_in_field_order():
         'Help me review this series.\n\nWrite an inline review reply to out/draft/reply.txt.'
     )
     assert request.system_prompt == 'You assist a Linux kernel maintainer.'
-    assert request.files == ('review-prompts:agents/review.md',)
+    assert request.skills == ('kernel',)
     assert request.mode == 'lightweight' and request.notes == ()
 
 
@@ -147,3 +147,21 @@ def test_the_built_in_profiles_load():
     goal = next(f for f in series.fields if f.id == 'goal')
     assert goal.kind == 'multi' and goal.custom
     assert {c.id for c in goal.choices} >= {'review', 'bugs', 'reproduce', 'performance'}
+
+
+def test_the_series_profile_brings_in_guidance_by_choice():
+    from b4_maintainer.sessions.profiles import BUILTIN_DIR, suggested_skills
+
+    series = parse_profile((BUILTIN_DIR / 'series.toml').read_text())
+    assert suggested_skills(series, {'goal': ['review']}) == ('kernel',)
+    assert suggested_skills(series, {'goal': ['bugs']}) == ('kernel',)
+    assert suggested_skills(series, {'goal': ['reproduce']}) == ('kernel',)
+    assert set(suggested_skills(series, {'artifacts': ['draft']})) == {'kernel', 'kernel-style'}
+    worktree = suggested_skills(series, {'goal': ['review']}, 'worktree')
+    assert {'kernel', 'kernel-style', 'b4m-branches'} <= set(worktree)
+    review = compose(series, {'goal': ['review']})
+    assert 'review-core.md' in review.prompt
+    assert 'debugging.md' in compose(series, {'goal': ['reproduce']}).prompt
+    assert (
+        'inline-template.md' in compose(series, {'goal': ['review'], 'artifacts': ['draft']}).prompt
+    )

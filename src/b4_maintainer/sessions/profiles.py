@@ -31,7 +31,6 @@ class Choice:
     id: str
     label: str
     prompt: str = ''
-    files: tuple[str, ...] = ()  # Guidance files, e.g. review-prompts:agents/review.md.
     needs: str = ''  # 'worktree' when the choice needs a tree to build or run.
     skills: tuple[str, ...] = ()  # Skills suggested when picked.
 
@@ -68,7 +67,6 @@ class Request:
 
     prompt: str
     system_prompt: str
-    files: tuple[str, ...]
     mode: str
     notes: tuple[str, ...]
     skills: tuple[str, ...] = ()  # Suggested by the profile and the picked choices.
@@ -92,7 +90,6 @@ def _choice(raw: Any, where: str) -> Choice:
         cid,
         _str(raw, 'label', f'{where}.{cid}'),
         _str(raw, 'prompt', f'{where}.{cid}', ''),
-        _strings(raw, 'files', f'{where}.{cid}'),
         needs,
         _strings(raw, 'skills', f'{where}.{cid}'),
     )
@@ -219,7 +216,6 @@ def compose(
     """
     text = text or {}
     parts: list[str] = []
-    files: list[str] = []
     needing: list[str] = []
     for field in profile.fields:
         value = choices.get(field.id)
@@ -240,7 +236,6 @@ def compose(
                 raise ProfileError(f'{field.label}: unknown choice {cid!r}')
             if choice.prompt:
                 parts.append(choice.prompt)
-            files.extend(f for f in choice.files if f not in files)
             if choice.needs == 'worktree':
                 needing.append(choice.label)
         if free:
@@ -252,7 +247,6 @@ def compose(
     return Request(
         '\n\n'.join(parts),
         profile.system_prompt,
-        tuple(files),
         mode or suggested,
         notes,
         suggested_skills(profile, choices, mode or suggested),

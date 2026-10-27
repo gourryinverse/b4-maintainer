@@ -486,3 +486,22 @@ async def test_also_apply_makes_a_combined_tree(demo_root, store, runner):
         [(sid, _request)] = runner.launches
         assert trees.also == [((source, revision, subject),)]
         assert store.record(sid).choices['also'] == [f'{subject} v{revision}']
+
+
+async def test_the_summary_names_the_guidance_and_its_commit(demo_root, store, runner, tmp_path):
+    from b4_maintainer.sessions.skills import Skill
+
+    kernel = Skill(
+        'kernel',
+        'Kernel review.',
+        tmp_path / 'k',
+        tmp_path / 'rp',
+        'review-prompts',
+        'd048f8742f67',
+    )
+    app = make_app(demo_root, store, runner, guidance=lambda: ([kernel], []))
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'review')
+        assert 'Guidance: review-prompts d048f8742f67' in dialog.summary_text()
+        assert 'Skills:   kernel' in dialog.summary_text()

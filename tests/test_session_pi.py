@@ -10,7 +10,6 @@ from b4_maintainer.sessions.store import SessionStore
 REQUEST = Request(
     prompt='-Help me review this series.',  # A leading dash must not read as an option.
     system_prompt='You assist a maintainer.',
-    files=(),
     mode='lightweight',
     notes=(),
 )
@@ -199,3 +198,9 @@ def test_a_combined_trees_session_is_told_which_series_it_holds(tmp_path):
     prepare_session(store, record, REQUEST, source='', sandboxed=True)
     system = (store.directory('s1') / 'system.md').read_text()
     assert 'also has, applied after this series in order: mm: bar v2; mm: baz v1' in system
+
+
+def test_guidance_repositories_are_readable_to_the_session(tmp_path):
+    root = tmp_path / 'guidance'
+    _store, cmd = command(tmp_path, spec=LaunchSpec(REQUEST, readable=(root,)))
+    assert str(root) in cmd.env['B4M_READABLE'].split('\n')

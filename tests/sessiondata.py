@@ -21,7 +21,7 @@ custom_label = "Custom goal"
 id = "review"
 label = "Help me review"
 prompt = "Help me review this series."
-files = ["review-prompts:agents/review.md"]
+skills = ["kernel"]
 
 [[fields.choices]]
 id = "reproduce"

@@ -15,7 +15,7 @@ from b4_maintainer.sessions.store import SessionStore
 from b4_maintainer.sessions.tmuxrunner import TmuxRunner
 
 pytestmark = pytest.mark.skipif(shutil.which('tmux') is None, reason='tmux not installed')
-REQUEST = Request('Review the series.', 'You assist a maintainer.', (), 'lightweight', ())
+REQUEST = Request('Review the series.', 'You assist a maintainer.', 'lightweight', ())
 
 # Stands in for pi: records its arguments and environment, reports start and waiting,
 # and exits on /quit, reporting that too.

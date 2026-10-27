@@ -79,7 +79,7 @@ def rebase_request(
     failed: Optional[BaseCommit],
     detail: str,
 ) -> Request:
-    return Request(rebase_prompt(base, status, branch, failed, detail), SYSTEM, (), 'worktree', ())
+    return Request(rebase_prompt(base, status, branch, failed, detail), SYSTEM, 'worktree', ())
 
 
 def rebase_record(

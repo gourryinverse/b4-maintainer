@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from ..adapters.bases import BaseCommit, BaseStatus
 from ..workspace import MaintainerBase, Workspace
+from .guidance import provenance
 from .launch import LaunchChoice, Situation, Target, new_record, plan
 from .models import ModelChoice, model_choices, parse_catalog
 from .pane import LIVE
@@ -334,6 +335,7 @@ class SessionHub:
         skills_dir: Optional[pathlib.Path] = None,
         catalog: Optional[Callable[[], Optional[str]]] = None,
         sandbox: Optional[Callable[[], Any]] = None,  # Truthy where the sandbox works.
+        guidance: Optional[Callable[[], tuple[list[Skill], list[str]]]] = None,
     ) -> None:
         self.store = store
         self.runner = runner
@@ -342,6 +344,7 @@ class SessionHub:
         self.skills_dir = skills_dir  # The maintainer's own (state/skills/).
         self._catalog = catalog or pi_catalog
         self._sandbox = sandbox or available
+        self._guidance = guidance  # Skills from the guidance repositories.
         self._catalog_text: Optional[str] = None
         self._catalog_read = False
         self._catalog_lock = threading.Lock()
@@ -376,7 +379,12 @@ class SessionHub:
         return load_profiles(BUILTIN_DIR, self.profiles_dir)
 
     def skills(self) -> tuple[list[Skill], list[str]]:
-        return load_skills(BUILTIN_SKILLS, self.skills_dir)
+        """Guidance repositories' skills, then built-in ones, then the maintainer's own
+        (each replacing by id)."""
+        found, problems = self._guidance() if self._guidance is not None else ([], [])
+        builtin, more = load_skills(BUILTIN_SKILLS, self.skills_dir)
+        by_id = {s.id: s for s in [*found, *builtin]}
+        return list(by_id.values()), [*problems, *more]
 
     def worktree_reason(self, project: str) -> str:
         """Why a worktree session for the project's series cannot launch; empty if it can.
@@ -448,15 +456,20 @@ class SessionHub:
         now = now or datetime.datetime.now(datetime.timezone.utc)
         record = new_record(target, profile, choice, planned, now)
         assert planned.request is not None and planned.model is not None
-        installed = {s.id: s.path for s in situation.skills}
+        installed = {s.id: s for s in situation.skills}
+        chosen = [installed[s] for s in planned.skills if s in installed]
         sandboxed = bool(self._sandbox())
         spec = LaunchSpec(
             planned.request,
-            tuple(p for s in planned.skills if (p := installed.get(s)) is not None),
+            tuple(s.path for s in chosen if s.path is not None),
             planned.model.args,
             planned.model.env,
             sandboxed,
+            tuple(s.root for s in chosen if s.root is not None),
         )
+        guidance = provenance(chosen, planned.skills)
+        if guidance:
+            record = record.replace(provenance={**record.provenance, **guidance})
         if planned.mode == 'worktree' and target.scope != 'series':
             raise SessionError('worktree sessions apply a series; this session has none')
 

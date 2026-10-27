@@ -564,8 +564,13 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         lines += [
             f'Receives: {", ".join(i.label for i in p.included) or "the task prompt only"}',
         ]
-        if p.request is not None and p.request.files:
-            lines.append(f'Guidance: {", ".join(p.request.files)}')
+        guidance = [
+            f'{s.source} {s.version}'.rstrip()
+            for s in self.situation.skills
+            if s.source and s.id in p.skills
+        ]
+        if guidance:
+            lines.append(f'Guidance: {", ".join(guidance)}')
         if p.skills:
             lines.append(f'Skills:   {", ".join(p.skills)}')
         lines.append(f'May:      {PERMISSION_LABELS.get(p.permissions, p.permissions)}')

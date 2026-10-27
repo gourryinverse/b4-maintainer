@@ -15,7 +15,7 @@ from b4_maintainer.sessions.records import Worktree
 from b4_maintainer.sessions.sandbox import Policy, available, bwrap_argv, policy_for
 from b4_maintainer.sessions.store import SessionStore
 
-REQUEST = Request('Review the series.', 'You assist a maintainer.', (), 'lightweight', ())
+REQUEST = Request('Review the series.', 'You assist a maintainer.', 'lightweight', ())
 HOOK = str(pathlib.Path(sys.executable).parent / 'b4-maintainer')
 
 
