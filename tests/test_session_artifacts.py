@@ -48,6 +48,7 @@ def test_a_valid_manifest_loads(tmp_path):
         'results',
         'reproducer',
         'analysis',
+        'diff',
     }
 
 
@@ -111,3 +112,30 @@ def test_no_manifest_is_no_artifacts_and_a_broken_one_says_why(tmp_path):
     (out / 'artifacts.toml').write_text('[[artifact]\nkind = ')
     found, problems = load_artifacts(out, set())
     assert found == [] and len(problems) == 1 and 'artifacts.toml' in problems[0]
+
+
+def test_a_proposed_change_without_a_tree_is_a_diff_file(tmp_path):
+    out = tmp_path / 'work' / 'out'
+    (out / 'diffs').mkdir(parents=True)
+    (out / 'diffs' / 'fix.diff').write_text('--- a/mm/x.c\n+++ b/mm/x.c\n')
+    (out / 'artifacts.toml').write_text(
+        '[[artifact]]\nkind = "diff"\ntitle = "mm: take the second approach"\n'
+        'summary = "Patch 2 of series B, rebased onto series A."\npath = "out/diffs/fix.diff"\n\n'
+        '[[artifact]]\nkind = "diff"\ntitle = "no file"\nsummary = "x"\n'
+    )
+    artifacts, problems = load_artifacts(out, set())
+    assert [(a.kind, a.path) for a in artifacts] == [('diff', out / 'diffs' / 'fix.diff')]
+    assert len(problems) == 1 and 'a diff needs a path' in problems[0]
+
+
+def test_every_session_learns_to_record_artifacts():
+    from b4_maintainer.sessions.profiles import BUILTIN_DIR, parse_profile, suggested_skills
+    from b4_maintainer.sessions.skills import BUILTIN_DIR as SKILLS
+
+    for name in ('series.toml', 'workspace.toml'):
+        profile = parse_profile((BUILTIN_DIR / name).read_text())
+        assert 'b4m-artifacts' in suggested_skills(profile, {}, 'lightweight')
+    text = (SKILLS / 'b4m-artifacts' / 'SKILL.md').read_text()
+    assert 'out/artifacts.toml' in text and '`diff`' in text and 'analysis' in text
+    branches = (SKILLS / 'b4m-branches' / 'SKILL.md').read_text()
+    assert 'b4m-artifacts' in branches  # The branches skill points at it for the manifest.

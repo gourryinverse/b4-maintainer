@@ -4,7 +4,7 @@ b4m-branches skill), read strictly by the client.
 
 Each `[[artifact]]` names one thing the session produced: a finding, commits on a
 branch of its tree (pull-ahead, fixup, test), or a file under `out/` (results,
-reproducer, analysis). An entry that breaks a rule is reported with the reason and
+reproducer, analysis, diff: a proposed change from a session without a tree). An entry that breaks a rule is reported with the reason and
 skipped; the others still load. Model output is data: nothing here runs it.
 """
 
@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from typing import Any, Collection, Optional
 
 MANIFEST = 'artifacts.toml'
-KINDS = ('finding', 'pull-ahead', 'fixup', 'test', 'results', 'reproducer', 'analysis')
+KINDS = ('finding', 'pull-ahead', 'fixup', 'test', 'results', 'reproducer', 'analysis', 'diff')
+FILE_KINDS = frozenset({'diff'})  # A proposed change without a tree: a diff file.
 COMMIT_KINDS = frozenset({'pull-ahead', 'fixup', 'test'})
 KEYS = frozenset({'kind', 'title', 'summary', 'branch', 'path', 'answers', 'tested'})
 
@@ -48,6 +49,8 @@ def _artifact(raw: Any, out: pathlib.Path, branches: Collection[str]) -> Artifac
     branch = raw.get('branch', '')
     if kind in COMMIT_KINDS and not branch:
         raise ValueError(f'a {kind} needs a branch')
+    if kind in FILE_KINDS and not raw.get('path'):
+        raise ValueError(f'a {kind} needs a path')
     if branch and branch not in branches:
         raise ValueError(f'no branch {branch} in the session tree')
     path = None

@@ -101,7 +101,12 @@ Python 3.11 or newer.
   per project, side by side in `var/worktrees/<id>/`, where the agent starts. A workbench
   session lives in its tab: below the panes, the workbench's sessions, what the selected
   one produced, and its text; Enter (there, or on it in the drawer) puts it beside the
-  app, and one launched from the tab joins beside at once.
+  app, `o` opens the workbench's live session from any pane, and one launched from the
+  tab joins beside at once. The column follows the tab: back on LKML the workbench
+  session returns to its own window.
+- Every session (lightweight too) writes its results under `out/` and records them in
+  `out/artifacts.toml` (the b4m-artifacts skill): findings, reports, comparisons,
+  reproducers, results, and, without a tree, proposed changes as `diff` files.
   A tree whose items do not apply offers to hand that tree to the agent (it starts at
   the base with every item as one mbox to `git am`), or to launch nothing.
 - `d` drops that series from a maintainer base again: its commits there (found by their

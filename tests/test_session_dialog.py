@@ -161,18 +161,18 @@ async def test_choices_select_default_skills_under_advanced(demo_root, store, ru
     async with app.run_test(size=(180, 50)) as pilot:
         dialog = await open_dialog(pilot)
         assert not dialog.advanced_open()
-        assert dialog.ticked('skills') == []
+        assert dialog.ticked('skills') == ['b4m-artifacts']
         await act(pilot, dialog.pick, 'goal', 'review')
         await act(pilot, dialog.pick, 'apparatus', 'vng')
         # vng needs a tree: worktree mode, which also suggests the branches skill.
-        assert dialog.ticked('skills') == ['b4m-branches', 'vng']
-        assert 'Skills:   b4m-branches, vng' in dialog.summary_text()
+        assert dialog.ticked('skills') == ['b4m-artifacts', 'b4m-branches', 'vng']
+        assert 'Skills:   b4m-artifacts, b4m-branches, vng' in dialog.summary_text()
         await act(pilot, dialog.pick, 'mode', 'lightweight')  # No sandbox in this test.
-        assert dialog.ticked('skills') == ['vng']
+        assert dialog.ticked('skills') == ['b4m-artifacts', 'vng']
         await pilot.press('ctrl+s')
         await settle(pilot)
         [(sid, _request)] = runner.launches
-        assert store.record(sid).skills == ('vng',)
+        assert store.record(sid).skills == ('b4m-artifacts', 'vng')
 
 
 async def test_skills_the_maintainer_unticks_stay_off(demo_root, store, runner):
@@ -183,11 +183,11 @@ async def test_skills_the_maintainer_unticks_stay_off(demo_root, store, runner):
         await act(pilot, dialog.pick, 'apparatus', 'vng')
         await act(pilot, dialog.pick, 'skills', 'vng')  # Untick.
         await act(pilot, dialog.pick, 'artifacts', 'selftest')
-        assert dialog.ticked('skills') == ['b4m-branches']  # vng stays off.
+        assert dialog.ticked('skills') == ['b4m-artifacts', 'b4m-branches']  # vng stays off.
         await act(pilot, dialog.pick, 'skills', 'vng')  # Tick again: back to the default.
         await act(pilot, dialog.pick, 'apparatus', 'vng')  # Untick the apparatus.
         # A selftest needs a running kernel, so it suggests vng on its own.
-        assert dialog.ticked('skills') == ['b4m-branches', 'vng']
+        assert dialog.ticked('skills') == ['b4m-artifacts', 'b4m-branches', 'vng']
 
 
 async def test_worktree_sessions_are_refused_without_a_sandbox(demo_root, store, runner):
@@ -364,7 +364,7 @@ async def test_keys_pick_choices_within_a_section(demo_root, store, runner):
         assert dialog.ticked('goal') == ['review']
         assert dialog.ticked('artifacts') == ['quality']
         assert dialog.ticked('apparatus') == ['vng']
-        assert dialog.ticked('skills') == ['b4m-branches', 'vng']
+        assert dialog.ticked('skills') == ['b4m-artifacts', 'b4m-branches', 'vng']
 
 
 def add_presets(demo_root, presets):
@@ -488,7 +488,7 @@ async def test_the_summary_names_the_guidance_and_its_commit(demo_root, store, r
         dialog = await open_dialog(pilot)
         await act(pilot, dialog.pick, 'goal', 'review')
         assert 'Guidance: review-prompts d048f8742f67' in dialog.summary_text()
-        assert 'Skills:   kernel' in dialog.summary_text()
+        assert 'Skills:   b4m-artifacts, kernel' in dialog.summary_text()
 
 
 async def test_a_command_goes_first_in_the_prompt(demo_root, store, runner):

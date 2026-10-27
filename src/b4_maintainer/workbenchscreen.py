@@ -39,6 +39,14 @@ from .workbench import (
 from .workspace import Workspace
 
 TYPE_BASE = '\0type'  # The base picker's "type one" entry.
+TITLES = {
+    'bench-list': 'Workbenches',
+    'bench-entries': 'Projects (base)',
+    'bench-items': 'Items, in order',
+    'bench-sessions': 'Sessions',
+    'bench-outputs': 'Output',
+    'bench-preview-pane': 'Launch preview',
+}
 
 
 def _count(n: int, one: str) -> str:
@@ -49,12 +57,19 @@ class WorkbenchScreen(Screen[None]):
     DEFAULT_CSS = """
     WorkbenchScreen #bench-title { height: 1; padding: 0 1; text-style: bold; }
     WorkbenchScreen #bench-panes { height: 2fr; }
-    WorkbenchScreen #bench-list { width: 2fr; border: none; }
-    WorkbenchScreen #bench-entries { width: 2fr; border: none; border-left: solid $panel-lighten-2; }
-    WorkbenchScreen #bench-items { width: 3fr; border: none; border-left: solid $panel-lighten-2; }
-    WorkbenchScreen #bench-bottom { height: 1fr; border-top: solid $panel-lighten-2; }
-    WorkbenchScreen #bench-sessions { width: 2fr; border: none; }
-    WorkbenchScreen #bench-outputs { width: 2fr; border: none; border-left: solid $panel-lighten-2; }
+    WorkbenchScreen #bench-bottom { height: 1fr; }
+    /* Each pane titled on its top edge. */
+    WorkbenchScreen #bench-panes > *, WorkbenchScreen #bench-bottom > * {
+        border: none; border-top: solid $panel-lighten-2; border-title-color: $text-muted;
+    }
+    WorkbenchScreen OptionList:focus, WorkbenchScreen VerticalScroll:focus {
+        border-title-color: $accent;
+    }
+    WorkbenchScreen #bench-list { width: 2fr; }
+    WorkbenchScreen #bench-entries { width: 2fr; border-left: solid $panel-lighten-2; }
+    WorkbenchScreen #bench-items { width: 3fr; border-left: solid $panel-lighten-2; }
+    WorkbenchScreen #bench-sessions { width: 2fr; }
+    WorkbenchScreen #bench-outputs { width: 2fr; border-left: solid $panel-lighten-2; }
     WorkbenchScreen #bench-preview-pane { width: 5fr; border-left: solid $panel-lighten-2; }
     WorkbenchScreen #bench-status { height: 1; padding: 0 1; }
     """
@@ -72,6 +87,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓', show=False),
         Binding('v', 'reroll', 'newer revision'),
         Binding('f1', 'launch', 'session', key_display='F1'),
+        Binding('o', 'open_live', 'open session'),
         # On a session: beside the app (before the list's own Enter).
         Binding('enter', 'open_session', 'open beside', priority=True),
     ]
@@ -93,7 +109,7 @@ class WorkbenchScreen(Screen[None]):
         self._preview = ''
         self._status_text = ''
         self.stale = False  # Set when the app switches back to this tab.
-        self._sessions: list[tuple[str, str]] = []  # The workbench's sessions: (id, label).
+        self._sessions: list[tuple[str, str, bool]] = []  # Its sessions: (id, label, live).
         self._outputs: list[Attachment] = []  # What the selected session produced.
         self._shown = ''  # The text below: the launch preview, or an output.
         self._pending: tuple[str, str] = ('', '')  # (workbench, session) to select.
@@ -114,6 +130,8 @@ class WorkbenchScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        for pane, title in TITLES.items():
+            self.query_one(f'#{pane}').border_title = title
         self.query_one('#bench-list', OptionList).focus()
         self._reload()
 
@@ -212,6 +230,9 @@ class WorkbenchScreen(Screen[None]):
     def _show_text(self, text: str) -> None:
         self._shown = text
         self.query_one('#bench-preview', Static).update(text)
+        output = self._pane() in ('bench-sessions', 'bench-outputs')
+        pane = self.query_one('#bench-preview-pane')
+        pane.border_title = 'Output text' if output else 'Launch preview'
 
     # The workbench's sessions.
 
@@ -234,7 +255,7 @@ class WorkbenchScreen(Screen[None]):
 
         self.run_worker(work, thread=True, group='bench-sessions', exclusive=True)
 
-    def _fill_sessions(self, wid: str, rows: list[tuple[str, str]]) -> None:
+    def _fill_sessions(self, wid: str, rows: list[tuple[str, str, bool]]) -> None:
         bench = self.bench()
         if wid != (bench.id if bench is not None else ''):
             return  # Another workbench was selected meanwhile.
@@ -243,12 +264,12 @@ class WorkbenchScreen(Screen[None]):
         self._sessions = rows
         with self.prevent(OptionList.OptionHighlighted):
             lists.clear_options()
-            for sid, label in rows:
+            for sid, label, _live in rows:
                 lists.add_option(Option(label, id=sid))
-            ids = [sid for sid, _label in rows]
+            ids = [sid for sid, _label, _live in rows]
             if ids:
                 lists.highlighted = ids.index(keep) if keep in ids else 0
-        if self._pending[0] == wid and self._pending[1] in [sid for sid, _l in rows]:
+        if self._pending[0] == wid and self._pending[1] in [sid for sid, _l, _live in rows]:
             self._pending = ('', '')
             lists.focus()
         if self._pane() in ('bench-sessions', 'bench-outputs'):
@@ -306,6 +327,19 @@ class WorkbenchScreen(Screen[None]):
         self.query_one('#bench-sessions', OptionList).focus()
         self._load_outputs()
 
+    def _live_session(self) -> str:
+        """The session `o` opens: the selected one in the sessions pane, else the newest
+        live one of the workbench."""
+        if self._pane() == 'bench-sessions' and self.selected_session():
+            return self.selected_session()
+        return next((sid for sid, _label, live in self._sessions if live), '')
+
+    def action_open_live(self) -> None:
+        sid = self._live_session()
+        opened = getattr(self.app, 'open_bench_session', None)
+        if sid and opened is not None:
+            opened(sid)
+
     def action_open_session(self) -> None:
         sid = self.selected_session()
         opened = getattr(self.app, 'open_bench_session', None)
@@ -337,7 +371,7 @@ class WorkbenchScreen(Screen[None]):
         return self._shown
 
     def session_labels(self) -> list[str]:
-        return [label for _sid, label in self._sessions]
+        return [label for _sid, label, _live in self._sessions]
 
     def output_labels(self) -> list[str]:
         return [a.label for a in self._outputs]
@@ -377,7 +411,11 @@ class WorkbenchScreen(Screen[None]):
         self.refresh_bindings()
 
     def action_back(self) -> None:
-        self.app.pop_screen()
+        tab = getattr(self.app, 'action_tab', None)  # Back to LKML, the column with it.
+        if tab is not None:
+            tab('lkml')
+        else:
+            self.app.pop_screen()
 
     def _pane(self) -> str:
         return self.focused.id or '' if self.focused is not None else ''
@@ -402,6 +440,8 @@ class WorkbenchScreen(Screen[None]):
             return pane == 'bench-items' and self._newer() is not None
         if action == 'open_session':
             return pane == 'bench-sessions' and bool(self.selected_session())
+        if action == 'open_live':
+            return bool(self._live_session())
         if action == 'launch':
             return (
                 bench is not None and bool(bench.entries) and hasattr(self.app, 'launch_workbench')

@@ -153,10 +153,14 @@ def test_the_series_profile_brings_in_guidance_by_choice():
     from b4_maintainer.sessions.profiles import BUILTIN_DIR, suggested_skills
 
     series = parse_profile((BUILTIN_DIR / 'series.toml').read_text())
-    assert suggested_skills(series, {'goal': ['review']}) == ('kernel',)
-    assert suggested_skills(series, {'goal': ['bugs']}) == ('kernel',)
-    assert suggested_skills(series, {'goal': ['reproduce']}) == ('kernel',)
-    assert set(suggested_skills(series, {'artifacts': ['draft']})) == {'kernel', 'kernel-style'}
+    assert suggested_skills(series, {'goal': ['review']}) == ('b4m-artifacts', 'kernel')
+    assert suggested_skills(series, {'goal': ['bugs']}) == ('b4m-artifacts', 'kernel')
+    assert suggested_skills(series, {'goal': ['reproduce']}) == ('b4m-artifacts', 'kernel')
+    assert set(suggested_skills(series, {'artifacts': ['draft']})) == {
+        'b4m-artifacts',
+        'kernel',
+        'kernel-style',
+    }
     worktree = suggested_skills(series, {'goal': ['review']}, 'worktree')
     assert {'kernel', 'kernel-style', 'b4m-branches'} <= set(worktree)
     review = compose(series, {'goal': ['review']})

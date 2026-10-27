@@ -84,8 +84,8 @@ git worktree add --detach <out>/worktrees/<name> <commit>   # <out>: the output 
 
 ## The artifact manifest: `out/artifacts.toml`
 
-Record every piece of work the maintainer should see, commits and files alike, in the
-session's output directory (`out/`, named in the system prompt):
+Record every commit branch and file the maintainer should see in the manifest, as the
+b4m-artifacts skill describes. Commit kinds name their branch:
 
 ```toml
 [[artifact]]
@@ -96,25 +96,9 @@ failed allocation leaks the folio. Drop it before returning."""
 branch = "b4m/pull-ahead/foo-refcount"
 answers = "sashiko:p2/1"
 tested = "x86_64 defconfig build; vng boot; tools/testing/selftests/mm/foo: 12/12 pass"
-
-[[artifact]]
-kind = "results"
-title = "mm selftests on the series"
-summary = "All mm selftests pass except khugepaged, which also fails on the base."
-path = "out/tests/mm-selftests.log"
 ```
 
-- `kind`: one of `finding`, `pull-ahead`, `fixup`, `test`, `results`, `reproducer`,
-  `analysis`.
-- Required: `kind`, `title`, `summary`. `pull-ahead`, `fixup`, and `test` need `branch`
-  (an existing branch of the tree); files need `path`, under `out/`.
-- Optional: `answers` (the finding it answers, e.g. a Sashiko finding or one of yours),
-  `tested`.
-- `summary` is one paragraph the maintainer can paste into a cover letter or reply:
-  plain, specific, no hedging filler.
-- The file is checked strictly: an unknown key or kind, a missing branch, or a path
-  outside `out/` makes that entry rejected. Keep it valid TOML; rewrite the whole file
-  rather than appending fragments.
+- `pull-ahead`, `fixup`, and `test` need `branch`: an existing branch of the tree.
 
 ## Never
 

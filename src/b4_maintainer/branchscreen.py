@@ -389,7 +389,11 @@ class BranchesScreen(Screen[None]):
         event.stop()
 
     def action_back(self) -> None:
-        self.app.pop_screen()
+        tab = getattr(self.app, 'action_tab', None)  # Back to LKML, the column with it.
+        if tab is not None:
+            tab('lkml')
+        else:
+            self.app.pop_screen()
 
     # Actions
 

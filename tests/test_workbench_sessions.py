@@ -131,3 +131,46 @@ async def test_a_session_launched_from_the_tab_joins_beside(demo_root, tmp_path)
         app.poll_sessions()
         await settle(pilot)
         assert any(label.startswith(sid) for label in screen.session_labels())
+
+
+async def test_the_column_follows_the_tab_and_o_opens_the_live_session(demo_root, tmp_path):
+    app, runner = make(demo_root, tmp_path)
+    bench_session(runner, 'w1')
+    async with app.run_test(size=(220, 50)) as pilot:
+        app.poll_sessions()
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        screen = app.screen
+        assert screen.focused.id == 'bench-list'
+        await pilot.press('o')  # From any pane: the workbench's live session.
+        await settle(pilot)
+        assert runner.beside == 'w1'
+        await pilot.press('f2')  # LKML: it goes back to its own window...
+        await settle(pilot)
+        assert runner.beside is None
+        await pilot.press('f3')  # ...and returns with the Workbench tab.
+        await settle(pilot)
+        assert runner.beside == 'w1'
+        await pilot.press('escape')  # Escape to LKML moves it too.
+        await settle(pilot)
+        assert runner.beside is None
+
+
+async def test_the_panes_are_titled(demo_root, tmp_path):
+    app, _runner = make(demo_root, tmp_path)
+    async with app.run_test(size=(220, 50)) as pilot:
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        titles = [
+            str(w.border_title) for w in app.screen.query('#bench-panes > *, #bench-bottom > *')
+        ]
+        assert titles == [
+            'Workbenches',
+            'Projects (base)',
+            'Items, in order',
+            'Sessions',
+            'Output',
+            'Launch preview',
+        ]

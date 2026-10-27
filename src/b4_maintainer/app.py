@@ -510,6 +510,8 @@ class MaintainerApp(App[None]):
         self._app_pane = app_pane
         self._beside: Optional[str] = None
         self._workspace_beside: Optional[str] = None
+        # The Workbench tab's session in the column (only while that tab is shown).
+        self._bench_beside: Optional[str] = None
         self._aside: Optional[str] = None  # Set aside while drafting on a short terminal.
         self._breakpoints = breakpoints
         self.symbols = symbols
@@ -779,6 +781,8 @@ class MaintainerApp(App[None]):
             if action == 'artifacts':
                 return self._branches is not None and self.snapshot is not None
             return True
+        if isinstance(self.screen, WorkbenchScreen) and action == 'focus_session':
+            return bool(self._app_pane) and self._beside is not None
         if isinstance(self.screen, (BranchesScreen, WorkbenchScreen)):
             return action == 'quit'  # The screen has its own keys.
         if action == 'focus_session':
@@ -2282,6 +2286,7 @@ class MaintainerApp(App[None]):
         if tab == 'lkml':
             if len(self.screen_stack) > 1:
                 self.pop_screen()
+                self.call_after_refresh(self._place_pane)  # The column follows the tab.
             return
         if snapshot is None:
             return
@@ -2309,6 +2314,7 @@ class MaintainerApp(App[None]):
             self.switch_screen(tab)
         else:
             self.push_screen(tab)
+        self.call_after_refresh(self._place_pane)  # The column follows the tab.
 
     def action_keys(self) -> None:
         """?: every key of the current tab, the footer's and the rest."""
@@ -2711,23 +2717,26 @@ class MaintainerApp(App[None]):
     def _bench_launched(self, record: SessionRecord) -> None:
         """A workbench session joins beside the app at once and shows in its tab."""
         if self._app_pane:
-            self._workspace_beside = record.id
+            self._bench_beside = record.id
             self._place_pane(record.id)
         if isinstance(self.screen, WorkbenchScreen):
             self.screen.refresh_sessions()
 
-    def workbench_sessions(self, bench_id: str) -> list[tuple[str, str]]:
-        """(id, label) of workbench *bench_id*'s sessions, newest first (blocking)."""
+    def workbench_sessions(self, bench_id: str) -> list[tuple[str, str, bool]]:
+        """(id, label, live) of workbench *bench_id*'s sessions, newest first (blocking)."""
         hub = self._sessions
         if hub is None:
             return []
         states = {v.record.id: v.state for v in self._overview.sessions}
         records = sorted(hub.records(), key=lambda r: r.created, reverse=True)
-        return [
-            (r.id, f'{r.id} · {r.mode} · {states.get(r.id, r.state or "ended")} · {r.created[:16]}')
-            for r in records
-            if r.workbench == bench_id
-        ]
+        rows = []
+        for r in records:
+            if r.workbench != bench_id:
+                continue
+            state = states.get(r.id, r.state or 'ended')
+            label = f'{r.id} · {r.mode} · {state} · {r.created[:16]}'
+            rows.append((r.id, label, state in LIVE_STATES))
+        return rows
 
     def session_output(self, sid: str) -> list[Attachment]:
         """What session *sid* produced: its prompt, commits, files (blocking)."""
@@ -2745,7 +2754,7 @@ class MaintainerApp(App[None]):
         if not self._app_pane:
             self._session_call(lambda: hub.open(sid))
             return
-        self._workspace_beside = sid
+        self._bench_beside = sid
         self._place_pane(sid, focus=True)
 
     def _open_bench_tab(self, record: SessionRecord) -> None:
@@ -2972,13 +2981,21 @@ class MaintainerApp(App[None]):
 
     # The column beside the app: changed only by the maintainer's moves, never by polling.
 
+    def _column_session(self) -> Optional[str]:
+        """The session that belongs beside the app on this tab: on Workbench, the one
+        opened there (while live); elsewhere, the open series' own, else the workspace's."""
+        if isinstance(self.screen, WorkbenchScreen):
+            live = {v.record.id for v in self._overview.sessions if v.state in LIVE_STATES}
+            return self._bench_beside if self._bench_beside in live else None
+        reading = self._reading.identity if self._reading is not None else None
+        return pane_for(self._overview.sessions, reading, self._workspace_beside)
+
     def _place_pane(self, sid: Optional[str] = None, focus: bool = False) -> None:
         """Put *sid* (or the session that belongs there) beside the app."""
         hub, pane = self._sessions, self._app_pane
         if hub is None or not pane:
             return
-        reading = self._reading.identity if self._reading is not None else None
-        target = sid or pane_for(self._overview.sessions, reading, self._workspace_beside)
+        target = sid or self._column_session()
         if target == self._beside and not focus:
             return
         width = self.snapshot.workspace.pane_width if self.snapshot else 90
