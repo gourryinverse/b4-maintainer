@@ -165,3 +165,17 @@ def test_the_series_profile_brings_in_guidance_by_choice():
     assert (
         'inline-template.md' in compose(series, {'goal': ['review'], 'artifacts': ['draft']}).prompt
     )
+
+
+def test_a_command_field_goes_first_in_the_prompt():
+    from b4_maintainer.sessions.profiles import BUILTIN_DIR
+
+    series = parse_profile((BUILTIN_DIR / 'series.toml').read_text())
+    command = next(f for f in series.fields if f.id == 'command')
+    assert command.kind == 'text' and command.prefix
+    with_goal = compose(series, {'goal': ['review'], 'command': '/goal'})
+    assert with_goal.prompt.startswith('/goal Help me review this series')
+    plain = compose(series, {'goal': ['review']})
+    assert plain.prompt.startswith('Help me review this series')
+    workspace = parse_profile((BUILTIN_DIR / 'workspace.toml').read_text())
+    assert any(f.id == 'command' and f.prefix for f in workspace.fields)

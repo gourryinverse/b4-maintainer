@@ -104,3 +104,9 @@ id = "baremetal"
 label = "Bare-metal image"
 prompt = "Prepare a bare-metal test image; do not boot it."
 needs = "worktree"
+
+[[fields]]
+id = "command"
+label = "Command, put before the task (e.g. /goal)"
+kind = "text"
+prefix = true

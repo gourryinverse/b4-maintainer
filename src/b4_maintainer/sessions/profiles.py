@@ -46,6 +46,9 @@ class Field:
     # Choice fields: optional free text added to the picked choices, filling {text}.
     custom: str = ''
     custom_label: str = ''
+    # Text fields: put at the very start of the prompt, before the rest and a space (a
+    # command the agent's harness reads, e.g. /goal).
+    prefix: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,9 @@ def _field(raw: Any) -> Field:
     custom = _str(raw, 'custom', fid, '')
     if custom and (kind == 'text' or '{text}' not in custom):
         raise ProfileError(f'{fid}: custom is for choice fields and must contain {{text}}')
+    prefix = bool(raw.get('prefix', False))
+    if prefix and kind != 'text':
+        raise ProfileError(f'{fid}: prefix is for text fields')
     return Field(
         fid,
         _str(raw, 'label', fid),
@@ -126,6 +132,7 @@ def _field(raw: Any) -> Field:
         _str(raw, 'prompt', fid, ''),
         custom,
         _str(raw, 'custom_label', fid, ''),
+        prefix,
     )
 
 
@@ -217,8 +224,12 @@ def compose(
     text = text or {}
     parts: list[str] = []
     needing: list[str] = []
+    first = ''
     for field in profile.fields:
         value = choices.get(field.id)
+        if field.kind == 'text' and field.prefix:
+            first = str(value).strip() if value else first
+            continue
         if field.kind == 'text':
             if value:
                 parts.append(field.prompt.replace('{text}', str(value)) if field.prompt else value)
@@ -244,8 +255,9 @@ def compose(
         raise ProfileError(f'mode must be one of {", ".join(MODES)}')
     suggested = 'worktree' if needing else 'lightweight'
     notes = (f'Worktree suggested: {", ".join(needing)} needs a tree',) if needing else ()
+    body = '\n\n'.join(parts)
     return Request(
-        '\n\n'.join(parts),
+        ' '.join(p for p in (first, body) if p),
         profile.system_prompt,
         mode or suggested,
         notes,

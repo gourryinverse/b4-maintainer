@@ -332,6 +332,7 @@ async def test_tab_moves_between_sections_and_shift_tab_back(demo_root, store, r
             'artifacts',
             'artifacts:text',
             'apparatus',
+            'command',
             'package',
             'mode',
             'model',
@@ -487,3 +488,17 @@ async def test_the_summary_names_the_guidance_and_its_commit(demo_root, store, r
         await act(pilot, dialog.pick, 'goal', 'review')
         assert 'Guidance: review-prompts d048f8742f67' in dialog.summary_text()
         assert 'Skills:   kernel' in dialog.summary_text()
+
+
+async def test_a_command_goes_first_in_the_prompt(demo_root, store, runner):
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        assert 'Command, put before the task (e.g. /goal)' in dialog.labels()
+        await act(pilot, dialog.pick, 'goal', 'review')
+        await act(pilot, dialog.write, 'command', '/goal')
+        assert 'Prompt:\n  /goal Help me review this series' in dialog.summary_text()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(_sid, request)] = runner.launches
+        assert request.prompt.startswith('/goal Help me review this series')

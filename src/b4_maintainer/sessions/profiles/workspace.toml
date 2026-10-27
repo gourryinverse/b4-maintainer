@@ -12,3 +12,9 @@ id = "question"
 label = "Question"
 kind = "text"
 required = true
+
+[[fields]]
+id = "command"
+label = "Command, put before the task (e.g. /goal)"
+kind = "text"
+prefix = true

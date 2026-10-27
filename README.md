@@ -81,6 +81,8 @@ Python 3.11 or newer.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
+- F1's Command field puts its text (e.g. `/goal`) at the very start of the session's
+  initial prompt, before the composed task.
 - Guidance: agent sessions get the review-prompts kernel skill (review, bug analysis,
   debugging, inline replies) and kernel-style (code and changelog style) as pi skills,
   from the pinned `deps/` checkouts, picked by the F1 choices (adjustable under Advanced);
@@ -91,7 +93,7 @@ Python 3.11 or newer.
   `b4-maintainer bases` shows how far behind each is and which of its commits have landed
   upstream; `--rebase BRANCH` replays the rest onto the upstream (never in a checkout; a
   conflict changes nothing). In the app, `F3` in a thread shows what its sessions
-  produced (commits, results, reproducers) in place of the content, and in the series
+  produced (their initial prompts, commits, results, reproducers) in place of the content, and in the series
   list opens Branches (`F3` or Escape returns from either):
   each project's bases, worktrees, session trees (commits by class, artifacts), b4 prep
   and review branches, and other local branches with work not on any remote; `r` rebases
