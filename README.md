@@ -81,6 +81,8 @@ Python 3.11 or newer.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
+- A ref's `authority` is `mainline`, `acceptance`, or `preliminary` (highest first); an
+  unknown one is reported, and a reload with it keeps the current view.
 - F1's Command field puts its text (e.g. `/goal`) at the very start of the session's
   initial prompt, before the composed task.
 - Guidance: agent sessions get the review-prompts kernel skill (review, bug analysis,

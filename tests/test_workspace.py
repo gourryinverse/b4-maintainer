@@ -1,3 +1,5 @@
+import pytest
+
 from b4_maintainer.adapters.fixture import FixtureSource
 from b4_maintainer.fixtures import make_series, workspace_config
 from b4_maintainer.model import Authority, Coverage, SeriesState
@@ -224,6 +226,13 @@ def test_refs_end_review_by_default_only_for_mainline():
     ]
     refs = Workspace.from_config(config).projects[0].refs
     assert [r.ends_review for r in refs] == [True, True, False]
+
+
+def test_an_unknown_ref_authority_names_the_allowed_ones():
+    config = workspace_config()
+    config['projects'][0]['refs'] = [{'label': 'g', 'name': 'me/base', 'authority': 'review'}]
+    with pytest.raises(ValueError, match='me/base.*review.*mainline, acceptance, preliminary'):
+        Workspace.from_config(config)
 
 
 def test_landed_series_leave_every_queue_but_cached_and_responses():

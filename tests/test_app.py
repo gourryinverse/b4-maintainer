@@ -449,3 +449,21 @@ async def test_misplaced_config_keys_are_reported_in_the_status_line(demo_root):
         text = app.status_text()
         assert 'workspace.toml: unknown key bases in [[profiles]]' in text
         assert 'it is a [[projects]] setting' in text
+
+
+async def test_a_config_error_on_reload_keeps_the_view_and_says_why(demo_root):
+    import json
+
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        shown = app.snapshot
+        path = demo_root / 'workspace.json'
+        config = json.loads(path.read_text())
+        config['projects'][0]['refs'].append({'label': 'g', 'name': 'me/base', 'authority': 'x'})
+        path.write_text(json.dumps(config))
+        app.run_worker(app._load, thread=True, name='load', exclusive=True)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.is_running and app.snapshot is shown
+        assert "workspace.toml: ref me/base: unknown authority 'x'" in app.status_text()

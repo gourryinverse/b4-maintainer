@@ -584,7 +584,13 @@ class MaintainerApp(App[None]):
 
     # Loading stays off the UI thread; results are applied on the event loop.
     def _load(self) -> None:
-        snapshot = self._loader()
+        try:
+            snapshot = self._loader()
+        except ValueError as exc:  # A bad workspace.toml: keep what is shown and say why.
+            if self.snapshot is None:
+                raise
+            self.call_from_thread(self._set_notice, f'workspace.toml: {exc}')
+            return
         index = ViewIndex(snapshot.workspace, snapshot.items)
         self.call_from_thread(self._apply_snapshot, snapshot, index)
 

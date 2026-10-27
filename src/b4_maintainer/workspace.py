@@ -34,10 +34,17 @@ def make_ref(
 
 
 def _ref(r: Mapping[str, Any]) -> Ref:
+    try:
+        authority = Authority[str(r['authority']).upper()]
+    except KeyError:
+        allowed = ', '.join(a.name.lower() for a in Authority)
+        raise ValueError(
+            f'ref {r["name"]}: unknown authority {r["authority"]!r} (one of {allowed})'
+        ) from None
     return make_ref(
         r['label'],
         r['name'],
-        Authority[r['authority'].upper()],
+        authority,
         r.get('view', ''),
         r.get('ends_review'),
     )
