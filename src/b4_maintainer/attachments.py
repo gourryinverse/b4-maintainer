@@ -69,6 +69,16 @@ def gather(
     mine = sorted((r for r in records if r.series == series), key=lambda r: r.created, reverse=True)
     for record in mine:
         sid, tree = record.id, record.worktree
+        task = directory(sid) / 'work' / 'context' / 'task.md'
+        if task.is_file():
+            try:
+                system = (directory(sid) / 'system.md').read_text(errors='replace')
+            except OSError:
+                system = ''
+            label = f'prompt: the initial prompt  ({sid})'
+            found.append(
+                Attachment('prompt', label, sid, path=task, title='Initial prompt', text=system)
+            )
         branches: set[str] = set()
         if tree is not None and pathlib.Path(tree.path).is_dir():
             classed = classify_tree(pathlib.Path(tree.path), tree)
@@ -173,7 +183,9 @@ def render(
     """The attachments as the end of a reply: text blocks, then patches after scissors.
     *assisted*: the Assisted-by value, or one per session."""
     blocks = []
-    for a in (x for x in attachments if x.kind != 'patch'):
+    for a in (x for x in attachments if x.kind == 'prompt'):
+        blocks.append(_prompt(a, max_lines).rstrip('\n'))
+    for a in (x for x in attachments if x.kind not in ('patch', 'prompt')):
         lines = [f'--- {a.title}', '']
         if a.text:
             lines += [a.text.strip(), '']
@@ -189,9 +201,24 @@ def render(
     return ('\n\n'.join(blocks) + '\n') if blocks else ''
 
 
+def _prompt(a: Attachment, max_lines: int) -> str:
+    """A session's initial prompt, then the system prompt appended for it."""
+    try:
+        task = a.path.read_text(errors='replace') if a.path is not None else ''
+    except OSError as ex:
+        task = f'(cannot read the prompt: {ex})'
+    text = f'--- {a.title}\n\n{_cut(task, max_lines).rstrip()}'
+    if a.text.strip():
+        text += f'\n\n--- System prompt (appended)\n\n{_cut(a.text, max_lines).rstrip()}'
+    return text + '\n'
+
+
 def preview(a: Attachment, max_lines: int = 4000) -> str:
     """What the artifacts view shows for an entry: a commit's message, stat, and patch; a
-    file (with its artifact's summary above); an artifact's summary alone."""
+    file (with its artifact's summary above); an artifact's summary alone; a session's
+    initial prompt and system prompt."""
+    if a.kind == 'prompt':
+        return _prompt(a, max_lines)
     if a.kind == 'patch':
         try:
             text = _git(a.repo, 'show', '--stat', '--patch', '--format=fuller', a.sha)

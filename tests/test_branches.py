@@ -5,7 +5,7 @@ import pytest
 from gitutil import git
 from sessiondata import make_record
 
-from b4_maintainer.branches import BranchService
+from b4_maintainer.branches import BranchService, is_commit
 from b4_maintainer.sessions.records import Worktree
 from b4_maintainer.sessions.store import SessionStore
 from b4_maintainer.workspace import Workspace
@@ -461,3 +461,15 @@ def test_a_derived_session_may_start_at_the_base_the_parents_tree_or_a_maintaine
     artifact = next(r for r in found.details['tree:s1'] if r.artifact is not None)
     one = service.derive_context('tree:s1', artifact)
     assert one is not None and artifact.artifact.title in one.label
+
+
+def test_a_session_trees_initial_prompt_is_shown_first(ws, tmp_path):
+    service, workspace, _project = ws
+    context = tmp_path / 'ws' / 'var' / 'sessions' / 's1' / 'work' / 'context'
+    context.mkdir(parents=True, exist_ok=True)
+    (context / 'task.md').write_text('/goal Analyze this series for bugs.\n')
+    found = service.snapshot(workspace)
+    first = found.details['tree:s1'][0]
+    assert first.text == 'Initial prompt'
+    assert '/goal Analyze this series for bugs.' in service.show(first)
+    assert not is_commit(first)  # Not pluckable.

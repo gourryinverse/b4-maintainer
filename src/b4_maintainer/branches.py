@@ -46,6 +46,7 @@ from .adapters.prep import (
     run_b4,
     sign_off,
 )
+from .attachments import Attachment, preview
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
 from .sessions.policy import ContextItem
@@ -268,7 +269,7 @@ class BranchService:
         assert record.worktree is not None
         classed = classify_tree(tree, record.worktree)
         state: TreeState = inspect_tree(tree, record.worktree.applied, record.worktree)
-        rows = [DetailRow('Series')]
+        rows = self._prompt_rows(record, tree) + [DetailRow('Series')]
         rows += [
             dataclasses.replace(_commit_row(c.sha, c.subject, tree), branch=record.worktree.branch)
             for c in classed.series
@@ -320,7 +321,8 @@ class BranchService:
             record.worktree.base,
             record.worktree.applied,
         )
-        rows = [DetailRow(f'Rebase of {choices.get("base")} onto {upstream} (from {tip[:12]})')]
+        rows = self._prompt_rows(record, tree)
+        rows.append(DetailRow(f'Rebase of {choices.get("base")} onto {upstream} (from {tip[:12]})'))
         try:
             result = _git(
                 tree, 'rev-parse', '--verify', '--quiet', f'refs/heads/{RESULT}^{{commit}}'
@@ -796,6 +798,19 @@ class BranchService:
             return None
         text = '\n\n'.join(f'{a.kind}: {a.title}\n\n{a.summary}' for a in artifacts)
         return ContextItem('parent', f'From session {sid}: its findings', text=text)
+
+    def _prompt_rows(self, record: SessionRecord, tree: pathlib.Path) -> list[DetailRow]:
+        """The session's initial prompt (and appended system prompt), as it was sent."""
+        directory = self._out(record.id)
+        task = directory / 'work' / 'context' / 'task.md'
+        if not task.is_file():
+            return []
+        try:
+            system = (directory / 'system.md').read_text(errors='replace')
+        except OSError:
+            system = ''
+        prompt = Attachment('prompt', '', record.id, path=task, title='Initial prompt', text=system)
+        return [DetailRow('Initial prompt', 'prompt', str(tree), show_text=preview(prompt))]
 
     def _record(self, sid: str) -> Optional[SessionRecord]:
         return next((r for r in self._records() if r.id == sid), None)

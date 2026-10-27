@@ -5,7 +5,7 @@ import pytest
 from gitutil import git
 from sessiondata import make_record
 
-from b4_maintainer.attachments import gather, render
+from b4_maintainer.attachments import gather, preview, render
 from b4_maintainer.sessions.records import Worktree
 from b4_maintainer.sessions.store import SessionStore
 
@@ -121,3 +121,17 @@ def test_the_rendered_patch_applies_with_git_am_scissors(produced, tmp_path):
         'fixup! mm/foo: the series patch|Example Maintainer'
     )
     assert git('show', 'HEAD:mm/foo.c', cwd=tree) == git('show', f'{fixup}:mm/foo.c', cwd=tree)
+
+
+def test_each_sessions_initial_prompt_is_one_of_its_artifacts(produced):
+    store, records, _fixup = produced
+    directory = store.directory('s1')
+    (directory / 'work' / 'context').mkdir(parents=True, exist_ok=True)
+    (directory / 'work' / 'context' / 'task.md').write_text('/goal Help me review this series.\n')
+    (directory / 'system.md').write_text('You assist a Linux kernel maintainer.\n')
+    found = gather(records, SERIES, store.directory)
+    prompt = found[0]  # First for its session.
+    assert prompt.kind == 'prompt' and 'initial prompt' in prompt.label
+    shown = preview(prompt)
+    assert shown.index('/goal Help me review') < shown.index('You assist a Linux kernel')
+    assert 'Help me review' in render([prompt], AGENT, 'x')
