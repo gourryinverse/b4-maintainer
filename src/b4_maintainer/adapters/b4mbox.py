@@ -97,6 +97,7 @@ def _series(lser: 'b4.LoreSeries', source: str) -> Series:
     return Series(
         identity=identity,
         subject=(cover or patches[0]).lsubject.subject,
+        prefixes=tuple(w.lower() for w in (cover or patches[0]).lsubject.prefixes),
         revision=lser.revision,
         expected=lser.expected,
         complete=bool(lser.complete),

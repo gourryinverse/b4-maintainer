@@ -105,3 +105,13 @@ def test_older_summaries_load_without_reparsing_and_refresh_upgrades_them(tmp_pa
     cache.series(parse)  # Refresh: upgraded.
     assert len(parse.calls) == 1
     assert json.loads(summary.read_text())['version'] == VERSION
+
+
+def test_subject_prefixes_survive_the_summary_cache():
+    import dataclasses
+
+    from b4_maintainer.adapters.summaries import series_from_dict, series_to_dict
+    from b4_maintainer.fixtures import make_series
+
+    series = dataclasses.replace(make_series('cxl/list: x'), prefixes=('ndctl', 'patch'))
+    assert series_from_dict(series_to_dict(series)) == series

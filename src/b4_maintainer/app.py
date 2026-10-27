@@ -4,7 +4,7 @@
 import dataclasses
 import pathlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Protocol, Sequence
 
 from b4._textwidth import pad_display
 from b4.review_tui._reply import preview_and_send, reply_quote
@@ -2270,18 +2270,36 @@ class MaintainerApp(App[None]):
             self._set_notice(f'Cannot apply: {choices.problem}')
             return
         self._set_notice('')
-        if len(choices.targets) == 1:
-            self._pick_patches(item, choices, choices.targets[0][0])
+        projects = list(dict.fromkeys(_target_project(k) for k, _branch in choices.targets))
+        if len(projects) == 1:
+            self._pick_apply_branch(item, choices, projects[0])
+            return
+
+        def picked(project: Optional[str]) -> None:
+            if project is not None:
+                self._pick_apply_branch(item, choices, project)
+
+        options = []
+        for pid in projects:
+            n = sum(1 for k, _b in choices.targets if _target_project(k) == pid)
+            mine = ' (this series)' if pid == item.project else ''
+            options.append((pid, f'{pid}{mine} · {n} branch{"es" if n != 1 else ""}'))
+        self.push_screen(Pick('Apply to which project?', options), picked)
+
+    def _pick_apply_branch(self, item: WorkItem, choices: ApplyChoices, project: str) -> None:
+        mine = [(k, b) for k, b in choices.targets if _target_project(k) == project]
+        if len(mine) == 1:
+            self._pick_patches(item, choices, mine[0][0])
             return
 
         def picked(target: Optional[str]) -> None:
             if target is not None:
                 self._pick_patches(item, choices, target)
 
-        self.push_screen(Pick('Apply to which branch?', choices.targets), picked)
+        self.push_screen(Pick(f'Apply to which {project} branch?', mine), picked)
 
     def _pick_patches(self, item: WorkItem, choices: ApplyChoices, target: str) -> None:
-        branch = dict(choices.targets)[target]
+        branch = _target_label(target, choices.targets)
         subject = f'{item.series.subject} v{item.series.revision}'
 
         def picked(numbers: Optional[list[int]]) -> None:
@@ -2404,10 +2422,11 @@ class MaintainerApp(App[None]):
             if target is not None:
                 self._confirm_drop(item, choices, target)
 
-        self.push_screen(Pick('Drop it from which base?', choices.targets), picked)
+        labels = [(k, _target_label(k, choices.targets)) for k, _branch in choices.targets]
+        self.push_screen(Pick('Drop it from which base?', labels), picked)
 
     def _confirm_drop(self, item: WorkItem, choices: DropChoices, target: str) -> None:
-        branch = dict(choices.targets)[target]
+        branch = _target_label(target, choices.targets)
         commits = choices.commits[target]
         n = len(commits)
         prompt = (
@@ -3044,3 +3063,17 @@ def _conflict_text(message: str, detail: str, lines: int = 12, width: int = 110)
     """A conflict for a choice: the message, the end of b4's output, the question."""
     tail = [line[:width] for line in detail.strip().splitlines()[-lines:]]
     return '\n'.join([message, '', *tail, '', 'What now?'] if tail else [message, '', 'What now?'])
+
+
+def _target_project(key: str) -> str:
+    """The project of a branch key (`base:<project>:<branch>`, `prep:...`)."""
+    return key.split(':', 2)[1]
+
+
+def _target_label(key: str, targets: Sequence[tuple[str, str]]) -> str:
+    """A branch as the maintainer reads it: `branch`, or `project: branch` when the
+    choices span several projects."""
+    branch = dict(targets)[key]
+    if len({_target_project(k) for k, _b in targets}) > 1:
+        return f'{_target_project(key)}: {branch}'
+    return branch

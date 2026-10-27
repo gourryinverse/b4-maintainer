@@ -105,6 +105,9 @@ class Series:
     source: str = ''
     # A conversation without patches: the first message stands in for a cover letter.
     discussion: bool = False
+    # Subject prefix words, lower case ("ndctl", "patch", "v2", "rfc"): a project tag
+    # here routes a series on a shared list (see Project.subject_tags).
+    prefixes: tuple[str, ...] = ()
 
     def list_candidates(self) -> tuple[str, ...]:
         """List IDs plus recipients in lore's name.domain list-ID form.

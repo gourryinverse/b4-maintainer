@@ -78,6 +78,8 @@ def project_toml(project: Project) -> str:
     if project.short != project.id[:4]:
         lines.append(f'short = {s(project.short)}')
     lines.append('lists = [' + ', '.join(s(lst) for lst in project.lists) + ']')
+    if project.subject_tags:
+        lines.append('subject_tags = [' + ', '.join(s(tag) for tag in project.subject_tags) + ']')
     if project.refs:
         lines.append('refs = [')
         for r in project.refs:

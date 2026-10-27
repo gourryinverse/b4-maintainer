@@ -77,7 +77,18 @@ def merge_config(shared: Mapping[str, Any], local: Mapping[str, Any]) -> dict[st
 REF_KEYS = frozenset({'label', 'name', 'authority', 'view', 'ends_review'})
 BASE_KEYS = frozenset({'branch', 'upstream'})
 PROJECT_KEYS = frozenset(
-    {'id', 'label', 'short', 'lists', 'refs', 'path', 'maintainers', 'get_maintainer', 'bases'}
+    {
+        'id',
+        'label',
+        'short',
+        'lists',
+        'refs',
+        'path',
+        'maintainers',
+        'get_maintainer',
+        'bases',
+        'subject_tags',
+    }
 )
 PROFILE_KEYS = frozenset({'id', 'label', 'project', 'lists', 'paths', 'enabled'})
 MODEL_KEYS = frozenset({'id', 'model', 'thinking', 'args', 'env', 'enabled'})
@@ -172,6 +183,9 @@ class Project:
     maintainers: str = 'MAINTAINERS'
     get_maintainer: Optional[tuple[str, ...]] = None
     bases: tuple[MaintainerBase, ...] = ()
+    # Subject prefix tags (e.g. "ndctl" for "[ndctl PATCH]"): a series carrying one is this
+    # project's whatever its lists; a project with tags takes only tagged series.
+    subject_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -248,6 +262,7 @@ class Workspace:
                 bases=tuple(
                     MaintainerBase(str(b['branch']), str(b['upstream'])) for b in p.get('bases', [])
                 ),
+                subject_tags=tuple(str(tag).lower() for tag in p.get('subject_tags', [])),
             )
             for p in config.get('projects', [])
         )
@@ -357,9 +372,14 @@ def _families(series: Iterable[Series]) -> dict[str, str]:
 
 
 def _route(series: Series, ws: Workspace) -> tuple[Optional[str], tuple[str, ...]]:
-    """Suggest a project from list membership; ambiguity needs confirmation."""
+    """Suggest a project: by a subject tag, else by list membership among the projects
+    without tags; ambiguity needs confirmation."""
+    words = set(series.prefixes)
+    tagged = tuple(p.id for p in ws.projects if words & set(p.subject_tags))
+    if len(tagged) == 1:
+        return tagged[0], ()
     lists = set(series.list_candidates())
-    matched = tuple(p.id for p in ws.projects if lists & set(p.lists))
+    matched = tuple(p.id for p in ws.projects if lists & set(p.lists) and not p.subject_tags)
     if len(matched) == 1:
         return matched[0], ()
     return None, matched

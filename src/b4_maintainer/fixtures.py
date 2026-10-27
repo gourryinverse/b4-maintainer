@@ -268,8 +268,10 @@ def write_series_mbox(
     append: bool = False,
     date: Optional[datetime.datetime] = None,
     cover_text: Optional[str] = None,
+    tag: str = '',
 ) -> SeriesMail:
-    """Write one synthetic thread in b4-parsable form and return its message IDs."""
+    """Write one synthetic thread in b4-parsable form and return its message IDs; *tag*
+    goes before PATCH in subjects (e.g. ndctl's `[ndctl PATCH]`)."""
     path = pathlib.Path(path)
     patches = list(patches or [PatchSpec('mm/example.c')])
     total = len(patches)
@@ -278,6 +280,7 @@ def write_series_mbox(
     omit = set(omit)
     result = SeriesMail(path)
     prefix = 'PATCH' if revision == 1 else f'PATCH v{revision}'
+    prefix = f'{tag} {prefix}' if tag else prefix
 
     def message(n: int, subj: str, body: str, sender: tuple[str, str], parent: Optional[str]):
         msg = email.message.EmailMessage()

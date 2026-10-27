@@ -346,3 +346,29 @@ def test_guidance_sources_can_point_at_other_checkouts():
     assert ws.guidance == (('review-prompts', '~/git/review-prompts'),) and ws.warnings == ()
     bad = Workspace.from_config({'guidance': [{'id': 'kernel-style', 'path': 'x', 'url': 'y'}]})
     assert bad.warnings == ('unknown key url in [[guidance]] kernel-style',)
+
+
+def test_a_subject_tag_routes_a_series_on_a_shared_list_to_its_project():
+    import dataclasses
+
+    config = {
+        'projects': [
+            {'id': 'linux', 'lists': ['linux-cxl@vger.kernel.org', 'nvdimm@lists.linux.dev']},
+            {
+                'id': 'ndctl',
+                'lists': ['linux-cxl@vger.kernel.org', 'nvdimm@lists.linux.dev'],
+                'subject_tags': ['ndctl'],
+            },
+        ]
+    }
+    ws = Workspace.from_config(config)
+    assert ws.warnings == () and ws.project('ndctl').subject_tags == ('ndctl',)
+    lists = ('nvdimm.lists.linux.dev', 'linux-cxl.vger.kernel.org')
+    kernel = make_series('cxl: fix the region mode', lists=lists)
+    tool = dataclasses.replace(
+        make_series('cxl/list: show the region mode', lists=lists), prefixes=('ndctl', 'patch')
+    )
+    items = {i.series.subject: i for i in build_items([kernel, tool], {}, ws)}
+    assert items['cxl: fix the region mode'].project == 'linux'
+    assert items['cxl/list: show the region mode'].project == 'ndctl'
+    assert items['cxl/list: show the region mode'].candidates == ()

@@ -77,8 +77,8 @@ Python 3.11 or newer.
   sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
 - `a` in the series list or a thread applies that series to a maintainer base or a b4 prep
-  branch: pick the branch (when there are several), then the patches (all ticked to
-  start). b4 applies them as `b4 am` would: authors kept, trailers given on the list
+  branch of any project (for a series routed to the wrong project, or none): pick the
+  project and branch (when there are several), then the patches (all ticked to start). b4 applies them as `b4 am` would: authors kept, trailers given on the list
   (and, online, on other postings of the same patches) and a Link added (`b4.linkmask`),
   you as committer, no sign-off added. The branch must not be checked out; it moves only
   if every patch applies. Your FETCH_HEAD is left as it was; b4 records the series for
@@ -102,6 +102,10 @@ Python 3.11 or newer.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
+- Series go to the project whose `lists` they were sent to. On lists projects share, a
+  project's `subject_tags` (e.g. `["ndctl", "daxctl"]` for `[ndctl PATCH]`) claim the
+  series whose subject prefix carries one; a project with tags takes only those. Only
+  `[[profiles]]` lists are fetched by `F5`.
 - A ref's `authority` is `mainline`, `acceptance`, or `preliminary` (highest first); an
   unknown one is reported, and a reload with it keeps the current view.
 - When b4 cannot apply the series for an F1 worktree session, you choose: hand it to the

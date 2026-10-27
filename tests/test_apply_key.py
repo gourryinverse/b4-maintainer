@@ -226,3 +226,33 @@ async def test_a_conflict_on_a_base_offers_to_hand_it_to_an_agent(demo_root):
         assert target == 'base:linux:me/base' and numbers == (1, 2, 3) and failed is conflict
         assert (series.series, series.source) == (item.identity, item.series.source)
         assert 'apply session a1' in app.status_text()
+
+
+async def test_a_asks_for_the_project_first_when_several_have_branches(demo_root):
+    targets = (
+        ('base:linux:me/base', 'me/base'),
+        ('prep:linux:b4/pa', 'b4/pa'),
+        ('base:ndctl:me/ndctl', 'me/ndctl'),
+    )
+    tips = {**TIPS, 'base:ndctl:me/ndctl': 'ntip'}
+    service = FakeBranches(ApplyChoices(PATCHES, targets, tips))
+    app = MaintainerApp(FixtureSource(demo_root).load, branches=service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        item = app.query_one('SeriesList').highlighted_item
+        await pilot.press('a')
+        await settle(pilot)
+        projects = app.screen
+        assert isinstance(projects, Pick) and 'project' in projects.title_text
+        assert [key for key, _label in projects.choices] == ['linux', 'ndctl']
+        assert 'this series' in projects.choices[0][1]
+        await pilot.press('down', 'enter')  # ndctl: one branch, no second question.
+        await settle(pilot)
+        dialog = app.screen
+        assert isinstance(dialog, ApplyDialog) and 'ndctl: me/ndctl' in dialog.heading()
+        await pilot.press('enter')
+        await settle(pilot)
+        assert service.applied == [
+            ('base:ndctl:me/ndctl', item.series.source, item.series.revision, [1, 2, 3], 'ntip')
+        ]
+        assert 'to ndctl: me/ndctl' in app.status_text()

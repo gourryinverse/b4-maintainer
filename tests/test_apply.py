@@ -189,8 +189,8 @@ def test_the_service_offers_the_projects_bases_and_prep_branches(posted, tmp_pat
     assert git('rev-parse', 'me/base', cwd=project) == base
     refused = service.apply(workspace, 'branch:demo:master', str(mbox), 2, [1], base)
     assert not refused.ok
-    none = service.apply_choices(workspace, 'nope', str(mbox), 2)
-    assert none.problem and not none.targets
+    unknown = service.apply_choices(workspace, 'nope', str(mbox), 2)
+    assert not unknown.problem and unknown.targets  # Any project's branches.
 
 
 def patch_ids(mbox):
@@ -400,3 +400,41 @@ def test_the_service_hands_a_conflict_to_an_apply_session_and_accepts_it(posted,
     assert accepted.ok, accepted.error
     assert git('rev-parse', 'me/base', cwd=project) == git('rev-parse', tree.branch, cwd=dest)
     assert isinstance(tree, Worktree)
+
+
+def test_any_projects_branches_are_offered_even_for_an_unrouted_series(posted, tmp_path):
+    from b4_maintainer.branches import BranchService
+    from b4_maintainer.workspace import Workspace
+
+    project, base, mbox, _first = posted
+    other = tmp_path / 'projects' / 'tools'
+    git('clone', '-q', str(project), str(other), cwd=tmp_path)
+    git('branch', 'me/tools', 'origin/master', cwd=other)
+    workspace = Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': 'demo',
+                    'path': 'projects/demo',
+                    'bases': [{'branch': 'me/base', 'upstream': 'master'}],
+                },
+                {
+                    'id': 'tools',
+                    'path': 'projects/tools',
+                    'bases': [{'branch': 'me/tools', 'upstream': 'origin/master'}],
+                },
+            ]
+        }
+    )
+    service = BranchService(tmp_path, lambda: [], lambda sid: tmp_path / sid)
+    mine = service.apply_choices(workspace, 'tools', str(mbox), 2)
+    assert [k for k, _ in mine.targets] == ['base:tools:me/tools', 'base:demo:me/base']
+    unrouted = service.apply_choices(workspace, '', str(mbox), 2)
+    assert not unrouted.problem and len(unrouted.patches) == 2
+    tip = mine.tips['base:tools:me/tools']
+    result = service.apply(workspace, 'base:tools:me/tools', str(mbox), 2, [1, 2], tip)
+    assert result.ok, result.error
+    assert git('log', '-1', '--format=%s', 'me/tools', cwd=other) == 'mm/bar: add bar'
+    # d finds it on the other project's base too.
+    found = service.drop_choices(workspace, 'demo', patch_ids(mbox))
+    assert found.targets == (('base:tools:me/tools', 'me/tools'),)

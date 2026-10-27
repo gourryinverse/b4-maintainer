@@ -579,36 +579,39 @@ class BranchService:
     def apply_choices(
         self, workspace: Workspace, project_id: str, source: str, revision: int
     ) -> 'ApplyChoices':
-        """What applying a posted series offers: its patches, and the project's bases and
-        prep branches with their tips."""
+        """What applying a posted series offers: its patches, and every project's bases and
+        prep branches with their tips, the series' own project (*project_id*) first (a
+        series may be routed to the wrong project, or to none)."""
         from .adapters.apply import series_patches  # b4: only when applying.
 
-        project = workspace.project(project_id)
-        if project is None:
-            return ApplyChoices(problem=f'no project {project_id or "(none)"}')
-        repo = self.root / project.path
-        if not (repo / '.git').exists():
-            return ApplyChoices(problem=f'project {project.id} has no checkout')
-        names = _git(repo, 'for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads/')
-        heads = dict(line.split(' ', 1) for line in names.splitlines() if ' ' in line)
+        projects = sorted(
+            (p for p in workspace.projects if (self.root / p.path / '.git').exists()),
+            key=lambda p: p.id != project_id,
+        )
+        if not projects:
+            return ApplyChoices(problem='no project has a checkout')
         targets: list[tuple[str, str]] = []
         tips: dict[str, str] = {}
-        for base in project.bases:
-            if base.branch in heads:
-                key = f'base:{project.id}:{base.branch}'
-                targets.append((key, base.branch))
-                tips[key] = heads[base.branch]
-        for name in sorted(heads):
-            if name.startswith('b4/') and not name.startswith('b4/review/'):
-                key = f'prep:{project.id}:{name}'
-                targets.append((key, name))
-                tips[key] = heads[name]
-        if not targets:
-            return ApplyChoices(
-                problem=f'{project.id} has no maintainer base or prep branch to apply to'
+        for project in projects:
+            repo = self.root / project.path
+            names = _git(
+                repo, 'for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads/'
             )
+            heads = dict(line.split(' ', 1) for line in names.splitlines() if ' ' in line)
+            for base in project.bases:
+                if base.branch in heads:
+                    key = f'base:{project.id}:{base.branch}'
+                    targets.append((key, base.branch))
+                    tips[key] = heads[base.branch]
+            for name in sorted(heads):
+                if name.startswith('b4/') and not name.startswith('b4/review/'):
+                    key = f'prep:{project.id}:{name}'
+                    targets.append((key, name))
+                    tips[key] = heads[name]
+        if not targets:
+            return ApplyChoices(problem='no project has a maintainer base or prep branch')
         try:
-            patches = tuple(series_patches(repo, source, revision))
+            patches = tuple(series_patches(self.root / projects[0].path, source, revision))
         except Exception as ex:  # b4 reports through exceptions; the reason is shown.
             return ApplyChoices(problem=f'b4 cannot read the series: {ex}')
         return ApplyChoices(patches, tuple(targets), tips)
@@ -642,26 +645,26 @@ class BranchService:
     def drop_choices(
         self, workspace: Workspace, project_id: str, patches: Sequence[tuple[str, str]]
     ) -> DropChoices:
-        """The project's bases that hold commits of a posted series (*patches*: (message-id,
-        subject)), with those commits and the bases' tips."""
-        project = workspace.project(project_id)
-        if project is None:
-            return DropChoices(problem=f'no project {project_id or "(none)"}')
-        repo = self.root / project.path
-        if not (repo / '.git').exists():
-            return DropChoices(problem=f'project {project.id} has no checkout')
+        """Every project's bases that hold commits of a posted series (*patches*:
+        (message-id, subject)), the series' own project first, with those commits and the
+        bases' tips."""
         targets: list[tuple[str, str]] = []
         commits: dict[str, tuple[BaseCommit, ...]] = {}
         tips: dict[str, str] = {}
-        for base in project.bases:
-            found = series_commits(repo, base, patches)
-            if found:
-                key = f'base:{project.id}:{base.branch}'
-                targets.append((key, base.branch))
-                commits[key] = tuple(found)
-                tips[key] = _git(repo, 'rev-parse', f'refs/heads/{base.branch}').strip()
+        projects = sorted(workspace.projects, key=lambda p: p.id != project_id)
+        for project in projects:
+            repo = self.root / project.path
+            if not (repo / '.git').exists():
+                continue
+            for base in project.bases:
+                found = series_commits(repo, base, patches)
+                if found:
+                    key = f'base:{project.id}:{base.branch}'
+                    targets.append((key, base.branch))
+                    commits[key] = tuple(found)
+                    tips[key] = _git(repo, 'rev-parse', f'refs/heads/{base.branch}').strip()
         if not targets:
-            return DropChoices(problem=f'not on any maintainer base of {project.id}')
+            return DropChoices(problem='not on any maintainer base')
         return DropChoices(tuple(targets), commits, tips)
 
     def drop(

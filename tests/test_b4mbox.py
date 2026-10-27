@@ -166,3 +166,18 @@ def test_series_without_fix_tags(tmp_path):
     )
     [series] = parse_mbox(mail.path)
     assert not series.cc_stable
+
+
+def test_a_project_tag_in_the_subject_prefix_is_kept(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'n.mbx',
+        subject='cxl/list: show the region mode',
+        revision=2,
+        patches=[PatchSpec('cxl/list.c'), PatchSpec('test/cxl-region.sh')],
+        tag='ndctl',
+        lists=['nvdimm.lists.linux.dev'],
+    )
+    [series] = parse_mbox(mail.path)
+    assert 'ndctl' in series.prefixes and series.subject == 'cxl/list: show the region mode'
+    untagged = write_series_mbox(tmp_path / 'k.mbx', subject='cxl: fix the region mode')
+    assert 'ndctl' not in parse_mbox(untagged.path)[0].prefixes

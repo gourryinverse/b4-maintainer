@@ -6,9 +6,9 @@ from typing import Any
 
 from ..model import Patch, Series, Tag, Trailers
 
-VERSION = 2  # 2: per-patch Fixes and stable tags.
+VERSION = 3  # 2: per-patch Fixes and stable tags; 3: subject prefixes.
 # Older summaries still read (missing fields empty) until a refresh reparses them.
-READABLE = frozenset({1, VERSION})
+READABLE = frozenset({1, 2, VERSION})
 
 
 def _tags(tags: frozenset[Tag]) -> list[list[str]]:
@@ -55,6 +55,7 @@ def series_to_dict(s: Series) -> dict[str, Any]:
         'preview_label': s.preview_label,
         'preview': s.preview,
         'source': s.source,
+        'prefixes': list(s.prefixes),
     }
 
 
@@ -90,4 +91,5 @@ def series_from_dict(d: dict[str, Any]) -> Series:
         preview_label=d['preview_label'],
         preview=d['preview'],
         source=d['source'],
+        prefixes=tuple(d.get('prefixes', ())),
     )
