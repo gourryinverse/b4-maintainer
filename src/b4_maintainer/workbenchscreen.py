@@ -49,6 +49,7 @@ from .workbench import (
     add_mail,
     add_series,
     move_item,
+    move_to_project,
     remove_item,
     reroll,
     rerolls,
@@ -116,6 +117,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('b', 'base', 'base'),
         Binding('a', 'add', 'add'),
         Binding('B', 'add_branch', 'add branch'),
+        Binding('m', 'move_project', 'to another project', show=False),
         Binding('shift+up', 'move(-1)', 'move up', key_display='⇧↑', show=False),
         Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓', show=False),
         Binding('v', 'reroll', 'newer revision'),
@@ -835,6 +837,7 @@ class WorkbenchScreen(Screen[None]):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
         pane, bench = self._pane(), self.bench()
         edits = ('rename', 'remove', 'base', 'add_branch', 'move', 'reroll', 'launch', 'add')
+        edits += ('move_project',)
         if action in edits and not self._editable():
             return False
         if action == 'rename':
@@ -855,7 +858,7 @@ class WorkbenchScreen(Screen[None]):
             return pane == 'bench-contents' and row is not None and row.kind in kinds
         if action in ('base', 'add_branch'):
             return bool(self._project())
-        if action == 'move':
+        if action in ('move', 'move_project'):
             return self._item() is not None
         if action == 'reroll':
             return self._newer() is not None
@@ -1044,16 +1047,46 @@ class WorkbenchScreen(Screen[None]):
         self._for_project('', add)
 
     def _for_project(self, hint: str, then: Callable[[str], None]) -> None:
-        """Run *then* with the project to add under: the selected row's, else *hint*,
-        else the workbench's only one, else the one picked."""
+        """Run *then* with the project to add under: the selected project row's, else the
+        one picked (*hint*, the thread's own, suggested first; then the workbench's
+        projects; then the rest)."""
+        if self._project():
+            then(self._project())
+            return
+        self.app.push_screen(
+            Pick('Under which project?', self._project_choices(hint)), lambda p: p and then(p)
+        )
+
+    def _project_choices(self, hint: str, besides: str = '') -> list[tuple[str, str]]:
         bench = self.bench()
         entries = [e.project for e in bench.entries] if bench is not None else []
-        project = self._project() or hint or (entries[0] if len(entries) == 1 else '')
-        if project:
-            then(project)
+        order = [hint] if hint else []
+        order += entries + [p.id for p in self.workspace.projects]
+        labels = {p.id: p.label for p in self.workspace.projects}
+        choices = []
+        for pid in dict.fromkeys(p for p in order if p and p != besides):
+            mark = ' (suggested)' if pid == hint else ''
+            choices.append((pid, f'{labels.get(pid, pid)}{mark}'))
+        return choices
+
+    def action_move_project(self) -> None:
+        """m: the selected item under another project (its tree, its base)."""
+        bench, item = self.bench(), self._item()
+        if bench is None or item is None:
             return
-        choices = [(p.id, p.label) for p in self.workspace.projects]
-        self.app.push_screen(Pick('Under which project?', choices), lambda p: p and then(p))
+
+        def moved(to: Optional[str]) -> None:
+            if not to:
+                return
+            found = self.workspace.project(to)
+            base = found.bases[0].branch if found and found.bases else ''
+            changed = move_to_project(bench, item.project, item.index, to, base)
+            entry = changed.entry(to)
+            keep = ('item', to, len(entry.items) - 1 if entry else -1)
+            self._save(changed, keep, f'Moved to {to}')
+
+        choices = self._project_choices('', besides=item.project)
+        self.app.push_screen(Pick('Move it under which project?', choices), moved)
 
     def action_add_branch(self) -> None:
         bench, project = self.bench(), self._project()

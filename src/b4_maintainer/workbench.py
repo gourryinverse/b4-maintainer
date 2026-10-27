@@ -295,6 +295,20 @@ def move_item(bench: Workbench, project: str, index: int, delta: int) -> Workben
     return _with_entry(bench, replace(entry, items=tuple(items)))
 
 
+def move_to_project(
+    bench: Workbench, project: str, index: int, to: str, base: str = ''
+) -> Workbench:
+    """Item *index* of *project* moved last under *to* (an entry made at *base* if it has
+    none); a project left empty goes."""
+    entry = _entry(bench, project)
+    if not 0 <= index < len(entry.items) or to == project:
+        return bench
+    item = entry.items[index]
+    bench = remove_item(bench, project, index)
+    target = _entry(bench, to, base)
+    return _with_entry(bench, replace(target, items=target.items + (item,)))
+
+
 def set_base(bench: Workbench, project: str, base: str) -> Workbench:
     entry = bench.entry(project)
     if entry is None:

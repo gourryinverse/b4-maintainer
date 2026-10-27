@@ -96,7 +96,8 @@ Python 3.11 or newer.
   series list or a thread adds the series (or a discussion, which sessions read but never
   apply) to one (or a new one); `a` on the Workbench tab adds a thread by lore link or
   Message-ID (fetched into the cache, kept there while a workbench names it) or a file
-  from disk (applied if b4 finds patches in it, else read); `F3` lists them with a
+  from disk (applied if b4 finds patches in it, else read), under the selected project or
+  the one picked (the thread's own suggested first); `m` moves an item to another project; `F3` lists them with a
   preview of what a launch prepares: `n` new, `r` rename, `x` remove (a workbench or
   project after a confirmation), `b` a project's base, `B` add a local branch (the
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,

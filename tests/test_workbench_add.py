@@ -108,15 +108,28 @@ async def test_a_adds_a_file_from_disk(demo_root, tmp_path):
         store.save(Workbench('w', 'W', (Entry('linux', '', (Item(branch='me/fix'),)),)))
         await pilot.press('f3')
         await settle(pilot)
-        await pilot.press('a')  # From the workbench list: its only project.
+        await pilot.press('a')  # From the workbench list: no project selected.
         await settle(pilot)
         await pilot.press('down', 'enter')  # A file.
         await settle(pilot)
         app.screen.query_one('Input').value = str(patch)
         await pilot.press('enter')
         await settle(pilot)
-        added = store.get('w').entries[0].items[-1]
+        assert isinstance(app.screen, Pick)  # Which project? The workbench's first.
+        assert [key for key, _label in app.screen.choices][:2] == ['linux', 'qemu']
+        await pilot.press('down', 'enter')  # qemu.
+        await settle(pilot)
+        added = store.get('w').entry('qemu').items[-1]
         assert added.file == str(patch)
+        screen = app.screen
+        screen.select_row('item', 'qemu', 0)
+        await pilot.press('m')  # Moved to linux after all.
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        await pilot.press('enter')
+        await settle(pilot)
+        assert store.get('w').entry('qemu') is None
+        assert store.get('w').entry('linux').items[-1].file == str(patch)
         await pilot.press('a')
         await settle(pilot)
         await pilot.press('down', 'enter')

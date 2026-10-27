@@ -424,3 +424,13 @@ def test_discussions_are_read_files_with_patches_applied_and_others_read(tmp_pat
     gone = add_file(Workbench('g', 'G'), 'linux', str(tmp_path / 'nope.patch'))
     _plans, problems, _tree = service.plans(workspace, gone, {})
     assert problems == [f'nope.patch (file): {tmp_path / "nope.patch"} does not exist']
+
+
+def test_an_item_moves_to_another_project():
+    from b4_maintainer.workbench import move_to_project
+
+    bench = move_to_project(BENCH, 'linux', 1, 'ndctl')
+    assert bench.entries[0].items == (CXL,) and bench.entries[1].items == (DAX, FIXES)
+    alone = move_to_project(BENCH, 'ndctl', 0, 'qemu', base='master')
+    assert [e.project for e in alone.entries] == ['linux', 'qemu']  # ndctl emptied, gone.
+    assert alone.entries[1] == Entry('qemu', 'master', (DAX,))
