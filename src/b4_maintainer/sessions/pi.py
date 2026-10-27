@@ -16,7 +16,7 @@ from typing import Mapping, Optional, Sequence
 
 from .policy import ContextItem
 from .profiles import Request
-from .records import SessionRecord, session_label
+from .records import SessionRecord, session_home, session_label, session_trees
 from .store import EVENTS, SessionStore
 from .trees import AGENT_MBOX
 
@@ -100,8 +100,9 @@ def pi_command(
     if first:
         argv += ['--', spec.request.prompt]
     work = directory / WORK
-    worktree = record.worktree.path if record.worktree else ''
-    readable = [str(work), worktree, site.checkouts.get(record.project, '')]
+    worktree = session_home(record)  # A workbench session's folder holds all its trees.
+    projects = dict.fromkeys([record.project, *(p for p, _tree in session_trees(record))])
+    readable = [str(work), worktree, *(site.checkouts.get(p, '') for p in projects)]
     readable += [str(s) for s in spec.skills] + [str(r) for r in spec.readable]
     env = {
         'B4M_SESSION': record.id,
@@ -149,6 +150,28 @@ APPLY_TREE_TEXT = (
     'agent identity as committer; never add Signed-off-by or review trailers'
 )
 
+TREES_TEXT = (
+    'Your trees sit side by side in {home}, one per project, each on branch {branch}; you '
+    'start in that folder. Edit, build, and commit in them; commits carry the agent '
+    'identity; never add Signed-off-by or review trailers'
+)
+
+
+def _trees_text(record: SessionRecord) -> str:
+    """What each tree of a workbench session holds."""
+    branch = record.trees[0].worktree.branch if record.trees else ''
+    lines = [TREES_TEXT.format(home=record.home, branch=branch) + ':']
+    for t in record.trees:
+        held = '; '.join(t.applied) or 'nothing applied'
+        line = f'- {t.project}: {t.worktree.path} (base {t.worktree.base[:12]}; {held})'
+        if t.worktree.agent_applies:
+            line += (
+                f'. b4 could not apply its series: apply {t.worktree.path}/{AGENT_MBOX} with '
+                'git am -3 first, resolving each conflict, as for a single tree'
+            )
+        lines.append(line)
+    return '\n'.join(lines)
+
 
 def system_prompt(
     record: SessionRecord,
@@ -171,6 +194,12 @@ def system_prompt(
     ]
     tree = record.worktree
     writable = tree is not None and record.permissions == 'execute'
+    if record.trees:
+        if sandboxed:
+            trees = ' and the trees' if record.permissions == 'execute' else ''
+            facts.append(f'{SANDBOXED_TEXT}{trees}.')
+        facts.append(_trees_text(record))
+        return '\n\n'.join(p for p in (request.system_prompt, '\n'.join(facts)) if p) + '\n'
     if sandboxed:
         facts.append(f'{SANDBOXED_TEXT}{" and the worktree" if writable else ""}.')
     if tree is not None and writable and record.scope == 'rebase':
@@ -208,9 +237,11 @@ def prepare_session(
     source: Optional[str],
     sandboxed: bool = False,
     items: Optional[Sequence[ContextItem]] = None,
+    threads: Sequence[tuple[str, str, str]] = (),
 ) -> None:
     """system.md, and work/ with context/ (the task and the prompt package's *items*;
-    None: the thread mbox from *source*) and out/, for a new session."""
+    None: the thread mbox from *source*) and out/, for a new session. *threads*: (file
+    name, mail source, what it is) of further threads, e.g. each series of a workbench."""
     directory = store.directory(record.id)
     work = directory / WORK
     context = work / 'context'
@@ -227,6 +258,9 @@ def prepare_session(
         elif item.text:
             (context / f'{item.id}.md').write_text(item.text)
             files.append((f'{item.id}.md', item.label))
+    for name, thread, what in threads:
+        if write_thread(pathlib.Path(thread), context / name):
+            files.append((name, what))
     prompt = system_prompt(record, request, work, sandboxed, files)
     (directory / 'system.md').write_text(prompt)
 

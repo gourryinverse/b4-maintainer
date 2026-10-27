@@ -45,10 +45,19 @@ class Worktree:
 
 
 @dataclass(frozen=True)
+class ProjectTree:
+    """One project's tree in a workbench session."""
+
+    project: str
+    worktree: Worktree
+    applied: tuple[str, ...] = ()  # What went on its base, as shown (series vN, branches).
+
+
+@dataclass(frozen=True)
 class SessionRecord:
     id: str
     created: str
-    scope: str  # series or workspace
+    scope: str  # series, workspace, rebase, apply, or workbench
     project: str
     series: str  # Series identity; empty for workspace sessions.
     revision: int
@@ -71,6 +80,11 @@ class SessionRecord:
     context: tuple[str, ...] = ()  # Public context items given (ids).
     skills: tuple[str, ...] = ()
     parent: str = ''  # The session this one was derived from.
+    # A workbench session: its workbench, a tree per project (worktree stays None), and
+    # the folder they sit in, where the agent starts.
+    workbench: str = ''
+    trees: tuple[ProjectTree, ...] = ()
+    home: str = ''
 
     def replace(self, **changes: Any) -> 'SessionRecord':
         return dataclasses.replace(self, **changes)
@@ -80,6 +94,7 @@ class SessionRecord:
         data['command'] = list(self.command)
         data['context'] = list(self.context)
         data['skills'] = list(self.skills)
+        data['trees'] = [dict(t, applied=list(t['applied'])) for t in data['trees']]
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f'.{path.name}.tmp')
         tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + '\n')
@@ -94,6 +109,10 @@ class SessionRecord:
         data['skills'] = tuple(data.get('skills', ()))
         names = {f.name for f in dataclasses.fields(cls)}
         known = {k: v for k, v in data.items() if k in names}
+        known['trees'] = tuple(
+            ProjectTree(t['project'], Worktree(**t['worktree']), tuple(t.get('applied', ())))
+            for t in data.get('trees', ())
+        )
         return cls(**known, worktree=Worktree(**worktree) if worktree else None)
 
 
@@ -118,7 +137,9 @@ class Pinned(Protocol):
 
 def session_label(pinned: Pinned) -> str:
     """What a session is pinned to: `project: subject vN`, `project: what it does` (a
-    rebase or an apply session), or `workspace`."""
+    rebase or an apply session), `workbench: label`, or `workspace`."""
+    if pinned.scope == 'workbench':
+        return f'workbench: {pinned.subject}'
     if pinned.scope in ('rebase', 'apply'):
         return f'{pinned.project}: {pinned.subject}'
     if pinned.scope == 'workspace' or not pinned.series:
@@ -232,3 +253,17 @@ def derive_state(record: SessionRecord, events: Iterable[Event], window_alive: b
 def most_urgent(states: Iterable[str]) -> Optional[str]:
     present = set(states)
     return next((s for s in STATES if s in present and s != 'ended'), None)
+
+
+def session_trees(record: SessionRecord) -> tuple[tuple[str, Worktree], ...]:
+    """(project, tree) of each of the session's trees: a workbench session's, or the one."""
+    if record.trees:
+        return tuple((t.project, t.worktree) for t in record.trees)
+    return ((record.project, record.worktree),) if record.worktree is not None else ()
+
+
+def session_home(record: SessionRecord) -> str:
+    """Where the agent works: the tree, or a workbench session's folder of trees."""
+    if record.worktree is not None:
+        return record.worktree.path
+    return record.home

@@ -192,6 +192,9 @@ class FakeWorktrees:
         self.also = []  # Further series per prepared tree.
         self.unapplied = []  # (session id, source, base): the agent applies the series.
         self.with_mbox = []  # (session id, mbox bytes, base): an apply session's tree.
+        self.entries = []  # (session id, TreePlan): a workbench session's trees.
+        self.fail_entry = None  # (project, (message, output, base)) to fail that tree with.
+        self.removed_homes = []
 
     def list(self, records):
         return list(self.infos)
@@ -215,6 +218,22 @@ class FakeWorktrees:
         self.rebases.append((record.id, base))
         path = f'/w/var/worktrees/{record.id}'
         return Worktree(path, f'b4m/session/{record.id}', 'fork', 'tip')
+
+    def prepare_entry(self, record, plan):
+        from b4_maintainer.sessions.hub import TreeError
+        from b4_maintainer.sessions.records import ProjectTree, Worktree
+
+        if self.fail_entry is not None and self.fail_entry[0] == plan.project:
+            raise TreeError(*self.fail_entry[1])
+        self.entries.append((record.id, plan))
+        path = f'/w/var/worktrees/{record.id}/{plan.project}'
+        applied = tuple(f'{s} v{r}' for _src, r, s in plan.series)
+        return ProjectTree(
+            plan.project, Worktree(path, f'b4m/session/{record.id}', 'b', 'a'), applied
+        )
+
+    def remove_home(self, record):
+        self.removed_homes.append(record.id)
 
     def prepare_unapplied(self, record, source, base):
         from b4_maintainer.sessions.records import Worktree

@@ -28,7 +28,7 @@ from .pi import LaunchSpec, prepare_session
 from .policy import ContextItem, launch_check
 from .profiles import BUILTIN_DIR, Profile, load_profiles
 from .rebase import rebase_record, rebase_request
-from .records import SessionRecord, Worktree
+from .records import ProjectTree, SessionRecord, Worktree, session_trees
 from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
@@ -93,6 +93,16 @@ class SessionRunner(Protocol):
 
 
 @dataclass(frozen=True)
+class TreePlan:
+    """One project's tree in a workbench session: its base (empty: b4 chooses for the first
+    series), then posted series (source, revision, subject) applied in order."""
+
+    project: str
+    base: str = ''
+    series: tuple[tuple[str, int, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class WorktreeInfo:
     path: str
     branch: str
@@ -126,6 +136,14 @@ class Worktrees(Protocol):
 
     def prepare_with_mbox(self, record: SessionRecord, ambytes: bytes, base: str) -> Worktree:
         """A tree at *base* with *ambytes* (an am-ready mbox) left for the agent."""
+        ...
+
+    def prepare_entry(self, record: SessionRecord, plan: TreePlan) -> ProjectTree:
+        """One project's tree of a workbench session, in the session's folder."""
+        ...
+
+    def remove_home(self, record: SessionRecord) -> None:
+        """A workbench session's folder and every tree in it (a failed preparation)."""
         ...
 
     def prepare_rebase(self, record: SessionRecord, base: MaintainerBase) -> Worktree:
@@ -268,6 +286,44 @@ class RecordWorktrees:
             (name, self.agent[1]),
         )
 
+    def prepare_entry(self, record: SessionRecord, plan: TreePlan) -> ProjectTree:
+        from ..adapters.sessiontree import prepare_start_tree, prepare_tree
+
+        checkout, directory = self.checkouts.get(plan.project), self.directory
+        if not checkout or directory is None:
+            raise TreeError(self.reason(plan.project))
+        home = directory / record.id
+        home.mkdir(parents=True, exist_ok=True)
+        name = self.agent[0].format(model=record.model or record.preset)
+        identity, branch = (name, self.agent[1]), f'b4m/session/{record.id}'
+        if plan.series:
+            (source, revision, _subject), *rest = plan.series
+            tree = prepare_tree(
+                pathlib.Path(checkout),
+                home / plan.project,
+                branch,
+                source,
+                revision,
+                base=plan.base or None,
+                identity=identity,
+                also=[(s, r) for s, r, _subject in rest],
+            )
+        else:
+            tree = prepare_start_tree(
+                pathlib.Path(checkout), home / plan.project, branch, plan.base or 'HEAD', identity
+            )
+        return ProjectTree(plan.project, tree, tuple(f'{s} v{r}' for _src, r, s in plan.series))
+
+    def remove_home(self, record: SessionRecord) -> None:
+        if self.directory is None:
+            return
+        home = self.directory / record.id
+        if home.is_dir() and not home.is_symlink():
+            for tree in sorted(home.iterdir()):
+                if tree.is_dir():
+                    remove_tree(tree, home)
+            home.rmdir()
+
     def prepare_rebase(self, record: SessionRecord, base: MaintainerBase) -> Worktree:
         from ..adapters.bases import prepare_rebase_tree
 
@@ -291,12 +347,14 @@ class RecordWorktrees:
         infos = []
         named = set()
         for record in records:
-            wt = record.worktree
-            if wt is None or not os.path.isdir(wt.path):
-                continue
-            named.add(os.path.realpath(wt.path))
-            size, state = self._measure(wt.path, series_tip(pathlib.Path(wt.path), wt), wt)
-            infos.append(WorktreeInfo(wt.path, wt.branch, record.id, size, state))
+            if record.home:
+                named.add(os.path.realpath(record.home))  # Its trees are listed one by one.
+            for _project, wt in session_trees(record):
+                if not os.path.isdir(wt.path):
+                    continue
+                named.add(os.path.realpath(wt.path))
+                size, state = self._measure(wt.path, series_tip(pathlib.Path(wt.path), wt), wt)
+                infos.append(WorktreeInfo(wt.path, wt.branch, record.id, size, state))
         if self.directory is not None and self.directory.is_dir():
             for entry in sorted(self.directory.iterdir()):
                 if not entry.is_dir() or os.path.realpath(entry) in named:
@@ -333,9 +391,18 @@ class RecordWorktrees:
         return inspect_tree(pathlib.Path(path), tip, tree)
 
     def remove(self, path: str) -> None:
+        """A tree directly under the directory, or in a workbench session's folder there
+        (the folder goes with its last tree)."""
         if self.directory is None:
             raise OSError(f'{path} is not a session tree')
-        remove_tree(pathlib.Path(path), self.directory)
+        where, directory = pathlib.Path(path).resolve(), self.directory.resolve()
+        home = where.parent
+        if home != directory and home.parent == directory:
+            remove_tree(where, home)
+            if not any(home.iterdir()):
+                home.rmdir()
+        else:
+            remove_tree(where, self.directory)
         self._sizes.pop(path, None)
 
 
@@ -536,20 +603,26 @@ class SessionHub:
         spec: LaunchSpec,
         tree: Optional[Callable[[SessionRecord], Worktree]],
         package: Callable[[SessionRecord], tuple[Optional[str], Sequence[ContextItem]]],
+        trees: Optional[Callable[[SessionRecord], SessionRecord]] = None,
+        threads: Sequence[tuple[str, str, str]] = (),
     ) -> SessionRecord:
-        """Record the session (preparing, while *tree* prepares its worktree), write its
-        package, start it; a failure leaves it marked failed."""
-        if tree is not None:
+        """Record the session (preparing, while *tree* prepares its worktree, or *trees* a
+        workbench session's), write its package (*threads*: further series threads),
+        start it; a failure leaves it marked failed."""
+        prepare = trees or ((lambda r: r.replace(worktree=tree(r))) if tree is not None else None)
+        if prepare is not None:
             self._preparing.add(record.id)
             record = record.replace(state='preparing')
         self.store.create(record)
         try:
-            if tree is not None:
-                record = record.replace(worktree=tree(record), state='')
+            if prepare is not None:
+                record = prepare(record).replace(state='')
                 self.store.save(record)
                 self._preparing.discard(record.id)
             source, items = package(record)
-            prepare_session(self.store, record, spec.request, source, spec.sandboxed, items)
+            prepare_session(
+                self.store, record, spec.request, source, spec.sandboxed, items, threads
+            )
             self.runner.launch(record, spec)
         except TreeError as exc:
             self._preparing.discard(record.id)
@@ -602,6 +675,64 @@ class SessionHub:
             lambda r: self.worktrees.prepare_rebase(r, base),
             lambda r: (None, ()),
         )
+
+    def launch_workbench(
+        self,
+        bench: str,
+        label: str,
+        plans: Sequence[TreePlan],
+        profile: Profile,
+        choice: LaunchChoice,
+        situation: Situation,
+        items: Sequence[ContextItem] = (),
+        now: Optional[datetime.datetime] = None,
+    ) -> SessionRecord:
+        """A session over workbench *bench*'s trees, one per project (*plans*), side by side
+        in one folder; it counts once against the limits. A tree that cannot be prepared
+        leaves none of them."""
+        choice = dataclasses.replace(choice, mode='worktree')
+        planned = plan(profile, choice, situation, items)
+        if not planned.ok:
+            raise SessionError('; '.join(planned.blockers))
+        if not plans:
+            raise SessionError(f'workbench {label} has nothing to prepare')
+        assert planned.request is not None and planned.model is not None
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        target = Target('workbench', '', f'workbench:{bench}', 0, label)
+        record = new_record(target, profile, choice, planned, now).replace(workbench=bench)
+        installed = {s.id: s for s in situation.skills}
+        chosen = [installed[s] for s in planned.skills if s in installed]
+        spec = LaunchSpec(
+            planned.request,
+            tuple(s.path for s in chosen if s.path is not None),
+            planned.model.args,
+            planned.model.env,
+            bool(self._sandbox()),
+            tuple(s.root for s in chosen if s.root is not None),
+        )
+        guidance = provenance(chosen, planned.skills)
+        if guidance:
+            record = record.replace(provenance={**record.provenance, **guidance})
+
+        def trees(r: SessionRecord) -> SessionRecord:
+            made: list[ProjectTree] = []
+            for entry in plans:
+                try:
+                    made.append(self.worktrees.prepare_entry(r, entry))
+                except TreeError as exc:
+                    self.worktrees.remove_home(r)
+                    raise TreeError(f'{entry.project}: {exc}', exc.output, exc.base) from exc
+            return r.replace(
+                trees=tuple(made), home=str(pathlib.Path(made[0].worktree.path).parent)
+            )
+
+        threads = [
+            (f'{entry.project}-{n}.mbx', source, f'{subject} v{revision} ({entry.project})')
+            for entry in plans
+            for n, (source, revision, subject) in enumerate(entry.series, 1)
+        ]
+        package = [i for i in planned.included if i.id != 'mbox']  # One thread per series.
+        return self._start(record, spec, None, lambda r: (None, package), trees, threads)
 
     def launch_apply(
         self,
@@ -664,9 +795,9 @@ class SessionHub:
         self.runner.switch(record)
 
     def _resume(self, record: SessionRecord) -> None:
-        tree = record.worktree
-        if tree is not None and not os.path.isdir(tree.path):
-            raise SessionError(f'Session {record.id} cannot resume: its worktree was removed')
+        for _project, tree in session_trees(record):
+            if not os.path.isdir(tree.path):
+                raise SessionError(f'Session {record.id} cannot resume: its worktree was removed')
         self.runner.resume(record)
         self.store.set_state(record.id, '')
 
@@ -733,7 +864,7 @@ class SessionHub:
         """What removing each tree would lose (uncommitted files, commits only there)."""
         owners = self._tree_owners(paths)
         return {
-            path: self.worktrees.inspect(path, r.worktree if r else None)
+            path: self.worktrees.inspect(path, _tree_at(r, path) if r else None)
             for path, r in owners.items()
         }
 
@@ -751,3 +882,8 @@ class SessionHub:
 
     def artifacts(self, sid: str) -> list[str]:
         return self.store.artifacts(sid)
+
+
+def _tree_at(record: SessionRecord, path: str) -> Optional[Worktree]:
+    """The session's tree at *path* (one of a workbench session's, or its one)."""
+    return next((tree for _project, tree in session_trees(record) if tree.path == path), None)
