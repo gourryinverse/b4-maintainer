@@ -106,7 +106,9 @@ Python 3.11 or newer.
   work onto the tree of a series' next revision. `D` on a session tree derives a new
   session from its output: its tree starts at the series base, the parent's tree, or a
   maintainer base (no series applied), its prompt package carries the parent's artifact,
-  and the launch dialog follows.
+  and the launch dialog follows. In F1's Advanced section, "Also apply" picks further series
+  from the view to apply after this one in a worktree session (a combined tree for testing
+  them together; each through b4, any failure leaves nothing).
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

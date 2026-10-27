@@ -324,3 +324,13 @@ def test_a_derived_session_starts_its_tree_where_asked_and_names_its_parent(stor
     assert trees.starts == [(record.id, 'abc123', 's0')] and trees.prepared == []
     assert record.parent == 's0' and store.record(record.id).parent == 's0'
     assert record.worktree is not None and record.worktree.base == 'abc123'
+
+
+def test_a_combined_launch_applies_further_series_and_records_them(store, profile):
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees)
+    also = (('/mail/bar', 2, 'mm: bar'), ('/mail/baz', 1, 'mm: baz'))
+    combined = choice(mode='worktree', also=also)
+    record = hub.launch(TARGET, profile, combined, situation(worktree_reason=''), ITEMS)
+    assert trees.also == [also]
+    assert record.choices['also'] == ['mm: bar v2', 'mm: baz v1']

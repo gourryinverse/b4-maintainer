@@ -184,3 +184,18 @@ def test_sessions_are_told_where_the_maintainers_notes_arrive(tmp_path):
     prepare_session(store, make_record('s1'), REQUEST, source='')
     system = (store.directory('s1') / 'system.md').read_text()
     assert str(store.directory('s1') / 'work' / 'context' / 'inbox.md') in system
+
+
+def test_a_combined_trees_session_is_told_which_series_it_holds(tmp_path):
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    tree = Worktree('/w/var/worktrees/s1', 'b4m/session/s1', 'b' * 40, 'a' * 40)
+    record = make_record(
+        's1',
+        mode='worktree',
+        permissions='execute',
+        worktree=tree,
+        choices={'goal': 'review', 'also': ['mm: bar v2', 'mm: baz v1']},
+    )
+    prepare_session(store, record, REQUEST, source='', sandboxed=True)
+    system = (store.directory('s1') / 'system.md').read_text()
+    assert 'also has, applied after this series in order: mm: bar v2; mm: baz v1' in system

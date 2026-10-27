@@ -21,7 +21,7 @@ import os
 import pathlib
 import shutil
 import subprocess
-from typing import Generator, Optional
+from typing import Generator, Optional, Sequence
 
 import b4
 import b4.review
@@ -146,6 +146,30 @@ def _apply(
     return sha, _git(dest, 'rev-parse', 'FETCH_HEAD')
 
 
+def _apply_more(
+    project: pathlib.Path, dest: pathlib.Path, source: str, revision: int, tip: str
+) -> str:
+    """A further series applied on top of *tip* (a commit in the clone): the new tip."""
+    with b4_repo(project), _captured() as log:
+        subject = f'v{revision}'
+        try:
+            lser, ambytes = _am_bytes(source, revision)
+            subject = f'{lser.subject} v{revision}'
+            b4.git_fetch_am_into_repo(
+                str(dest), ambytes, at_base=tip, am_flags=['-3'], resolve=True
+            )
+        except b4.AmConflictError as ex:
+            raise PrepareError(
+                f'{subject} does not apply on top of the series before it',
+                ex.output or log.getvalue(),
+            ) from ex
+        except PrepareError:
+            raise
+        except Exception as ex:
+            raise PrepareError(f'b4 could not apply {subject}: {ex}', log.getvalue()) from ex
+    return _git(dest, 'rev-parse', 'FETCH_HEAD')
+
+
 def _agent(dest: pathlib.Path, identity: tuple[str, str]) -> None:
     _git(dest, 'config', 'user.name', identity[0])
     _git(dest, 'config', 'user.email', identity[1])
@@ -172,8 +196,11 @@ def prepare_tree(
     change_id: str = '',
     base: Optional[str] = None,
     identity: tuple[str, str] = ('b4-maintainer agent', 'agent@b4-maintainer.invalid'),
+    also: Sequence[tuple[str, int]] = (),
 ) -> Worktree:
-    """The session's tree at *dest*, on *branch*; on failure nothing is left behind."""
+    """The session's tree at *dest*, on *branch*; *also*, further series (source,
+    revision) applied in order on top (a combined tree, all of it counted as series).
+    On failure nothing is left behind."""
     if os.path.lexists(dest):
         raise PrepareError(f'{dest} exists')
     try:
@@ -183,6 +210,8 @@ def prepare_tree(
             start, applied = reviewed
         else:
             start, applied = _apply(project, dest, source, revision, base)
+        for more, more_revision in also:
+            applied = _apply_more(project, dest, more, more_revision, applied)
         _git(dest, 'checkout', '--quiet', '-b', branch, applied)
         for other in _git(dest, 'branch', '--format=%(refname:short)').splitlines():
             if other != branch:  # The clone's default branch: the project's, not the session's.

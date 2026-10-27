@@ -51,6 +51,8 @@ class LaunchChoice:
     start: str = ''
     start_from: str = ''
     parent: str = ''
+    # A combined tree: further series (source, revision, subject) applied after this one.
+    also: tuple[tuple[str, int, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -161,7 +163,13 @@ def new_record(
         profile_id=profile.id,
         profile_version=profile.version,
         profile_hash=profile.hash,
-        choices=dict(choice.choices) | {f'{k}:text': v for k, v in choice.text.items() if v},
+        choices=dict(choice.choices)
+        | {f'{k}:text': v for k, v in choice.text.items() if v}
+        | (
+            {'also': [f'{subject} v{rev}' for _src, rev, subject in choice.also]}
+            if choice.also
+            else {}
+        ),
         mode=planned.mode,
         harness='pi',
         preset=planned.model.id,

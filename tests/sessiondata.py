@@ -189,6 +189,7 @@ class FakeWorktrees:
         self.during = None  # Called with the record while preparing.
         self.rebases = []  # (session id, base)
         self.starts = []  # (session id, start, the session whose tree holds it)
+        self.also = []  # Further series per prepared tree.
 
     def list(self, records):
         return list(self.infos)
@@ -225,7 +226,7 @@ class FakeWorktrees:
         self.removed.append(path)
         self.infos = [w for w in self.infos if w.path != path]
 
-    def prepare(self, record, source, base):
+    def prepare(self, record, source, base, also=()):
         from b4_maintainer.sessions.hub import TreeError
         from b4_maintainer.sessions.records import Worktree
 
@@ -234,4 +235,6 @@ class FakeWorktrees:
         if self.fail is not None:
             raise TreeError(*self.fail)
         self.prepared.append((record.id, source, base))
+        if also:
+            self.also.append(tuple(also))
         return Worktree(f'/w/var/worktrees/{record.id}', f'b4m/session/{record.id}', 'b', 'a')

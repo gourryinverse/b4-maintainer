@@ -361,3 +361,62 @@ def test_a_derived_tree_starts_where_asked_without_the_series(upstream, tmp_path
     with pytest.raises(PrepareError):
         prepare_start_tree(project, tmp_path / 'c', 'b4m/session/d3', 'nope', AGENT)
     assert not (tmp_path / 'c').exists()
+
+
+def second_series(project, base, tmp_path, path, text, subject, name='other'):
+    """Another posted series against the same base, as its own mbox."""
+    git('checkout', '-q', '-b', name, base, cwd=project)
+    write(project, path, text)
+    commit(project, f'{subject}\n\nA second series.')
+    out = tmp_path / f'{name}-patches'
+    git(
+        'format-patch',
+        '-q',
+        '-v1',
+        '--thread',
+        f'--base={base}',
+        '-o',
+        str(out),
+        f'{base}..{name}',
+        cwd=project,
+    )
+    mbox = tmp_path / f'{name}.mbx'
+    mbox.write_text(''.join(p.read_text() for p in sorted(out.glob('*.patch'))))
+    git('checkout', '-q', 'master', cwd=project)
+    git('branch', '-q', '-D', name, cwd=project)
+    return mbox
+
+
+def test_a_combined_tree_applies_further_series_in_order(upstream, tmp_path):
+    project, base, mbox = upstream
+    other = second_series(project, base, tmp_path, 'mm/baz.c', 'baz\n', 'mm/baz: add baz')
+    before = snapshot(project)
+    dest = tmp_path / 'wt'
+    tree = prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT, also=[(str(other), 1)])
+    assert subjects(dest, f'{base}..HEAD') == [
+        'mm/foo: name line three',
+        'mm/bar: add bar',
+        'mm/baz: add baz',
+    ]
+    assert tree.applied == git('rev-parse', 'HEAD', cwd=dest)  # All of it counts as series.
+    assert (dest / 'mm/baz.c').read_text() == 'baz\n'
+    assert git('symbolic-ref', '--short', 'HEAD', cwd=dest) == BRANCH
+    assert snapshot(project) == before
+
+
+def test_a_further_series_that_does_not_apply_fails_the_whole_tree(upstream, tmp_path):
+    project, base, mbox = upstream
+    clash = second_series(
+        project,
+        base,
+        tmp_path,
+        'mm/foo.c',
+        (project / 'mm/foo.c').read_text().replace('line 3\n', 'tres\n'),
+        'mm/foo: clash with line three',
+        name='clash',
+    )
+    dest = tmp_path / 'wt'
+    with pytest.raises(PrepareError) as raised:
+        prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT, also=[(str(clash), 1)])
+    assert 'clash' in str(raised.value) or 'clash' in raised.value.output
+    assert not dest.exists()

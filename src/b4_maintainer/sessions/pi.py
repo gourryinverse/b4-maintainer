@@ -174,6 +174,9 @@ def system_prompt(
         )
     elif tree is not None:
         facts.append(f'Worktree with the series applied: {tree.path}.')
+    also = record.choices.get('also') or []
+    if tree is not None and also:
+        facts.append(f'The tree also has, applied after this series in order: {"; ".join(also)}.')
     return '\n\n'.join(p for p in (request.system_prompt, '\n'.join(facts)) if p) + '\n'
 
 

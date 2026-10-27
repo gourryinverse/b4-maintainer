@@ -102,8 +102,15 @@ class Worktrees(Protocol):
         """Why no tree can be prepared for the project's series; empty if one can."""
         ...
 
-    def prepare(self, record: SessionRecord, source: str, base: str) -> Worktree:
-        """The series applied in the session's own tree (*base* empty: b4 detects it)."""
+    def prepare(
+        self,
+        record: SessionRecord,
+        source: str,
+        base: str,
+        also: Sequence[tuple[str, int, str]] = (),
+    ) -> Worktree:
+        """The series applied in the session's own tree (*base* empty: b4 detects it),
+        then any further series (*also*: source, revision, subject) in order."""
         ...
 
     def prepare_rebase(self, record: SessionRecord, base: MaintainerBase) -> Worktree:
@@ -175,7 +182,13 @@ class RecordWorktrees:
             return f'project {project or "(none)"} has no checkout'
         return ''
 
-    def prepare(self, record: SessionRecord, source: str, base: str) -> Worktree:
+    def prepare(
+        self,
+        record: SessionRecord,
+        source: str,
+        base: str,
+        also: Sequence[tuple[str, int, str]] = (),
+    ) -> Worktree:
         from ..adapters.sessiontree import prepare_tree  # b4: only when preparing.
 
         checkout, directory = self.checkouts.get(record.project), self.directory
@@ -192,6 +205,7 @@ class RecordWorktrees:
             change_id=change_id if change_id != record.series else '',
             base=base or None,
             identity=(name, self.agent[1]),
+            also=[(src, rev) for src, rev, _subject in also],
         )
 
     def prepare_start(self, record: SessionRecord, start: str, start_from: str) -> Worktree:
@@ -449,6 +463,8 @@ class SessionHub:
         def tree(r: SessionRecord) -> Worktree:
             if choice.start:
                 return self.worktrees.prepare_start(r, choice.start, choice.start_from)
+            if choice.also:
+                return self.worktrees.prepare(r, target.source, choice.base, choice.also)
             return self.worktrees.prepare(r, target.source, choice.base)
 
         return self._start(
