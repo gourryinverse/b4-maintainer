@@ -2761,6 +2761,7 @@ class MaintainerApp(App[None]):
                 profile_problems + skill_problems + warned,
                 trees=trees,
                 mailboxes=mailboxes,
+                tree_projects=[p.project for p in plans],
             )
             self.call_from_thread(
                 self.push_screen,
@@ -2781,6 +2782,9 @@ class MaintainerApp(App[None]):
         if result is None or hub is None or snapshot is None:
             return
         workspace = snapshot.workspace
+        uses = dict(result.choice.trees)
+        if uses:  # The dialog's choice of tree per project.
+            plans = tuple(dataclasses.replace(p, use=uses.get(p.project, 'none')) for p in plans)
 
         def launch() -> Optional[str]:
             skills = hub.skills()[0]

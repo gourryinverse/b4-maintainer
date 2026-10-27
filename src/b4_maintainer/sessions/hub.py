@@ -104,6 +104,9 @@ class TreePlan:
     base: str = ''
     items: tuple[TreeItem, ...] = ()
     agent_apply: str = ''
+    # apply: its items applied; deliver: a tree at its base, its items for the agent to use
+    # as the task directs; none: no tree, its mail only.
+    use: str = 'apply'
 
 
 @dataclass(frozen=True)
@@ -301,6 +304,12 @@ class RecordWorktrees:
         name = self.agent[0].format(model=record.model or record.preset)
         identity, branch = (name, self.agent[1]), f'b4m/session/{record.id}'
         project, dest = pathlib.Path(checkout), home / plan.project
+        labels = tuple(i.label for i in plan.items if i.apply)
+        if plan.use == 'deliver':
+            start = plan.base or 'HEAD'
+            ambytes = items_mbox(project, start, plan.items)
+            tree = prepare_unapplied_tree(project, dest, branch, ambytes, start, identity)
+            return ProjectTree(plan.project, tree, (), labels)
         if plan.agent_apply:
             ambytes = items_mbox(project, plan.agent_apply, plan.items)
             tree = prepare_unapplied_tree(
@@ -308,7 +317,7 @@ class RecordWorktrees:
             )
         else:
             tree = prepare_items_tree(project, dest, branch, plan.base, plan.items, identity)
-        return ProjectTree(plan.project, tree, tuple(i.label for i in plan.items if i.apply))
+        return ProjectTree(plan.project, tree, labels)
 
     def remove_home(self, record: SessionRecord) -> None:
         if self.directory is None:
@@ -715,7 +724,7 @@ class SessionHub:
 
         def trees(r: SessionRecord) -> SessionRecord:
             made: list[ProjectTree] = []
-            for entry in plans:
+            for entry in (p for p in plans if p.use != 'none'):  # No tree: its mail only.
                 try:
                     made.append(self.worktrees.prepare_entry(r, entry))
                 except TreeError as exc:
@@ -739,7 +748,8 @@ class SessionHub:
             if item.file
         ]
         package = [i for i in planned.included if i.id != 'mbox']  # One thread per series.
-        prepare = trees if planned.mode == 'worktree' else None
+        tree_plans = [p for p in plans if p.use != 'none']
+        prepare = trees if planned.mode == 'worktree' and tree_plans else None
         return self._start(record, spec, None, lambda r: (None, package), prepare, threads, files)
 
     def launch_apply(

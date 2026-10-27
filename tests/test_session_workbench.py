@@ -3,6 +3,7 @@
 reads every project checkout, and is told what each tree holds. It counts once."""
 
 import datetime
+import pathlib
 
 import pytest
 from gitutil import git
@@ -319,3 +320,51 @@ def test_read_only_items_reach_the_context_and_never_a_tree(tmp_path, store):
     assert (context / 'files' / 'notes.md').read_text() == 'ideas\n'
     system = (store.directory(record.id) / 'system.md').read_text()
     assert 'files/notes.md (notes.md (file) (linux))' in system
+
+
+def test_a_tree_can_take_its_items_for_the_agent_instead_of_applied(tmp_path, home, store):
+    from sessiondata import make_record
+
+    from b4_maintainer.sessions.pi import prepare_session
+
+    (home / '.gitconfig').write_text(
+        '[user]\n\tname = Example Maintainer\n\temail = m@example.org\n'
+    )
+    base = project(tmp_path / 'projects' / 'ndctl', 'ndctl')
+    repo = tmp_path / 'projects' / 'ndctl'
+    git('switch', '-q', '-c', 'me/a', base, cwd=repo)
+    (repo / 'ndctl.c').write_text('a\n')
+    git('commit', '-q', '-am', 'ndctl: a', cwd=repo)
+    git('switch', '-q', 'main', cwd=repo)
+    trees = RecordWorktrees(tmp_path / 'var' / 'worktrees', {'ndctl': str(repo)})
+    record = make_record('w1', scope='workbench', mode='worktree', model='dry-run')
+    plan = TreePlan('ndctl', 'main', (TreeItem('me/a', branch='me/a'),), use='deliver')
+    made = trees.prepare_entry(record, plan)
+    assert made.worktree.base == base and made.applied == () and made.delivered == ('me/a',)
+    assert git('rev-parse', 'HEAD', cwd=made.worktree.path) == base  # Nothing applied.
+    mbox = pathlib.Path(made.worktree.path) / '.git' / 'b4m' / 'series.mbx'
+    assert 'ndctl: a' in mbox.read_text()
+    record = record.replace(
+        trees=(made,), home=str(tmp_path / 'var' / 'worktrees' / 'w1'), permissions='execute'
+    )
+    prepare_session(store, record, Request('Task.', 'Sys.', 'worktree', ()), None, True)
+    system = (store.directory('w1') / 'system.md').read_text()
+    assert 'not applied: me/a' in system and 'as the task directs' in system
+    assert 'could not apply' not in system
+
+
+def test_a_project_without_a_tree_still_gives_its_mail(store, tmp_path):
+    from b4_maintainer.fixtures import write_series_mbox
+
+    a = write_series_mbox(tmp_path / 'a.mbx', subject='daxctl: fix')
+    plans = (
+        TreePlan('linux', 'gourry/base', (TreeItem('cxl: x v3', '/mail/cxl.mbx', 3),)),
+        TreePlan('ndctl', 'origin/main', (TreeItem('daxctl: fix v1', str(a.path), 1),), use='none'),
+    )
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees, sandbox=lambda: True)
+    record = launch(hub, plans=plans)
+    assert [plan.project for _sid, plan in trees.entries] == ['linux']
+    assert [t.project for t in record.trees] == ['linux']
+    context = store.directory(record.id) / 'work' / 'context'
+    assert (context / 'ndctl-1.mbx').is_file()

@@ -51,6 +51,7 @@ class ProjectTree:
     project: str
     worktree: Worktree
     applied: tuple[str, ...] = ()  # What went on its base, as shown (series vN, branches).
+    delivered: tuple[str, ...] = ()  # Its items given to the agent instead, not applied.
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,10 @@ class SessionRecord:
         data['command'] = list(self.command)
         data['context'] = list(self.context)
         data['skills'] = list(self.skills)
-        data['trees'] = [dict(t, applied=list(t['applied'])) for t in data['trees']]
+        data['trees'] = [
+            dict(t, applied=list(t['applied']), delivered=list(t['delivered']))
+            for t in data['trees']
+        ]
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f'.{path.name}.tmp')
         tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + '\n')
@@ -110,7 +114,12 @@ class SessionRecord:
         names = {f.name for f in dataclasses.fields(cls)}
         known = {k: v for k, v in data.items() if k in names}
         known['trees'] = tuple(
-            ProjectTree(t['project'], Worktree(**t['worktree']), tuple(t.get('applied', ())))
+            ProjectTree(
+                t['project'],
+                Worktree(**t['worktree']),
+                tuple(t.get('applied', ())),
+                tuple(t.get('delivered', ())),
+            )
             for t in data.get('trees', ())
         )
         return cls(**known, worktree=Worktree(**worktree) if worktree else None)

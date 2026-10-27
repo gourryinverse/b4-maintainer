@@ -42,6 +42,11 @@ PERMISSION_LABELS = {
     'read-only': 'reads and searches the series, the checkout, and its notes; writes only out/',
     'execute': 'also edits, builds, and runs in its own worktree, in the sandbox',
 }
+TREE_USES = {
+    'apply': 'tree, its items applied',
+    'deliver': 'tree at its base, its items for the agent',
+    'none': 'no tree: its mail only',
+}
 BASE_PLACEHOLDER = 'Base: empty lets b4 choose (HEAD if it applies, the series base, a guess)'
 NO_SERIES = 'a workspace session has no series to apply'
 LAUNCH = 'Launch (ctrl+s)'
@@ -111,8 +116,11 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         derived: Optional[Derived] = None,
         trees: Sequence[str] = (),
         mailboxes: Sequence[str] = (),
+        tree_projects: Sequence[str] = (),
     ) -> None:
         super().__init__()
+        # A workbench launch: its projects, each with a choice of tree in place of Mode.
+        self.tree_projects = list(tree_projects)
         # A workbench launch: what each tree holds (worktree mode), and the series whose
         # mail it reads (either mode).
         self.trees = list(trees)
@@ -220,8 +228,13 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 section = field.id if field.kind == 'text' else f'{field.id}:text'
                 widgets.append(self._input(field.id, section, placeholder))
         widgets += self._package()
-        modes = [(m, MODE_LABELS[m], False) for m in MODES]
-        widgets += self._group('Mode', 'mode', modes, 0)
+        if self.tree_projects:  # A workbench: a choice of tree per project, not Mode.
+            uses = [(key, label, False) for key, label in TREE_USES.items()]
+            for project in self.tree_projects:
+                widgets += self._group(f'Tree: {project}', f'tree:{project}', uses, 2)
+        else:
+            modes = [(m, MODE_LABELS[m], False) for m in MODES]
+            widgets += self._group('Mode', 'mode', modes, 0)
         if not self.trees:  # A workbench names each tree's base itself.
             bases = self.situation.bases
             hint = (
@@ -357,6 +370,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
 
     # State
 
+    def _tree_uses(self) -> tuple[tuple[str, str], ...]:
+        return tuple((p, self.selected(f'tree:{p}') or 'none') for p in self.tree_projects)
+
     def selected(self, group: str) -> Optional[str]:
         radio = self._sets.get(group)
         button = radio.pressed_button if radio is not None else None
@@ -391,6 +407,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                     choices[field.id] = value
             elif value:
                 text[field.id] = value
+        trees = self._tree_uses()
+        if trees:  # A workbench: worktree when any project has a tree.
+            mode = 'worktree' if any(use != 'none' for _p, use in trees) else 'lightweight'
         return LaunchChoice(
             self.profile.id,
             choices,
@@ -403,6 +422,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             frozenset(self._skills_off),
             self._context_off(),
             *self._derived_choice(),
+            trees=trees,
         )
 
     def _derived_choice(self) -> tuple[str, str, str]:
@@ -434,8 +454,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             situation = dataclasses.replace(situation, worktree_reason=NO_SERIES)
         self._suggested_mode = plan(self.profile, self._choice(None), situation, items).mode
         self.plan = plan(self.profile, self._choice(self._explicit_mode), situation, items)
-        if self._explicit_mode is None and self._mode_shown != self.plan.mode:
-            self._show_mode(self.plan.mode)
+        if 'mode' in self._sets and self._explicit_mode is None:
+            if self._mode_shown != self.plan.mode:
+                self._show_mode(self.plan.mode)
         if 'base' in self._inputs:
             self._inputs['base'].display = self.plan.mode == 'worktree'
         skills = self._lists.get('skills')
@@ -577,7 +598,15 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         if p.skills:
             lines.append(f'Skills:   {", ".join(p.skills)}')
         lines.append(f'May:      {PERMISSION_LABELS.get(p.permissions, p.permissions)}')
-        if self.trees and p.mode == 'worktree':
+        if self.tree_projects:
+            uses = dict(self._tree_uses())
+            lines.append('Trees:')
+            for project, tree in zip(self.tree_projects, self.trees):
+                lines.append(f'  {TREE_USES[uses.get(project, "none")]} · {tree}')
+            if self.mailboxes:
+                lines += ['Mailboxes (every series, as a thread to read):']
+                lines += [f'  {m}' for m in self.mailboxes]
+        elif self.trees and p.mode == 'worktree':
             lines += ['Trees:', *(f'  {tree}' for tree in self.trees)]
         elif self.trees:
             lines += ['Mailboxes: no trees; each series as a thread to read and compare']

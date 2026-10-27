@@ -163,8 +163,16 @@ def _trees_text(record: SessionRecord) -> str:
     lines = [TREES_TEXT.format(home=record.home, branch=branch) + ':']
     for t in record.trees:
         held = '; '.join(t.applied) or 'nothing applied'
+        if t.delivered:
+            held = 'not applied: ' + '; '.join(t.delivered)
         line = f'- {t.project}: {t.worktree.path} (base {t.worktree.base[:12]}; {held})'
-        if t.worktree.agent_applies:
+        if t.delivered:
+            line += (
+                '. Its items are for you to use as the task directs: each series is in the '
+                f'context, and all of them, in order, in {t.worktree.path}/{AGENT_MBOX} '
+                '(git am -3 applies them)'
+            )
+        elif t.worktree.agent_applies:
             line += (
                 f'. b4 could not apply its series: apply {t.worktree.path}/{AGENT_MBOX} with '
                 'git am -3 first, resolving each conflict, as for a single tree'

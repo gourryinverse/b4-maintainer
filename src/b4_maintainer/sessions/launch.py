@@ -58,6 +58,9 @@ class LaunchChoice:
     agent_apply: str = ''
     # The workbench the session is filed in (F1 finds or makes its series' one).
     workbench: str = ''
+    # A workbench launch: (project, use) for each tree: apply (its items applied), deliver
+    # (a tree at its base, its items for the agent), or none (no tree: its mail only).
+    trees: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

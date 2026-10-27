@@ -101,9 +101,12 @@ Python 3.11 or newer.
   preview of what a launch prepares: `n` new, `r` rename, `x` remove (a workbench or
   project after a confirmation), `b` a project's base, `B` add a local branch (the
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
-  and `F1` launches a session over it: lightweight, no trees, each series' thread in its
-  context to read and compare (series that conflict are fine); or worktree, one tree
-  per project, side by side in `var/worktrees/<id>/`, where the agent starts. The tab
+  and `F1` launches a session over it, choosing for each project (in place of Mode): a
+  tree with its items applied; a tree at its base with its items for the agent (in its
+  context and as one mbox in the tree, to use as the task directs); or no tree (its
+  mail only). Every series' thread is in the context either way; trees sit side by side
+  in `var/worktrees/<id>/`, where the agent starts; no tree anywhere is a lightweight
+  session (series that conflict are fine). The tab
   shows, left, the workbenches and the selected one's sessions; middle, its Contents in
   sections: Items (each project and its items, edited as above), Mailboxes (each
   series), Trees (each session tree and its commits by class), Artifacts (each
