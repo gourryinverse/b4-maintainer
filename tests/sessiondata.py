@@ -227,7 +227,7 @@ class FakeWorktrees:
             raise TreeError(*self.fail_entry[1])
         self.entries.append((record.id, plan))
         path = f'/w/var/worktrees/{record.id}/{plan.project}'
-        applied = tuple(f'{s} v{r}' for _src, r, s in plan.series)
+        applied = tuple(i.label for i in plan.items)
         return ProjectTree(
             plan.project, Worktree(path, f'b4m/session/{record.id}', 'b', 'a'), applied
         )

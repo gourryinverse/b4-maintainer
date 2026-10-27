@@ -452,3 +452,77 @@ def test_an_unapplied_tree_leaves_the_series_to_the_agent(upstream, tmp_path):
     classed = classify_tree(dest, tree)
     assert [c.subject for c in classed.series] == ['mm/foo: name line three', 'mm/bar: add bar']
     assert [b.commits for b in classed.branches if b.name == BRANCH] == [()]
+
+
+def fix_branch(project, base, name='me/fix', path='mm/fix.c'):
+    git('branch', name, base, cwd=project)
+    git('switch', '-q', name, cwd=project)
+    write(project, path, 'fixed\n')
+    git(
+        '-c',
+        'user.name=Fixer',
+        '-c',
+        'user.email=fixer@example.org',
+        'commit',
+        '-q',
+        '-m',
+        'mm: fix it',
+        cwd=project,
+    )
+    git('switch', '-q', 'master', cwd=project)
+
+
+def test_a_workbench_tree_applies_series_and_branches_in_order(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_items_tree
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, mbox = upstream
+    fix_branch(project, base)
+    before = snapshot(project)
+    dest = tmp_path / 'var' / 'worktrees' / 'w1' / 'demo'
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2), TreeItem('me/fix', branch='me/fix'))
+    tree = prepare_items_tree(project, dest, BRANCH, base, items, AGENT)
+    assert (tree.base, tree.applied) == (base, git('rev-parse', 'HEAD', cwd=dest))
+    assert subjects(dest, f'{base}..HEAD') == [
+        'mm/foo: name line three',
+        'mm/bar: add bar',
+        'mm: fix it',
+    ]
+    assert git('log', '-1', '--format=%an', 'HEAD', cwd=dest) == 'Fixer'  # Its author kept.
+    assert git('symbolic-ref', '--short', 'HEAD', cwd=dest) == BRANCH
+    assert git('config', 'user.email', cwd=dest) == AGENT[1]
+    assert snapshot(project) == before
+
+
+def test_a_branch_from_another_sessions_tree_is_fetched_in(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_items_tree, prepare_start_tree
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, _mbox = upstream
+    other = prepare_start_tree(
+        project, tmp_path / 'var' / 'worktrees' / 's9', 'b4m/session/s9', base, AGENT
+    )
+    git('switch', '-q', '-c', 'b4m/fixup/y', cwd=other.path)
+    write(pathlib.Path(other.path), 'mm/y.c', 'y\n')
+    git('commit', '-q', '-m', 'mm: y', cwd=other.path)
+    item = TreeItem('s9: b4m/fixup/y', branch='b4m/fixup/y', repo=other.path)
+    dest = tmp_path / 'var' / 'worktrees' / 'w1' / 'demo'
+    tree = prepare_items_tree(project, dest, BRANCH, base, (item,), AGENT)
+    assert git('log', '-1', '--format=%s', tree.applied, cwd=dest) == 'mm: y'
+
+
+def test_a_conflicting_item_leaves_nothing_and_says_where_an_agent_starts(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import items_mbox, prepare_items_tree
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, mbox = upstream
+    fix_branch(project, base, path='mm/foo.c')  # Rewrites the file the series changes.
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2), TreeItem('me/fix', branch='me/fix'))
+    dest = tmp_path / 'var' / 'worktrees' / 'w1' / 'demo'
+    with pytest.raises(PrepareError) as raised:
+        prepare_items_tree(project, dest, BRANCH, base, items, AGENT)
+    assert 'me/fix' in str(raised.value) and raised.value.base == base
+    assert not dest.exists()
+    # The handoff: every item, in order, as one mbox for git am.
+    text = items_mbox(project, base, items).decode()
+    assert text.index('mm/foo: name line three') < text.index('mm: fix it')

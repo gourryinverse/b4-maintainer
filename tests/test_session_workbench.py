@@ -16,11 +16,12 @@ from b4_maintainer.sessions.policy import SessionLimits
 from b4_maintainer.sessions.profiles import Request, parse_profile
 from b4_maintainer.sessions.records import ProjectTree, Worktree, session_label, session_trees
 from b4_maintainer.sessions.store import SessionStore
+from b4_maintainer.sessions.trees import TreeItem
 
 NOW = datetime.datetime(2026, 10, 27, 12, 0, tzinfo=datetime.timezone.utc)
 PLANS = (
-    TreePlan('linux', 'gourry/base', (('/mail/cxl.mbx', 3, 'cxl: region mode'),)),
-    TreePlan('ndctl', 'origin/main', (('/mail/dax.mbx', 1, 'daxctl: fix'),)),
+    TreePlan('linux', 'gourry/base', (TreeItem('cxl: region mode v3', '/mail/cxl.mbx', 3),)),
+    TreePlan('ndctl', 'origin/main', (TreeItem('daxctl: fix v1', '/mail/dax.mbx', 1),)),
 )
 
 
@@ -224,3 +225,33 @@ def test_branches_shows_each_tree_under_its_project_and_acts_on_it(tmp_path, hom
     )
     options = service.derive_options(workspace, 'tree:w1/ndctl', None)
     assert any(start_from == 'w1/ndctl' for _start, start_from, _label in options)
+
+
+def test_a_tree_whose_items_conflict_can_be_left_to_the_agent(tmp_path, home):
+    from sessiondata import make_record
+
+    from b4_maintainer.sessions.hub import TreeError
+
+    (home / '.gitconfig').write_text(
+        '[user]\n\tname = Example Maintainer\n\temail = m@example.org\n'
+    )
+    base = project(tmp_path / 'projects' / 'ndctl', 'ndctl')
+    repo = tmp_path / 'projects' / 'ndctl'
+    for name, text in (('me/a', 'a\n'), ('me/b', 'b\n')):  # Both rewrite ndctl.c.
+        git('switch', '-q', '-c', name, base, cwd=repo)
+        (repo / 'ndctl.c').write_text(text)
+        git('commit', '-q', '-am', f'ndctl: {name}', cwd=repo)
+    git('switch', '-q', 'main', cwd=repo)
+    trees = RecordWorktrees(tmp_path / 'var' / 'worktrees', {'ndctl': str(repo)})
+    record = make_record('w1', scope='workbench', mode='worktree', model='dry-run')
+    items = (TreeItem('me/a', branch='me/a'), TreeItem('me/b', branch='me/b'))
+    with pytest.raises(TreeError) as raised:
+        trees.prepare_entry(record, TreePlan('ndctl', 'main', items))
+    assert 'me/b' in str(raised.value) and raised.value.base == base
+    made = trees.prepare_entry(record, TreePlan('ndctl', 'main', items, agent_apply=base))
+    assert made.worktree.agent_applies and made.worktree.base == base
+    mbox = (
+        tmp_path / 'var' / 'worktrees' / 'w1' / 'ndctl' / '.git' / 'b4m' / 'series.mbx'
+    ).read_text()
+    assert mbox.index('ndctl: me/a') < mbox.index('ndctl: me/b')
+    assert made.applied == ('me/a', 'me/b')

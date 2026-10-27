@@ -29,7 +29,7 @@ import b4.review
 
 from ..sessions.hub import TreeError
 from ..sessions.records import Worktree
-from ..sessions.trees import AGENT_MBOX, clone_project
+from ..sessions.trees import AGENT_MBOX, TreeItem, clone_project
 from .b4state import b4_repo
 
 TRAILERS = ('Signed-off-by', 'Reviewed-by', 'Acked-by', 'Tested-by', 'Co-developed-by')
@@ -289,3 +289,85 @@ def prepare_unapplied_tree(
         shutil.rmtree(dest, ignore_errors=True)
         raise
     return dataclasses.replace(tree, agent_applies=True)
+
+
+def prepare_items_tree(
+    project: pathlib.Path,
+    dest: pathlib.Path,
+    branch: str,
+    base: str,
+    items: Sequence[TreeItem],
+    identity: tuple[str, str],
+) -> Worktree:
+    """A workbench session's tree for one project at *dest*, on *branch*: *base* (empty: b4
+    chooses for a first series, else the project's HEAD), then *items* in order: series
+    applied by b4, local branches' commits beyond the base replayed (authors kept). An
+    item that does not apply fails it all, saying where an agent would start; nothing is
+    left behind."""
+    from .bases import _replay  # The same replay as plucking.
+
+    if os.path.lexists(dest):
+        raise PrepareError(f'{dest} exists')
+    try:
+        _clone(project, dest)
+        start = _commit(project, base) if base else None
+        if base and start is None:
+            raise PrepareError(f'base {base!r} is not a commit in {project.name}')
+        tip = start
+        for item in items:
+            try:
+                if item.source and tip is None:
+                    start, tip = _apply(project, dest, item.source, item.revision, None)
+                elif item.source:
+                    tip = _apply_more(project, dest, item.source, item.revision, tip or '')
+                else:
+                    if start is None:
+                        start = tip = _git(project, 'rev-parse', 'HEAD')
+                    where = pathlib.Path(item.repo) if item.repo else project
+                    head = _commit(where, item.branch)
+                    if head is None:
+                        raise PrepareError(f'{item.branch} is not a branch in {where}')
+                    if item.repo:
+                        _git(dest, 'fetch', '--quiet', '--no-tags', str(where), head)
+                    shas = _git(dest, 'rev-list', '--reverse', '--no-merges', f'{start}..{head}')
+                    replayed = _replay(dest, tip or start, shas.split())
+                    if not replayed.ok:
+                        raise PrepareError(
+                            f'{item.label} does not apply on top of the items before it',
+                            replayed.detail or replayed.error,
+                        )
+                    tip = replayed.tip
+            except PrepareError as ex:
+                raise PrepareError(str(ex), ex.output, ex.base or start or '') from ex
+        if start is None or tip is None:
+            start = tip = _git(project, 'rev-parse', 'HEAD')
+        _git(dest, 'checkout', '--quiet', '-b', branch, tip)
+        for other in _git(dest, 'branch', '--format=%(refname:short)').splitlines():
+            if other != branch:
+                _git(dest, 'branch', '--quiet', '-D', other)
+        _agent(dest, identity)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    return Worktree(str(dest), branch, start, tip)
+
+
+def items_mbox(project: pathlib.Path, start: str, items: Sequence[TreeItem]) -> bytes:
+    """Every item as one mbox, in order, for an agent to git am at *start*: b4's am-ready
+    patches of each series, and each branch's commits beyond *start* (git format-patch)."""
+    parts = []
+    for item in items:
+        if item.source:
+            parts.append(series_mbox(project, item.source, item.revision))
+            continue
+        where = pathlib.Path(item.repo) if item.repo else project
+        run = subprocess.run(
+            ['git', 'format-patch', '--stdout', '--no-signature', f'{start}..{item.branch}'],
+            cwd=where,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+        )
+        if run.returncode != 0:
+            raise PrepareError(f'cannot export {item.label}', run.stderr.decode(errors='replace'))
+        parts.append(run.stdout)
+    return b''.join(parts)

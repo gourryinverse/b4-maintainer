@@ -33,7 +33,7 @@ from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
 from .store import SessionStore, SessionView
-from .trees import TreeState, inspect_tree, remove_tree, series_tip
+from .trees import TreeItem, TreeState, inspect_tree, remove_tree, series_tip
 
 RESUMABLE = frozenset({'stopped', 'gone'})
 COUNTED_LIVE = LIVE | {'preparing'}  # Limits count a session from its preparation.
@@ -94,12 +94,14 @@ class SessionRunner(Protocol):
 
 @dataclass(frozen=True)
 class TreePlan:
-    """One project's tree in a workbench session: its base (empty: b4 chooses for the first
-    series), then posted series (source, revision, subject) applied in order."""
+    """One project's tree in a workbench session: its base (empty: b4 chooses for a first
+    series), then *items* (series and local branches) applied in order. *agent_apply*:
+    they did not apply there; the tree starts at that commit and the agent applies them."""
 
     project: str
     base: str = ''
-    series: tuple[tuple[str, int, str], ...] = ()
+    items: tuple[TreeItem, ...] = ()
+    agent_apply: str = ''
 
 
 @dataclass(frozen=True)
@@ -287,7 +289,7 @@ class RecordWorktrees:
         )
 
     def prepare_entry(self, record: SessionRecord, plan: TreePlan) -> ProjectTree:
-        from ..adapters.sessiontree import prepare_start_tree, prepare_tree
+        from ..adapters.sessiontree import items_mbox, prepare_items_tree, prepare_unapplied_tree
 
         checkout, directory = self.checkouts.get(plan.project), self.directory
         if not checkout or directory is None:
@@ -296,23 +298,15 @@ class RecordWorktrees:
         home.mkdir(parents=True, exist_ok=True)
         name = self.agent[0].format(model=record.model or record.preset)
         identity, branch = (name, self.agent[1]), f'b4m/session/{record.id}'
-        if plan.series:
-            (source, revision, _subject), *rest = plan.series
-            tree = prepare_tree(
-                pathlib.Path(checkout),
-                home / plan.project,
-                branch,
-                source,
-                revision,
-                base=plan.base or None,
-                identity=identity,
-                also=[(s, r) for s, r, _subject in rest],
+        project, dest = pathlib.Path(checkout), home / plan.project
+        if plan.agent_apply:
+            ambytes = items_mbox(project, plan.agent_apply, plan.items)
+            tree = prepare_unapplied_tree(
+                project, dest, branch, ambytes, plan.agent_apply, identity
             )
         else:
-            tree = prepare_start_tree(
-                pathlib.Path(checkout), home / plan.project, branch, plan.base or 'HEAD', identity
-            )
-        return ProjectTree(plan.project, tree, tuple(f'{s} v{r}' for _src, r, s in plan.series))
+            tree = prepare_items_tree(project, dest, branch, plan.base, plan.items, identity)
+        return ProjectTree(plan.project, tree, tuple(i.label for i in plan.items))
 
     def remove_home(self, record: SessionRecord) -> None:
         if self.directory is None:
@@ -727,9 +721,9 @@ class SessionHub:
             )
 
         threads = [
-            (f'{entry.project}-{n}.mbx', source, f'{subject} v{revision} ({entry.project})')
+            (f'{entry.project}-{n}.mbx', item.source, f'{item.label} ({entry.project})')
             for entry in plans
-            for n, (source, revision, subject) in enumerate(entry.series, 1)
+            for n, item in enumerate((i for i in entry.items if i.source), 1)
         ]
         package = [i for i in planned.included if i.id != 'mbox']  # One thread per series.
         return self._start(record, spec, None, lambda r: (None, package), trees, threads)

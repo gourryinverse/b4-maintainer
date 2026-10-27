@@ -124,6 +124,19 @@ def _kind(name: str) -> str:
     return next((kind for prefix, kind in PREFIXES if name.startswith(prefix)), 'other')
 
 
+@dataclass(frozen=True)
+class TreeItem:
+    """Something applied on a workbench tree's base, in order: a posted series (its mail
+    *source* at *revision*, applied by b4), or a local *branch* (its commits beyond the
+    base, replayed; in *repo*, another session's tree, or else the project)."""
+
+    label: str
+    source: str = ''
+    revision: int = 0
+    branch: str = ''
+    repo: str = ''
+
+
 # Where a tree b4 could not apply the series in keeps b4's mbox for the agent: under .git,
 # so it is readable but never part of a commit.
 AGENT_MBOX = '.git/b4m/series.mbx'
