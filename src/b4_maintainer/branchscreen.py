@@ -26,7 +26,14 @@ from textual.widgets.option_list import Option
 
 from .adapters.bases import PluckResult, RebaseResult
 from .adapters.prep import SignResult, run_b4
-from .branches import ApplyChoices, BranchesSnapshot, CutResult, DetailRow, is_commit
+from .branches import (
+    ApplyChoices,
+    BranchesSnapshot,
+    CutResult,
+    DetailRow,
+    DropChoices,
+    is_commit,
+)
 from .launchdialog import Derived
 from .sessions.policy import ContextItem
 from .sessions.records import SessionRecord
@@ -101,6 +108,14 @@ class Branches(Protocol):
         numbers: Sequence[int],
         expected: str,
     ) -> 'ApplyResult': ...
+
+    def drop_choices(
+        self, workspace: Workspace, project_id: str, patches: Sequence[tuple[str, str]]
+    ) -> DropChoices: ...
+
+    def drop(
+        self, workspace: Workspace, target: str, shas: Sequence[str], expected: str
+    ) -> PluckResult: ...
 
 
 class Ask(ModalScreen[Optional[str]]):

@@ -462,6 +462,70 @@ def pluck_onto(
             _git(repo, 'update-ref', '-d', ref, check=False)
 
 
+def series_commits(
+    repo: pathlib.Path, base: MaintainerBase, patches: Sequence[tuple[str, str]]
+) -> list[BaseCommit]:
+    """The base's own commits (oldest first) carrying any of *patches* ((message-id,
+    subject) of a posted series): by a Link or Message-ID trailer, else by subject."""
+    tip = _commit(repo, f'refs/heads/{base.branch}')
+    if tip is None or _commit(repo, base.upstream) is None:
+        return []
+    msgids = {m for m, _ in patches if m}
+    subjects = {subject_key(s) for _, s in patches if s}
+    fork = _fork(repo, base.upstream, base.branch)
+    return [
+        BaseCommit(sha, subject, author)
+        for sha, subject, author, body in _log(repo, '--no-merges', f'{fork}..{tip}')
+        if message_ids(body) & msgids or subject_key(subject) in subjects
+    ]
+
+
+def drop_commits(
+    repo: pathlib.Path, branch: str, shas: Sequence[str], expected: str
+) -> PluckResult:
+    """*branch* without *shas* (its commits, oldest first): the commits after the first of
+    them are replayed onto its parent (as plucking replays, authors kept), and the branch
+    moves in one guarded update-ref. It must still be at *expected* and not checked out;
+    a later commit that does not replay without them stops it all and changes nothing.
+    *dropped* in the result: the subjects taken out."""
+    tip0 = _commit(repo, f'refs/heads/{branch}')
+    if tip0 is None:
+        return PluckResult(False, error=f'{branch} does not exist')
+    checked_out = _checked_out(repo, branch)
+    if checked_out:
+        return PluckResult(False, error=f'{branch} is checked out in {checked_out}')
+    if tip0 != expected:
+        return PluckResult(False, error=f'{branch} moved since it was shown')
+    if not shas:
+        return PluckResult(False, error='nothing to drop')
+    start = _commit(repo, f'{shas[0]}^')
+    if start is None:
+        return PluckResult(False, error=f'{shas[0][:12]} has no parent to replay onto')
+    span = _git(repo, 'rev-list', '--reverse', f'{start}..{tip0}').stdout.split()
+    if not set(shas) <= set(span):
+        return PluckResult(False, error=f'not all of those commits are on {branch}')
+    if _git(repo, 'rev-list', '--merges', f'{start}..{tip0}').stdout.strip():
+        return PluckResult(False, error=f'{branch} has merge commits there: drop by hand')
+    gone = set(shas)
+    subjects = tuple(_git(repo, 'log', '-1', '--format=%s', sha).stdout.strip() for sha in shas)
+    replayed = _replay(repo, start, [c for c in span if c not in gone])
+    if not replayed.ok:
+        return replayed
+    moved = _git(
+        repo,
+        'update-ref',
+        '-m',
+        f'b4-maintainer: drop {len(shas)} commits',
+        f'refs/heads/{branch}',
+        replayed.tip,
+        expected,
+        check=False,
+    )
+    if moved.returncode != 0:
+        return PluckResult(False, error=f'{branch} moved meanwhile: {moved.stderr.strip()}')
+    return PluckResult(True, replayed.tip, replayed.picked, subjects)
+
+
 ZERO = '0' * 40
 
 

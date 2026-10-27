@@ -368,3 +368,33 @@ async def test_dollar_tracks_the_series_being_read(demo_root):
         await settle(pilot)
         assert live.untrack_calls == [target.identity]
         assert app.reading is not None and app.tree_labels()
+
+
+async def test_f5_in_a_thread_refreshes_and_reloads_it_in_place(demo_root):
+    from b4_maintainer.adapters.b4mbox import load_thread
+
+    loads = []
+
+    def counting(series):
+        loads.append(series.identity)
+        return load_thread(series)
+
+    live = FakeLive(demo_root)
+    app = MaintainerApp(live.load, actions=live, thread_loader=counting)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('enter')
+        await settle(pilot)
+        item = app.reading
+        assert item is not None and loads == [item.identity]
+        await pilot.press('down')  # Somewhere in the thread.
+        await pilot.pause()
+        place = app._tree.highlighted
+        assert 'f5' in footer_keys(app)
+        await pilot.press('f5')
+        await settle(pilot)
+        assert live.refreshes == 1
+        assert app.reading is not None and app.reading.identity == item.identity
+        assert loads == [item.identity, item.identity]  # The thread itself, reloaded.
+        assert app._tree.highlighted == place
+        assert 'Refreshed 1 list(s)' in app.status_text()

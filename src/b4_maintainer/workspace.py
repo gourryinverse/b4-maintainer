@@ -63,7 +63,7 @@ def merge_config(shared: Mapping[str, Any], local: Mapping[str, Any]) -> dict[st
         mine = merged.get(key)
         if isinstance(mine, dict) and isinstance(value, dict):
             merged[key] = merge_config(mine, value)
-        elif _entries(mine) and _entries(value):
+        elif isinstance(mine, list) and _entries(mine) and _entries(value):
             entries = {e['id']: e for e in mine}
             for entry in value:
                 entries[entry['id']] = merge_config(entries.get(entry['id'], {}), entry)

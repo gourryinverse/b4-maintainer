@@ -448,7 +448,7 @@ def test_staged_series_move_from_profile_to_ref_views(tmp_path):
     )
     in_unstable, msgs_u = mail(tmp_path, 'u', 'mm: in unstable')
     in_new, msgs_n = mail(tmp_path, 'n', 'mm: only in new')
-    _, msgs_o = mail(tmp_path, 'o', 'mm: nowhere yet')
+    nowhere, msgs_o = mail(tmp_path, 'o', 'mm: nowhere yet')
     fakes.answers[MM] = msgs_u + msgs_n + msgs_o
     ident = ['-c', 'user.name=A', '-c', 'user.email=a@example.org']
 
@@ -471,7 +471,7 @@ def test_staged_series_move_from_profile_to_ref_views(tmp_path):
     pick(in_new, 'mm: only in new')
     git('checkout', '-q', 'master', cwd=checkout)
 
-    assert 'refs' in source.refresh()
+    source.refresh()  # Local branches: scanned on load as well.
     snapshot = source.load()
     index = ViewIndex(snapshot.workspace, snapshot.items)
     labels = {v.id: v.label for v in index.views}
@@ -485,6 +485,17 @@ def test_staged_series_move_from_profile_to_ref_views(tmp_path):
         ('u', 'full'),
         ('a', 'full'),
     ]
+    # A series applied to a local branch shows in its view on the next load, without F5.
+    git('checkout', '-q', 'unstable', cwd=checkout)
+    pick(nowhere, 'mm: nowhere yet')
+    git('checkout', '-q', 'master', cwd=checkout)
+    snapshot = source.load()
+    index = ViewIndex(snapshot.workspace, snapshot.items)
+    assert sorted(i.series.subject for i in index.items('ref:demo:unstable')) == [
+        'mm: in unstable',
+        'mm: nowhere yet',
+    ]
+    assert index.items('profile:mm') == ()
 
 
 NEXT_CONFIG = """\

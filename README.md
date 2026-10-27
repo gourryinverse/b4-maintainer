@@ -68,7 +68,8 @@ Python 3.11 or newer.
     ./b4-maintainer --demo .local/demo
 
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
-  live: `F5` fetches profile lists and your own mail from lore, `t` tracks the selected series
+  live: `F5` fetches profile lists and your own mail from lore (in a thread, the thread reloads
+  in place), `t` tracks the selected series
   through b4 (To Review), `x` hides it, `M` marks it read, `/` filters by regex, `r` drafts a
   reply beside the thread (in the list: to the cover letter), `R` does too after picking
   what the series' agent sessions produced to add at its end (their commits as inline
@@ -82,6 +83,11 @@ Python 3.11 or newer.
   you as committer, no sign-off added. The branch must not be checked out; it moves only
   if every patch applies. Your FETCH_HEAD is left as it was; b4 records the series for
   `b4 ty`.
+- `d` drops that series from a maintainer base again: its commits there (found by their
+  Link, else subject) are taken out and the later commits replayed onto what remains,
+  after a confirmation; if one does not replay without them, nothing changes. Your own
+  branches named in `refs` (e.g. a base with a view) are rescanned on every reload, so
+  `a` and `d` show in their views at once; fetched refs wait for `F5`.
 - Workspace state syncs through a private state repository cloned as `state/` (see
   [setup](#setup));
   `state/workspace.toml` is the synced configuration. `b4-maintainer sync` syncs once by

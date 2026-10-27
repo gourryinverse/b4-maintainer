@@ -62,14 +62,24 @@ class RefCache:
             self._tips[name] = result.stdout.strip() if result.returncode == 0 else None
         return self._tips[name]
 
-    def update(self, refs: Sequence[Ref], since: datetime.datetime) -> int:
-        """Scan refs whose tips moved; return how many were scanned."""
+    def local(self, name: str) -> bool:
+        """Whether *name* is a local branch (moved by the maintainer's own work, not a fetch)."""
+        return self._git('rev-parse', '--verify', '-q', f'refs/heads/{name}').returncode == 0
+
+    def update(
+        self, refs: Sequence[Ref], since: datetime.datetime, local_only: bool = False
+    ) -> int:
+        """Scan refs whose tips moved; return how many were scanned. *local_only*: only
+        refs that are local branches (each load does this; a refresh scans them all)."""
         mainline = next((r.name for r in refs if r.authority == Authority.MAINLINE), None)
         scanned = 0
+        changed = False
         for ref in refs:
+            if local_only and not self.local(ref.name):
+                continue
             tip = self.tip(ref.name)
             if tip is None:
-                self._refs.pop(ref.name, None)
+                changed |= self._refs.pop(ref.name, None) is not None
                 continue
             base = None if ref.name == mainline else mainline
             if base is not None and self.tip(base) is None:
@@ -96,6 +106,8 @@ class RefCache:
             }
             self._sets.pop(ref.name, None)
             scanned += 1
+        if not (scanned or changed) and self.path.exists():
+            return 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f'.{self.path.name}.tmp')
         tmp.write_text(json.dumps(self._refs))

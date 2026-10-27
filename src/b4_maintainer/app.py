@@ -32,7 +32,7 @@ from .adapters.drafts import DraftStore, SavedDraft
 from .applydialog import ApplyDialog
 from .attachdialog import AttachDialog
 from .attachments import Attachment, gather, git_identity, preview, render
-from .branches import ApplyChoices
+from .branches import ApplyChoices, DropChoices
 from .branchscreen import Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import Derived, LaunchDialog, LaunchResult
@@ -423,6 +423,7 @@ class MaintainerApp(App[None]):
         Binding('r', 'reply', 'reply'),
         Binding('R', 'reply_attach', 'reply + session output'),
         Binding('a', 'apply_series', 'apply'),
+        Binding('d', 'drop_series', 'drop'),
         Binding('M', 'mark_read', 'read all'),
         Binding('f3', 'branches', 'branches', key_display='F3'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
@@ -476,6 +477,7 @@ class MaintainerApp(App[None]):
         self._resume_on_open: Optional[str] = None  # A draft to resume once its thread loads.
         # r in the series list: reply to the first posting once the opened thread loads.
         self._reply_on_open = False
+        self._reload_reading = False  # F5 while reading: the open thread reloads too.
         self._thread_loader = thread_loader
         # Agent sessions: polled for the drawer; only the maintainer's keys act on them.
         self._sessions = sessions
@@ -629,7 +631,10 @@ class MaintainerApp(App[None]):
             fresh = snapshot.item_by_identity(self._reading.identity)
             if fresh is not None:
                 self._reading = fresh
+            if self._reload_reading and self._draft is None:
+                self._reload_thread(self._reading)  # After F5: new replies, same place.
             self._sync_bindings()
+        self._reload_reading = False
 
     def _view_items(self, view_id: str) -> tuple[WorkItem, ...]:
         assert self.index is not None
@@ -793,7 +798,7 @@ class MaintainerApp(App[None]):
         if action == 'toggle_preview':
             return not reading
         if action == 'refresh':
-            return self._actions is not None and not reading
+            return self._actions is not None
         if action == 'reply':
             if self._actions is None or self._draft is not None:
                 return False
@@ -805,7 +810,7 @@ class MaintainerApp(App[None]):
             if self._saved_draft is not None and reading:
                 return True
             return self._reply_msgid() is not None if reading else self._item is not None
-        if action == 'apply_series':
+        if action in ('apply_series', 'drop_series'):
             item = self._reading or self._item
             return self._branches is not None and item is not None and not item.series.discussion
         if action == 'mark_read':
@@ -1050,6 +1055,39 @@ class MaintainerApp(App[None]):
         except Exception as exc:  # Shown to the maintainer; mail is untrusted input.
             thread, error = None, f'{type(exc).__name__}: {exc}'
         self.call_from_thread(self._apply_thread, item, thread, error, restore, adopt)
+
+    def _reload_thread(self, item: WorkItem) -> None:
+        """The open thread loaded again (after a refresh), keeping the highlighted row and
+        what was expanded or collapsed."""
+        index = self._tree.highlighted
+        row = self._rows[index] if index is not None and index < len(self._rows) else None
+        place = (row.key, row.node) if row is not None else ('', 0)
+        expanded, collapsed = set(self._expanded), set(self._collapsed)
+
+        def work() -> None:
+            try:
+                thread = with_sashiko(self._thread_loader(item.series), item.sashiko, self._bots())
+            except Exception as exc:  # Shown; the thread already open stays.
+                self.call_from_thread(self._set_notice, f'Could not reload the thread: {exc}')
+                return
+            self.call_from_thread(self._replace_thread, item, thread, place, expanded, collapsed)
+
+        self.run_worker(work, thread=True, group='thread')
+
+    def _replace_thread(
+        self,
+        item: WorkItem,
+        thread: SeriesThread,
+        place: tuple[str, int],
+        expanded: set[str],
+        collapsed: set[str],
+    ) -> None:
+        if not self._still_reading(item) or self._draft is not None:
+            return
+        self._thread, self._shown = thread, None
+        self._expanded = expanded | initially_expanded(thread, self._unread())
+        self._collapsed = collapsed
+        self._render_tree(place)
 
     def _apply_thread(
         self,
@@ -2280,6 +2318,81 @@ class MaintainerApp(App[None]):
         self._set_notice(f'Applying to {branch}…')
         self.run_worker(work, thread=True, group='apply')
 
+    def action_drop_series(self) -> None:
+        """d: take the open or selected series' commits off a maintainer base (after a
+        confirmation); later commits are replayed onto what remains."""
+        service, snapshot = self._branches, self.snapshot
+        item = self._reading or self._item
+        if service is None or snapshot is None or item is None:
+            return
+        workspace = snapshot.workspace
+        patches = tuple((p.msgid, p.subject) for p in item.series.patches)
+
+        def work() -> None:
+            try:
+                choices = service.drop_choices(workspace, item.project or '', patches)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot drop: {exc}')
+                return
+            self.call_from_thread(self._pick_drop_target, item, choices)
+
+        self.run_worker(work, thread=True, group='apply')
+
+    def _pick_drop_target(self, item: WorkItem, choices: DropChoices) -> None:
+        if choices.problem:
+            self._set_notice(f'Cannot drop: {choices.problem}')
+            return
+        if len(choices.targets) == 1:
+            self._confirm_drop(item, choices, choices.targets[0][0])
+            return
+
+        def picked(target: Optional[str]) -> None:
+            if target is not None:
+                self._confirm_drop(item, choices, target)
+
+        self.push_screen(Pick('Drop it from which base?', choices.targets), picked)
+
+    def _confirm_drop(self, item: WorkItem, choices: DropChoices, target: str) -> None:
+        branch = dict(choices.targets)[target]
+        commits = choices.commits[target]
+        n = len(commits)
+        prompt = (
+            f'Drop {n} commit{"s" if n != 1 else ""} of {item.series.subject} from {branch}? '
+            'Later commits are replayed onto what remains. [y|N]'
+        )
+
+        def answered(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._drop(target, branch, [c.sha for c in commits], choices.tips[target])
+
+        self.push_screen(Confirm(prompt), answered)
+
+    def _drop(self, target: str, branch: str, shas: list[str], expected: str) -> None:
+        service, snapshot = self._branches, self.snapshot
+        if service is None or snapshot is None:
+            return
+        workspace = snapshot.workspace
+
+        def work() -> None:
+            try:
+                result = service.drop(workspace, target, shas, expected)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot drop: {exc}')
+                return
+            if result.ok:
+                n = len(result.dropped)
+                notice = f'Dropped {n} commit{"s" if n != 1 else ""} from {branch}'
+            elif result.failed:
+                notice = (
+                    f'Not dropped: {result.failed} does not replay without them; nothing changed'
+                )
+            else:
+                notice = f'Not dropped: {result.error}'
+            self.call_from_thread(self._action_done, notice, result.ok)
+
+        self._set_notice(f'Dropping from {branch}…')
+        self.run_worker(work, thread=True, group='apply')
+
     def _show_artifacts(self) -> None:
         hub, item = self._sessions, self._reading
         if hub is None or item is None:
@@ -2577,6 +2690,7 @@ class MaintainerApp(App[None]):
                 result, reload = f'Refresh failed: {type(exc).__name__}: {exc}', False
             self.call_from_thread(self._action_done, result, reload)
 
+        self._reload_reading = self._reading is not None
         self._set_notice('Refreshing…')
         self.run_worker(work, thread=True, group='action', exclusive=True)
 

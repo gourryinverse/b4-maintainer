@@ -190,3 +190,87 @@ def test_the_service_offers_the_projects_bases_and_prep_branches(posted, tmp_pat
     assert not refused.ok
     none = service.apply_choices(workspace, 'nope', str(mbox), 2)
     assert none.problem and not none.targets
+
+
+def patch_ids(mbox):
+    """The posted patches' (message-id, subject): what a Series knows of them."""
+    found = []
+    for part in mbox.read_text().split('\nFrom ')[1:]:
+        subject = re.search(r'^Subject: \[PATCH v2 [1-9]/2\] (.+)$', part, re.M)
+        if subject:
+            found.append((msgid(part), subject.group(1)))
+    return found
+
+
+def test_a_series_is_found_on_a_base_and_dropped_with_later_work_kept(posted):
+    from b4_maintainer.adapters.bases import drop_commits, series_commits
+    from b4_maintainer.workspace import MaintainerBase
+
+    project, base, mbox, _first = posted
+    applied = apply_series(project, 'me/base', str(mbox), 2, [1, 2], base)
+    assert applied.ok, applied.error
+    git('worktree', 'add', '-q', str(project.parent / 'wt'), 'me/base', cwd=project)
+    write(project.parent / 'wt', 'later.c', 'later\n')
+    later = commit(project.parent / 'wt', 'mm: later work')
+    git('worktree', 'remove', str(project.parent / 'wt'), cwd=project)
+    ids = patch_ids(mbox)
+    found = series_commits(project, MaintainerBase('me/base', 'master'), ids)
+    assert [c.subject for c in found] == ['mm/foo: name line three', 'mm/bar: add bar']
+    before = untouched(project)
+    result = drop_commits(project, 'me/base', [c.sha for c in found], later)
+    assert result.ok, result.error
+    assert untouched(project) == before
+    log = git('log', '--format=%s|%an', f'{base}..me/base', cwd=project)
+    assert log.splitlines() == ['mm: later work|Example Maintainer']
+    assert 'three' not in git('show', 'me/base:mm/foo.c', cwd=project)
+    assert series_commits(project, MaintainerBase('me/base', 'master'), ids) == []
+
+
+def test_a_drop_that_later_work_depends_on_changes_nothing(posted):
+    from b4_maintainer.adapters.bases import drop_commits, series_commits
+    from b4_maintainer.workspace import MaintainerBase
+
+    project, base, mbox, _first = posted
+    assert apply_series(project, 'me/base', str(mbox), 2, [2], base).ok
+    git('worktree', 'add', '-q', str(project.parent / 'wt'), 'me/base', cwd=project)
+    write(project.parent / 'wt', 'mm/bar.c', 'bar\nmore bar\n')
+    tip = commit(project.parent / 'wt', 'mm/bar: extend bar')
+    git('worktree', 'remove', str(project.parent / 'wt'), cwd=project)
+    found = series_commits(project, MaintainerBase('me/base', 'master'), patch_ids(mbox))
+    result = drop_commits(project, 'me/base', [c.sha for c in found], tip)
+    assert not result.ok and result.failed == 'mm/bar: extend bar'
+    assert git('rev-parse', 'me/base', cwd=project) == tip
+    moved = drop_commits(project, 'me/base', [c.sha for c in found], base)
+    assert not moved.ok and 'moved' in moved.error
+
+
+def test_the_service_finds_the_series_on_bases_and_drops_it(posted, tmp_path):
+    from b4_maintainer.branches import BranchService
+    from b4_maintainer.workspace import Workspace
+
+    project, base, mbox, _first = posted
+    workspace = Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': 'demo',
+                    'path': 'projects/demo',
+                    'bases': [{'branch': 'me/base', 'upstream': 'master'}],
+                }
+            ]
+        }
+    )
+    service = BranchService(tmp_path, lambda: [], lambda sid: tmp_path / sid)
+    ids = patch_ids(mbox)
+    assert service.drop_choices(workspace, 'demo', ids).problem  # Not applied yet.
+    applied = service.apply(workspace, 'base:demo:me/base', str(mbox), 2, [1, 2], base)
+    choices = service.drop_choices(workspace, 'demo', ids)
+    assert choices.targets == (('base:demo:me/base', 'me/base'),)
+    assert choices.tips == {'base:demo:me/base': applied.tip}
+    shas = [c.sha for c in choices.commits['base:demo:me/base']]
+    assert shas == list(applied.applied)
+    assert not service.drop(workspace, 'prep:demo:b4/x', shas, applied.tip).ok
+    result = service.drop(workspace, 'base:demo:me/base', shas, applied.tip)
+    assert result.ok and git('rev-parse', 'me/base^{tree}', cwd=project) == git(
+        'rev-parse', f'{base}^{{tree}}', cwd=project
+    )

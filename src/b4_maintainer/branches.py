@@ -20,14 +20,17 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
 
 from .adapters.bases import (
+    BaseCommit,
     BaseStatus,
     PluckResult,
     RebaseResult,
     accept_rebase,
     base_status,
     copy_to_tree,
+    drop_commits,
     pluck_onto,
     rebase_base,
+    series_commits,
 )
 from .adapters.prep import (
     TRACKING,
@@ -124,6 +127,16 @@ class ApplyChoices:
 
     patches: tuple['SeriesPatch', ...] = ()
     targets: tuple[tuple[str, str], ...] = ()  # (key, branch), bases first.
+    tips: Mapping[str, str] = field(default_factory=dict)
+    problem: str = ''
+
+
+@dataclass(frozen=True)
+class DropChoices:
+    """Where a posted series is on the project's bases (see BranchService.drop_choices)."""
+
+    targets: tuple[tuple[str, str], ...] = ()  # (key, branch) of each base holding it.
+    commits: Mapping[str, tuple[BaseCommit, ...]] = field(default_factory=dict)
     tips: Mapping[str, str] = field(default_factory=dict)
     problem: str = ''
 
@@ -581,6 +594,43 @@ class BranchService:
             expected,
             record_take=target.startswith('base:'),
         )
+
+    def drop_choices(
+        self, workspace: Workspace, project_id: str, patches: Sequence[tuple[str, str]]
+    ) -> DropChoices:
+        """The project's bases that hold commits of a posted series (*patches*: (message-id,
+        subject)), with those commits and the bases' tips."""
+        project = workspace.project(project_id)
+        if project is None:
+            return DropChoices(problem=f'no project {project_id or "(none)"}')
+        repo = self.root / project.path
+        if not (repo / '.git').exists():
+            return DropChoices(problem=f'project {project.id} has no checkout')
+        targets: list[tuple[str, str]] = []
+        commits: dict[str, tuple[BaseCommit, ...]] = {}
+        tips: dict[str, str] = {}
+        for base in project.bases:
+            found = series_commits(repo, base, patches)
+            if found:
+                key = f'base:{project.id}:{base.branch}'
+                targets.append((key, base.branch))
+                commits[key] = tuple(found)
+                tips[key] = _git(repo, 'rev-parse', f'refs/heads/{base.branch}').strip()
+        if not targets:
+            return DropChoices(problem=f'not on any maintainer base of {project.id}')
+        return DropChoices(tuple(targets), commits, tips)
+
+    def drop(
+        self, workspace: Workspace, target: str, shas: Sequence[str], expected: str
+    ) -> PluckResult:
+        """*target* (a base) without the commits *shas*, the later ones replayed."""
+        try:
+            project, branch = self._target(workspace, target)
+        except SessionError as ex:
+            return PluckResult(False, error=str(ex))
+        if not target.startswith('base:'):
+            return PluckResult(False, error='series are dropped from maintainer bases only')
+        return drop_commits(self.root / project.path, branch, shas, expected)
 
     def _provenance_path(self, project: Project) -> pathlib.Path:
         return self.root / 'var' / 'branches' / project.id / 'plucked.json'

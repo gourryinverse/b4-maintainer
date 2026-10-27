@@ -3,10 +3,11 @@ branch: pick the branch (when there are several), then always the patches (all t
 and b4 applies them; the outcome is said in the status line."""
 
 from b4_maintainer.adapters.apply import ApplyResult, SeriesPatch
+from b4_maintainer.adapters.bases import BaseCommit, PluckResult
 from b4_maintainer.adapters.fixture import FixtureSource
-from b4_maintainer.app import MaintainerApp
+from b4_maintainer.app import Confirm, MaintainerApp
 from b4_maintainer.applydialog import ApplyDialog
-from b4_maintainer.branches import ApplyChoices
+from b4_maintainer.branches import ApplyChoices, DropChoices
 from b4_maintainer.branchscreen import Pick
 
 PATCHES = (
@@ -24,6 +25,7 @@ class FakeBranches:
         self.result = result or ApplyResult(True, 'new', ('c1', 'c2'))
         self.asked = []
         self.applied = []
+        self.drop_result = PluckResult(True, 'new', dropped=('mm: fix the leak',))
 
     def apply_choices(self, workspace, project_id, source, revision):
         self.asked.append((project_id, source, revision))
@@ -32,6 +34,21 @@ class FakeBranches:
     def apply(self, workspace, target, source, revision, numbers, expected):
         self.applied.append((target, source, revision, list(numbers), expected))
         return self.result
+
+    drop_found = DropChoices(
+        (('base:linux:me/base', 'me/base'),),
+        {'base:linux:me/base': (BaseCommit('d1', 'mm: fix the leak', 'A <a@example.org>'),)},
+        {'base:linux:me/base': 'btip'},
+    )
+    dropped = ()
+
+    def drop_choices(self, workspace, project_id, patches):
+        self.asked.append(('drop', project_id, tuple(patches)))
+        return self.drop_found
+
+    def drop(self, workspace, target, shas, expected):
+        self.dropped += ((target, tuple(shas), expected),)
+        return self.drop_result
 
 
 async def settle(pilot):
@@ -121,3 +138,46 @@ async def test_a_problem_or_a_failure_is_said(demo_root):
         await settle(pilot)
         text = app.status_text()
         assert 'mm: foo v3 does not apply on me/base' in text and 'F1' in text
+
+
+async def test_d_drops_the_series_from_a_base_after_a_confirmation(demo_root):
+    service = FakeBranches()
+    app = MaintainerApp(FixtureSource(demo_root).load, branches=service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        item = app.query_one('SeriesList').highlighted_item
+        await pilot.press('d')
+        await settle(pilot)
+        patches = tuple((p.msgid, p.subject) for p in item.series.patches)
+        assert service.asked == [('drop', item.project, patches)]
+        assert isinstance(app.screen, Confirm)
+        assert 'Drop 1 commit of' in app.screen.prompt and 'from me/base' in app.screen.prompt
+        await pilot.press('n')
+        await settle(pilot)
+        assert service.dropped == ()
+        await pilot.press('d')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.dropped == (('base:linux:me/base', ('d1',), 'btip'),)
+        assert 'Dropped 1 commit from me/base' in app.status_text()
+
+
+async def test_a_drop_that_does_not_replay_or_finds_nothing_is_said(demo_root):
+    service = FakeBranches()
+    service.drop_found = DropChoices(problem='not on any maintainer base of linux')
+    app = MaintainerApp(FixtureSource(demo_root).load, branches=service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('d')
+        await settle(pilot)
+        assert not isinstance(app.screen, Confirm)
+        assert 'not on any maintainer base of linux' in app.status_text()
+        del service.drop_found  # Back to the class default: found on me/base.
+        service.drop_result = PluckResult(False, failed='mm: later work')
+        await pilot.press('d')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        text = app.status_text()
+        assert 'mm: later work' in text and 'nothing changed' in text

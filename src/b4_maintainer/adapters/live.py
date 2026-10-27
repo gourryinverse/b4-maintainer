@@ -325,6 +325,11 @@ class LiveSource:
     def _tree_evidence(self, ws: Workspace, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
         """Per-ref coverage from the last ref scan; stage is the first viewed ref holding it."""
         caches = {p.id: (p, self.refs(p)) for p in ws.projects if p.refs and self._enrolled(p)}
+        since = self._now() - datetime.timedelta(days=ws.window_days + 30)
+        for project, cache in caches.values():
+            # The maintainer's own branches (a base a series was just applied to or dropped
+            # from) are rescanned on every load; fetched refs wait for a refresh.
+            cache.update(project.refs, since, local_only=True)
         result = []
         for item in items:
             entry = caches.get(item.project or '')
