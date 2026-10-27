@@ -470,6 +470,39 @@ class BranchService:
         keys = [f'base:{project.id}:{b.branch}' for b in project.bases]
         return [k for k in keys if k != item]
 
+    def tree_targets(
+        self, workspace: Workspace, item: str
+    ) -> tuple[list[tuple[str, str]], dict[str, str]]:
+        """Where commits of session tree *item* may go, with each one's tip: its project's
+        bases and prep branches, and the project's other session trees (not rebases)."""
+        project = self._project_of(workspace, item)
+        if project is None:
+            return [], {}
+        repo = self.root / project.path
+        names = _git(repo, 'for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads/')
+        heads = dict(line.split(' ', 1) for line in names.splitlines() if ' ' in line)
+        targets: list[tuple[str, str]] = []
+        tips: dict[str, str] = {}
+        for base in project.bases:
+            if base.branch in heads:
+                key = f'base:{project.id}:{base.branch}'
+                targets.append((key, f'{base.branch} (maintainer base)'))
+                tips[key] = heads[base.branch]
+        for name in sorted(heads):
+            if name.startswith('b4/') and not name.startswith('b4/review/'):
+                key = f'prep:{project.id}:{name}'
+                targets.append((key, f'{name} (prep branch)'))
+                tips[key] = heads[name]
+        for key, view in self._tree_views():
+            if key == item or view.project != project.id or view.scope == 'rebase':
+                continue
+            assert view.worktree is not None
+            if not pathlib.Path(view.worktree.path).is_dir():
+                continue
+            targets.append((key, f'{session_label(view)} · {view.id} (session tree)'))
+            tips[key] = series_tip(pathlib.Path(view.worktree.path), view.worktree)
+        return targets, tips
+
     def _project_of(self, workspace: Workspace, item: str) -> Optional[Project]:
         if item.startswith('tree:'):
             record = self._record(item.removeprefix('tree:'))

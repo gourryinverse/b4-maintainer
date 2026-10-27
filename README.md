@@ -104,7 +104,10 @@ Python 3.11 or newer.
   sections: Items (each project and its items, edited as above), Mailboxes (each
   series), Trees (each session tree and its commits by class), Artifacts (each
   session's prompt, reports, results, files); right, the selected row's text (for
-  Items, the launch preview). Enter on a Mailboxes row opens that thread in the tab (its
+  Items, the launch preview). On Trees, space marks commits, `p` plucks them (or the
+  selected one) onto the project's base, a prep branch, or another session tree, `P` cuts
+  a prep branch from them, `D` derives a session, and `x` on a tree removes it after
+  saying what it would lose. Enter on a Mailboxes row opens that thread in the tab (its
   tree and the selected message; Escape closes it), where `r` replies to the selected
   message and `R` adds session output (with the tmux editor the draft opens beside the
   app and `ctrl+s` sends from the tab; otherwise the reply opens on LKML). Enter on a

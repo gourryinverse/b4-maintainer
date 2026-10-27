@@ -69,6 +69,10 @@ class Branches(Protocol):
 
     def fork_points(self, workspace: Workspace, item: str) -> list[str]: ...
 
+    def tree_targets(
+        self, workspace: Workspace, item: str
+    ) -> tuple[list[tuple[str, str]], dict[str, str]]: ...
+
     def cut_prep(
         self, workspace: Workspace, item: str, rows: Sequence[DetailRow], name: str, fork: str
     ) -> CutResult: ...

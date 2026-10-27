@@ -34,6 +34,7 @@ class Attachment:
     path: Optional[pathlib.Path] = None  # file
     title: str = ''
     text: str = ''  # A summary (an artifact's), shown above a file or alone.
+    branch: str = ''  # patch: the tree branch it is on.
 
 
 def _text_file(path: pathlib.Path) -> bool:
@@ -108,7 +109,15 @@ def _attachments(
             for c in branch.commits:
                 label = f'patch · {branch.kind} · {c.subject}  ({branch.name}, {who})'
                 found.append(
-                    Attachment('patch', label, sid, repo=tree.path, sha=c.sha, title=c.subject)
+                    Attachment(
+                        'patch',
+                        label,
+                        sid,
+                        repo=tree.path,
+                        sha=c.sha,
+                        title=c.subject,
+                        branch=branch.name,
+                    )
                 )
     out = (directory(sid) / 'work' / 'out').resolve()
     if not out.is_dir():

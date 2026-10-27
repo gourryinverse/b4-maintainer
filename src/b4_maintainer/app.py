@@ -29,11 +29,12 @@ from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
 from .adapters.b4mbox import load_thread
+from .adapters.bases import PluckResult
 from .adapters.drafts import DraftStore, SavedDraft
 from .applydialog import ApplyDialog
 from .attachdialog import AttachDialog
 from .attachments import Attachment, gather, gather_all, git_identity, preview, render
-from .branches import ApplyChoices, DropChoices
+from .branches import ApplyChoices, CutResult, DetailRow, DropChoices
 from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import Derived, LaunchDialog, LaunchResult
@@ -73,7 +74,7 @@ from .sessions.store import SessionView
 from .sessions.trees import TreeState
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TabBar, TextPane, printable
-from .workbench import Workbench, WorkbenchError, add_series, series_bench
+from .workbench import ContentRow, Workbench, WorkbenchError, add_series, series_bench
 from .workbenchscreen import WorkbenchScreen
 from .workspace import Snapshot, Workspace
 
@@ -2824,6 +2825,57 @@ class MaintainerApp(App[None]):
             return
         self._bench_beside = sid
         self._place_pane(sid, focus=True)
+
+    # The Workbench tab's tree actions: thin wrappers over the Branches service (blocking).
+
+    def _branch_rows(self, rows: Sequence[ContentRow]) -> list[DetailRow]:
+        return [
+            DetailRow(r.text, r.attachment.sha, r.attachment.repo, branch=r.attachment.branch)
+            for r in rows
+            if r.attachment is not None and r.attachment.kind == 'patch'
+        ]
+
+    def _bench_branches(self) -> tuple[Branches, Workspace]:
+        if self._branches is None or self.snapshot is None:
+            raise SessionError('branches are not available here')
+        return self._branches, self.snapshot.workspace
+
+    def bench_tree_targets(self, item: str) -> tuple[list[tuple[str, str]], dict[str, str]]:
+        branches, workspace = self._bench_branches()
+        return branches.tree_targets(workspace, item)
+
+    def bench_pluck(
+        self, item: str, rows: Sequence[ContentRow], target: str, expected: str
+    ) -> PluckResult:
+        branches, workspace = self._bench_branches()
+        return branches.pluck(workspace, item, self._branch_rows(rows), target, expected)
+
+    def bench_fork_points(self, item: str) -> list[str]:
+        branches, workspace = self._bench_branches()
+        return branches.fork_points(workspace, item)
+
+    def bench_cut_prep(
+        self, item: str, rows: Sequence[ContentRow], name: str, fork: str
+    ) -> CutResult:
+        branches, workspace = self._bench_branches()
+        return branches.cut_prep(workspace, item, self._branch_rows(rows), name, fork)
+
+    def bench_losses(self, item: str) -> str:
+        branches, workspace = self._bench_branches()
+        return branches.losses(workspace, item)
+
+    def bench_reap(self, item: str) -> tuple[bool, str]:
+        branches, workspace = self._bench_branches()
+        return branches.reap(workspace, item)
+
+    def bench_derive(
+        self, item: str, row: Optional[ContentRow]
+    ) -> tuple[list[tuple[str, str, str]], Optional[ContextItem]]:
+        branches, workspace = self._bench_branches()
+        detail = (self._branch_rows([row]) or [None])[0] if row is not None else None
+        return branches.derive_options(workspace, item, detail), branches.derive_context(
+            item, detail
+        )
 
     def _open_bench_tab(self, record: SessionRecord) -> None:
         """A workbench session from the drawer: its workbench's tab, the session selected

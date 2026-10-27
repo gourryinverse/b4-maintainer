@@ -16,7 +16,7 @@ the app. `w` in the series list or a thread adds series (see the app).
 """
 
 from dataclasses import replace
-from typing import Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, TypeVar
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -60,6 +60,7 @@ TITLES = {
     'bench-contents': 'Contents',
     'bench-show-pane': 'Launch preview',
 }
+T = TypeVar('T')
 ITEMS = ('heading', 'entry', 'item')  # Rows whose text on the right is the launch preview.
 
 
@@ -121,6 +122,11 @@ class WorkbenchScreen(Screen[None]):
         # In a thread opened here: reply to the selected message (without, or with output).
         Binding('r', 'reply', 'reply'),
         Binding('R', 'reply_attach', 'reply + session output'),
+        # On Trees: what Branches did with session trees.
+        Binding('space', 'mark', 'mark'),
+        Binding('p', 'pluck', 'pluck'),
+        Binding('P', 'new_prep', 'new prep branch'),
+        Binding('D', 'derive', 'derive a session', show=False),
     ]
 
     def __init__(
@@ -150,6 +156,7 @@ class WorkbenchScreen(Screen[None]):
         self._thread_item: Optional[WorkItem] = None
         self._thread_rows: list[TreeRow] = []
         self._blocks: list[Block] = []  # The selected message's text.
+        self._marks: list[int] = []  # Marked commit rows (of one tree), in marking order.
 
     def compose(self) -> ComposeResult:
         yield TabBar('workbench')
@@ -268,6 +275,7 @@ class WorkbenchScreen(Screen[None]):
         keep = self._keep if self._keep[0] else self._row_key(self.row())
         self._keep = ('', '', -1)
         self._rows = rows
+        self._marks = []
         lists = self.query_one('#bench-contents', OptionList)
         with self.prevent(OptionList.OptionHighlighted):
             lists.clear_options()
@@ -520,6 +528,195 @@ class WorkbenchScreen(Screen[None]):
         if reply is not None and self._thread_item is not None and msgid:
             reply(self._thread_item, msgid, attach)
 
+    # Session trees (the Trees section).
+
+    def marked(self) -> list[str]:
+        found = (self._rows[n].attachment for n in self._marks)
+        return [a.sha for a in found if a is not None]
+
+    def _chosen(self) -> list[ContentRow]:
+        """The marked commits, else the selected one."""
+        if self._marks:
+            return [self._rows[n] for n in self._marks]
+        row = self.row()
+        return [row] if row is not None and row.kind == 'commit' else []
+
+    def action_mark(self) -> None:
+        lists = self.query_one('#bench-contents', OptionList)
+        index, row = lists.highlighted, self.row()
+        if index is None or row is None or row.kind != 'commit':
+            return
+        if self._marks and self._rows[self._marks[0]].item != row.item:
+            self._unmark_all()  # Marks stay within one tree.
+        if index in self._marks:
+            self._marks.remove(index)
+            lists.replace_option_prompt_at_index(index, row.text)
+        else:
+            self._marks.append(index)
+            lists.replace_option_prompt_at_index(index, '●' + row.text[1:])
+        self.refresh_bindings()
+
+    def _unmark_all(self) -> None:
+        lists = self.query_one('#bench-contents', OptionList)
+        for n in self._marks:
+            lists.replace_option_prompt_at_index(n, self._rows[n].text)
+        self._marks = []
+
+    def _act(self, call: Callable[[], T], done: Callable[[T], None], doing: str) -> None:
+        """Run *call* off the UI thread, then *done* with its result (or say why not)."""
+
+        def work() -> None:
+            try:
+                result = call()
+            except Exception as exc:
+                self.app.call_from_thread(self._status, f'Not done: {exc}')
+                return
+            self.app.call_from_thread(done, result)
+
+        self._status(doing)
+        self.run_worker(work, thread=True, group='bench-act')
+
+    def action_pluck(self) -> None:
+        from .app import Confirm
+
+        rows = self._chosen()
+        targets_of = getattr(self.app, 'bench_tree_targets', None)
+        pluck: Any = getattr(self.app, 'bench_pluck', None)
+        if not rows or targets_of is None or pluck is None:
+            return
+        item, n = rows[0].item, len(rows)
+        commits = _count(n, 'commit')
+
+        def pick(found: tuple[list[tuple[str, str]], dict[str, str]]) -> None:
+            targets, tips = found
+            if not targets:
+                self._status('Nowhere to pluck to: no base, prep branch, or other tree')
+                return
+
+            def picked(target: Optional[str]) -> None:
+                if not target:
+                    return
+                label = dict(targets)[target]
+                verb = 'Copy' if target.startswith('tree:') else 'Pluck'
+                how = (
+                    'they go on branches of the same name and keep their authors'
+                    if verb == 'Copy'
+                    else 'agent commits become yours, with Assisted-by; others keep their authors'
+                )
+                prompt = f'{verb} {commits} onto {label}? {how.capitalize()}. [y|N]'
+
+                def answered(yes: Optional[bool]) -> None:
+                    if yes:
+                        self._act(
+                            lambda: pluck(item, rows, target, tips.get(target, '')),
+                            lambda r: self._plucked(r, label),
+                            f'{verb}ing {commits}…',
+                        )
+
+                self.app.push_screen(Confirm(prompt), answered)
+
+            self.app.push_screen(Pick(f'Pluck {commits} onto…', targets), picked)
+
+        self._act(lambda: targets_of(item), pick, 'Listing where they can go…')
+
+    def _plucked(self, result: object, label: str) -> None:
+        ok = getattr(result, 'ok', False)
+        if ok:
+            n = len(getattr(result, 'picked', ()))
+            dropped = getattr(result, 'dropped', ())
+            extra = f'; already there: {len(dropped)}' if dropped else ''
+            self._status(f'Plucked {_count(n, "commit")} onto {label}{extra}')
+        else:
+            failed = getattr(result, 'failed', '')
+            why = f'{failed} does not apply' if failed else getattr(result, 'error', 'failed')
+            self._status(f'Not plucked: {why}; nothing changed')
+        self._load_contents()
+
+    def action_new_prep(self) -> None:
+        rows = self._chosen()
+        forks_of = getattr(self.app, 'bench_fork_points', None)
+        cut: Any = getattr(self.app, 'bench_cut_prep', None)
+        if not rows or forks_of is None or cut is None:
+            return
+        item = rows[0].item
+
+        def named(name: Optional[str]) -> None:
+            if not name:
+                return
+
+            def pick(found: list[str]) -> None:
+                forks = [(f, f) for f in found]
+
+                def forked(fork: Optional[str]) -> None:
+                    if fork:
+                        self._act(lambda: cut(item, rows, name, fork), self._cut, 'Cutting…')
+
+                self.app.push_screen(Pick(f'Fork point for b4/{name}', forks), forked)
+
+            self._act(lambda: forks_of(item), pick, 'Listing fork points…')
+
+        self.app.push_screen(Ask('Name the new prep branch'), named)
+
+    def _cut(self, result: object) -> None:
+        if getattr(result, 'ok', False):
+            branch, n = getattr(result, 'branch', ''), getattr(result, 'picked', 0)
+            self._status(f'Made {branch} from {_count(n, "commit")}: F4 shows it')
+            self._unmark_all()
+        else:
+            self._status(f'No prep branch: {getattr(result, "error", "failed")}')
+
+    def _remove_tree(self, row: ContentRow) -> None:
+        from .app import Confirm
+
+        losses = getattr(self.app, 'bench_losses', None)
+        reap: Any = getattr(self.app, 'bench_reap', None)
+        if losses is None or reap is None:
+            return
+
+        def confirm(text: str) -> None:
+            def answered(yes: Optional[bool]) -> None:
+                if yes:
+                    self._act(lambda: reap(row.item), self._reaped, 'Removing…')
+
+            self.app.push_screen(Confirm(f'Remove {text}? [y|N]'), answered)
+
+        self._act(lambda: losses(row.item), confirm, 'Looking at what it would lose…')
+
+    def _reaped(self, result: tuple[bool, str]) -> None:
+        ok, note = result
+        self._status(note)
+        if ok:
+            self._load_contents()
+
+    def action_derive(self) -> None:
+        from .launchdialog import Derived
+
+        row = self.row()
+        derive = getattr(self.app, 'bench_derive', None)
+        if row is None or row.kind not in ('tree', 'commit') or derive is None:
+            return
+        parent = row.session
+
+        def pick(found: tuple[list[tuple[str, str, str]], Any]) -> None:
+            options, context = found
+            if not options:
+                self._status('That session has no tree to derive from')
+                return
+            by_key = {str(n): option for n, option in enumerate(options)}
+
+            def picked(choice: Optional[str]) -> None:
+                if choice is None:
+                    return
+                start, start_from, label = by_key[choice]
+                launch = getattr(self.app, 'launch_derived', None)
+                if launch is not None:
+                    launch(parent, Derived(parent, start, start_from, label), context)
+
+            choices = [(n, option[2]) for n, option in by_key.items()]
+            self.app.push_screen(Pick('Start the new session from…', choices), picked)
+
+        self._act(lambda: derive(row.item, row if row.kind == 'commit' else None), pick, '')
+
     # Text, for tests.
 
     def bench_labels(self) -> list[str]:
@@ -639,8 +836,18 @@ class WorkbenchScreen(Screen[None]):
             return pane == 'bench-list' and bench is not None and not self.thread_open()
         if action == 'remove':
             if pane == 'bench-contents':
-                return bool(self._project())
+                row = self.row()
+                return bool(self._project()) or (row is not None and row.kind == 'tree')
             return pane == 'bench-list' and bench is not None
+        if action == 'mark':
+            row = self.row()
+            return pane == 'bench-contents' and row is not None and row.kind == 'commit'
+        if action in ('pluck', 'new_prep'):
+            return pane == 'bench-contents' and bool(self._chosen())
+        if action == 'derive':
+            row = self.row()
+            kinds = ('tree', 'commit')
+            return pane == 'bench-contents' and row is not None and row.kind in kinds
         if action in ('base', 'add_branch'):
             return bool(self._project())
         if action == 'move':
@@ -713,6 +920,10 @@ class WorkbenchScreen(Screen[None]):
 
         bench = self.bench()
         if bench is None:
+            return
+        row = self.row()
+        if self._pane() == 'bench-contents' and row is not None and row.kind == 'tree':
+            self._remove_tree(row)
             return
         item = self._item()
         if item is not None:

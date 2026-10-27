@@ -294,6 +294,7 @@ class ContentRow:
     series: str = ''  # A mailbox's series identity.
     attachment: Optional[Attachment] = None  # A commit's or artifact's, for showing.
     path: str = ''  # A tree's path.
+    item: str = ''  # A tree's or commit's Branches item key (tree:<sid>[/<project>]).
 
 
 class WorkbenchService:
@@ -438,13 +439,23 @@ class WorkbenchService:
         for record in sorted(records, key=lambda r: r.created, reverse=True):
             found = gather([record], record.series, self._directory) if self._directory else []
             for project, tree in session_trees(record):
+                key = f'tree:{record.id}/{project}' if record.trees else f'tree:{record.id}'
                 label = f'  {record.id} · {project} · {tree.branch}'
-                trees.append(ContentRow(label, 'tree', project, session=record.id, path=tree.path))
+                row = ContentRow(
+                    label, 'tree', project, session=record.id, path=tree.path, item=key
+                )
+                trees.append(row)
                 for a in (x for x in found if x.kind == 'patch' and x.repo == tree.path):
                     kind = a.label.split(' · ')[1] if ' · ' in a.label else 'commit'
-                    text = f'    {kind}: {a.title}'
                     trees.append(
-                        ContentRow(text, 'commit', project, session=record.id, attachment=a)
+                        ContentRow(
+                            f'    {kind}: {a.title}',
+                            'commit',
+                            project,
+                            session=record.id,
+                            attachment=a,
+                            item=key,
+                        )
                     )
             for a in (x for x in found if x.kind != 'patch'):
                 text = f'  {record.id}: {a.label.split("  (")[0]}'
