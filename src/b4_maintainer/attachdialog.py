@@ -45,19 +45,21 @@ class AttachDialog(ModalScreen[Optional[list[Attachment]]]):
         Binding('slash', 'filter', 'filter', key_display='/'),
     ]
 
-    def __init__(self, offered: Sequence[Attachment]) -> None:
+    def __init__(
+        self,
+        offered: Sequence[Attachment],
+        heading: str = 'Add to the reply · space ticks · / filters (↓ back) · enter writes it · '
+        'escape cancels',
+    ) -> None:
         super().__init__()
         self.offered = list(offered)
+        self.heading = heading
         self._ticked: list[int] = []  # Ticked entries, in the order ticked.
         self._visible: list[int] = list(range(len(self.offered)))
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(
-                'Add to the reply · space ticks · / filters (↓ back) · enter writes it · escape cancels',
-                id='attach-help',
-                markup=False,
-            )
+            yield Static(self.heading, id='attach-help', markup=False)
             yield Input(placeholder='/ filters by what you type', id='attach-filter')
             yield SelectionList[int](
                 *(Selection(a.label, n, False) for n, a in enumerate(self.offered))

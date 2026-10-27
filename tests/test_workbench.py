@@ -2,6 +2,8 @@
 each in state/workbenches/ (synced): per project, a base and the series and local
 branches applied on it in order."""
 
+import pathlib
+
 import pytest
 
 from b4_maintainer.workbench import (
@@ -445,3 +447,44 @@ def test_a_project_joins_without_items_and_leaves_only_when_removed():
     with pytest.raises(WorkbenchError, match='already'):
         add_project(bench, 'ndctl')
     assert remove_project(bench, 'ndctl').entries == ()
+
+
+def test_a_sessions_artifacts_become_items():
+    from sessiondata import make_record
+
+    from b4_maintainer.attachments import Attachment
+    from b4_maintainer.sessions.records import ProjectTree, Worktree
+    from b4_maintainer.workbench import artifact_item
+
+    tree = Worktree('/t/s1', 'b4m/session/s1', 'b', 'a')
+    single = make_record('s1', worktree=tree)
+    commit = Attachment(
+        'patch',
+        'patch · fixup · mm: x',
+        's1',
+        repo='/t/s1',
+        sha='c',
+        title='mm: x',
+        branch='b4m/fixup/x',
+    )
+    assert artifact_item(single, commit) == ('linux', Item(branch='tree:s1:b4m/fixup/x'))
+    bench = make_record(
+        'w1',
+        trees=(ProjectTree('ndctl', Worktree('/t/w1/ndctl', 'b4m/session/w1', 'b', 'a')),),
+    )
+    commit = Attachment(
+        'patch',
+        'patch · test · t',
+        'w1',
+        repo='/t/w1/ndctl',
+        sha='c',
+        title='t',
+        branch='b4m/tests/t',
+    )
+    assert artifact_item(bench, commit) == ('ndctl', Item(branch='tree:w1/ndctl:b4m/tests/t'))
+    report = Attachment(
+        'file', 'analysis: Compare', 's1', path=pathlib.Path('/o/report.md'), title='Compare'
+    )
+    assert artifact_item(single, report) == ('', Item(file='/o/report.md'))
+    note = Attachment('text', 'finding: x', 's1', title='x', text='Only words.')
+    assert artifact_item(single, note) is None

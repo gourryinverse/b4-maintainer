@@ -76,10 +76,12 @@ from .views import ViewIndex
 from .widgets import Block, KeyBar, TabBar, TextPane, printable
 from .workbench import (
     ContentRow,
+    Item,
     Workbench,
     WorkbenchError,
     add_mail,
     add_series,
+    artifact_item,
     series_bench,
 )
 from .workbenchscreen import WorkbenchScreen
@@ -1370,6 +1372,27 @@ class MaintainerApp(App[None]):
             self._reply_with_output(item, msgid, None)
         else:
             self._begin_reply(item, msgid, None)
+
+    def bench_artifacts(self, bench_id: str) -> list[tuple[Attachment, str, Item]]:
+        """What `a` on the Workbench offers from sessions (blocking): each artifact that can
+        be an item, with its project ('' to ask) and the item; other workbenches' sessions
+        first (labelled with theirs), then unfiled ones, then this workbench's own."""
+        hub, service = self._sessions, self._workbenches
+        if hub is None:
+            return []
+        labels = {b.id: b.label for b in service.store.list()[0]} if service is not None else {}
+        newest = sorted(hub.records(), key=lambda r: r.created, reverse=True)
+        ordered = [r for r in newest if r.workbench and r.workbench != bench_id]
+        ordered += [r for r in newest if not r.workbench]
+        ordered += [r for r in newest if r.workbench == bench_id]
+        tags = {r.id: f', {labels.get(r.workbench, r.workbench) or "unfiled"}' for r in ordered}
+        by_id = {r.id: r for r in ordered}
+        found = []
+        for a in gather_all(ordered, hub.store.directory, tags):
+            mapped = artifact_item(by_id[a.session], a)
+            if mapped is not None:
+                found.append((a, *mapped))
+        return found
 
     def _offered_output(self, records: list[SessionRecord], item: WorkItem) -> list[Attachment]:
         """What R offers (blocking): every session's output, the series' own first, then

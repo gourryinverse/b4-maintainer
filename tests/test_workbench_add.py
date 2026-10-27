@@ -138,3 +138,52 @@ async def test_a_adds_a_file_from_disk(demo_root, tmp_path):
         await pilot.press('enter')
         await settle(pilot)
         assert 'does not exist' in app.screen.status_text()
+
+
+async def test_a_adds_artifacts_from_another_workbenchs_sessions(demo_root, tmp_path):
+    from sessiondata import FakeSessionRunner, FakeWorktrees, make_record
+
+    from b4_maintainer.attachdialog import AttachDialog
+    from b4_maintainer.sessions.hub import SessionHub
+    from b4_maintainer.sessions.store import SessionStore
+
+    sessions = SessionStore(tmp_path / 'var' / 'sessions')
+    runner = FakeSessionRunner(sessions)
+    hub = SessionHub(sessions, runner, FakeWorktrees())
+    store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
+    store.save(Workbench('cmp', 'Compare', (Entry('linux', '', ()),)))
+    store.save(Workbench('w', 'W', (Entry('linux', '', ()), Entry('qemu', '', ()))))
+    runner.add(
+        make_record('c1', scope='workbench', series='workbench:cmp', workbench='cmp'), alive=False
+    )
+    out = sessions.directory('c1') / 'work' / 'out'
+    out.mkdir(parents=True)
+    (out / 'take-b.diff').write_text('--- a/x\n+++ b/x\n')
+    app = MaintainerApp(
+        FixtureSource(demo_root).load,
+        sessions=hub,
+        workbenches=FakeService(tmp_path, store, hub.records, sessions.directory),
+    )
+    async with app.run_test(size=(200, 50)) as pilot:
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        screen = app.screen
+        while screen.bench().id != 'w':
+            await pilot.press('down')
+        await pilot.press('a')
+        await settle(pilot)
+        keys = [key for key, _label in app.screen.choices]
+        await pilot.press(*(['down'] * keys.index('artifact')), 'enter')
+        await settle(pilot)
+        picker = app.screen
+        assert isinstance(picker, AttachDialog)
+        labels = [a.label for a in picker.offered]
+        assert any('take-b.diff' in label and 'Compare' in label for label in labels)
+        index = next(n for n, label in enumerate(labels) if 'take-b.diff' in label)
+        await pilot.press(*(['down'] * index), 'space', 'enter')
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)  # Which project for the files?
+        await pilot.press('down', 'enter')  # qemu.
+        await settle(pilot)
+        assert store.get('w').entry('qemu').items == (Item(file=str(out / 'take-b.diff')),)

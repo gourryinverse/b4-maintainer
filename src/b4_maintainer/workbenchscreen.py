@@ -28,6 +28,8 @@ from textual.widgets import Footer, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
 from textual.widgets.selection_list import Selection
 
+from .attachdialog import AttachDialog
+from .attachments import Attachment
 from .branchscreen import Ask, Pick
 from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
@@ -42,6 +44,7 @@ from .reader import (
 from .widgets import Block, TabBar, TextPane
 from .workbench import (
     ContentRow,
+    Item,
     Workbench,
     WorkbenchError,
     WorkbenchService,
@@ -1045,17 +1048,76 @@ class WorkbenchScreen(Screen[None]):
             ('link', 'A thread: lore link or Message-ID (series or discussion)'),
             ('file', 'A file from disk (patches are applied, anything else is read)'),
             ('project', 'A project (a tree at its base)'),
+            ('artifact', 'Artifacts from sessions (any workbench): commits, reports, diffs'),
         ]
 
         def picked(way: Optional[str]) -> None:
             if way == 'project':
                 self._add_project()
+            elif way == 'artifact':
+                self._add_artifacts()
             elif way == 'link':
                 self.app.push_screen(Ask('Lore link or Message-ID'), self._add_link)
             elif way == 'file':
                 self.app.push_screen(Ask('Path of the file'), self._add_file)
 
         self.app.push_screen(Pick(f'Add to {bench.label}', ways), picked)
+
+    def _add_artifacts(self) -> None:
+        bench = self.bench()
+        offer = getattr(self.app, 'bench_artifacts', None)
+        if bench is None or offer is None:
+            return
+        wid = bench.id
+
+        def pick(found: list[tuple[Attachment, str, Item]]) -> None:
+            if not found:
+                self._status('No session has left a commit or file to add')
+                return
+            mapped = {id(a): (project, item) for a, project, item in found}
+            heading = (
+                'Add to the workbench · space ticks · / filters (↓ back) · enter adds · '
+                'escape cancels (a commit brings its branch)'
+            )
+
+            def chosen(picked: Optional[list[Attachment]]) -> None:
+                if picked:
+                    self._add_mapped([mapped[id(a)] for a in picked])
+
+            self.app.push_screen(AttachDialog([a for a, _p, _i in found], heading), chosen)
+
+        self._act(lambda: offer(wid), pick, 'Gathering session output…')
+
+    def _add_mapped(self, chosen: list[tuple[str, Item]]) -> None:
+        """Commits under their tree's project; files under the project picked once."""
+        start = self.bench()
+        if start is None:
+            return
+        with_branches, added = start, 0
+        for project, item in chosen:
+            if project:
+                try:
+                    base = self._default_base(project)
+                    with_branches = add_branch(with_branches, project, item.branch, base)
+                    added += 1
+                except WorkbenchError:
+                    pass  # Its branch is on already (another commit of it).
+        files = [item.file for project, item in chosen if not project]
+        if not files:
+            self._save(with_branches, None, f'Added {_count(added, "branch")}')
+            return
+
+        def under(project: str) -> None:
+            result, count = with_branches, added
+            for path in files:
+                try:
+                    result = add_file(result, project, path, self._default_base(project))
+                    count += 1
+                except WorkbenchError:
+                    pass
+            self._save(result, None, f'Added {_count(count, "item")}')
+
+        self._for_project('', under)
 
     def _add_project(self) -> None:
         bench = self.bench()

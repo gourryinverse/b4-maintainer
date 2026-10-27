@@ -215,6 +215,21 @@ def series_bench(
     return bench
 
 
+def artifact_item(record: SessionRecord, a: Attachment) -> Optional[tuple[str, Item]]:
+    """What a session's artifact becomes on a workbench, with its project ('' for the
+    one chosen): a commit, its tree branch (replayed beyond the base); a file (a report,
+    a diff, the prompt), a file item; a summary alone, nothing."""
+    if a.kind == 'patch':
+        for project, tree in session_trees(record):
+            if tree.path == a.repo:
+                where = f'{record.id}/{project}' if record.trees else record.id
+                return project, Item(branch=f'tree:{where}:{a.branch}')
+        return None
+    if a.path is not None and a.kind in ('file', 'prompt'):
+        return '', Item(file=str(a.path))
+    return None
+
+
 # Edits.
 
 
