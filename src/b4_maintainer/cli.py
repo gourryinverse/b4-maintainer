@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .adapters.live import LiveSource
     from .app import MaintainerApp
     from .sessions.hub import SessionHub
+    from .workbench import WorkbenchService
 
 
 def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
@@ -111,8 +112,19 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
             email_dryrun=source.email_dryrun,
             no_sign=source.no_sign,
         ),
+        workbenches=_workbenches(source.root, hub),
         app_pane=_app_pane(),
     )
+
+
+def _workbenches(root: pathlib.Path, hub: 'SessionHub') -> 'WorkbenchService':
+    """Workbenches beside the configuration: state/workbenches/ (synced) when the
+    workspace has a state repository, else workbenches/ in the workspace."""
+    from .projectsetup import config_path
+    from .workbench import WorkbenchService, WorkbenchStore
+
+    store = WorkbenchStore(config_path(root).parent / 'workbenches')
+    return WorkbenchService(root, store, hub.records)
 
 
 def _app_pane() -> str:

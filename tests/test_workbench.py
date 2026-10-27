@@ -129,3 +129,96 @@ def test_two_machines_editing_different_workbenches_both_keep_their_edits():
     theirs = {'workbenches/cxl-dax.toml': a}  # The other machine deleted "other".
     merged, notes = merge_states(base, ours, theirs, now)
     assert merged == {'workbenches/cxl-dax.toml': edited} and notes == []
+
+
+def service_root(tmp_path):
+    """Two projects with checkouts; linux has a maintainer base and a fixes branch."""
+    from gitutil import git
+
+    from b4_maintainer.workspace import Workspace
+
+    for name in ('linux', 'ndctl'):
+        repo = tmp_path / 'projects' / name
+        repo.mkdir(parents=True)
+        git('init', '-q', '-b', 'main', cwd=repo)
+        (repo / 'a.c').write_text('a\n')
+        git('add', '-A', cwd=repo)
+        git(
+            '-c',
+            'user.name=M',
+            '-c',
+            'user.email=m@example.org',
+            'commit',
+            '-q',
+            '-m',
+            'a',
+            cwd=repo,
+        )
+    linux = tmp_path / 'projects' / 'linux'
+    git('branch', 'gourry/base', cwd=linux)
+    git('switch', '-q', '-c', 'gourry/fixes', cwd=linux)
+    for n in (1, 2):
+        (linux / f'f{n}.c').write_text(f'{n}\n')
+        git('add', '-A', cwd=linux)
+        git(
+            '-c',
+            'user.name=M',
+            '-c',
+            'user.email=m@example.org',
+            'commit',
+            '-q',
+            '-m',
+            f'f{n}',
+            cwd=linux,
+        )
+    git('switch', '-q', 'main', cwd=linux)
+    git('branch', 'b4/review/x', cwd=linux)  # b4's review branches are not offered.
+    workspace = Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': 'linux',
+                    'path': 'projects/linux',
+                    'refs': [{'label': 'm', 'name': 'main', 'authority': 'mainline'}],
+                    'bases': [{'branch': 'gourry/base', 'upstream': 'main'}],
+                },
+                {'id': 'ndctl', 'path': 'projects/ndctl'},
+            ]
+        }
+    )
+    return workspace
+
+
+def test_the_service_offers_bases_and_branches_and_previews_a_launch(tmp_path):
+    from b4_maintainer.fixtures import make_series
+    from b4_maintainer.workbench import WorkbenchService
+
+    workspace = service_root(tmp_path)
+    store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
+    service = WorkbenchService(tmp_path, store, lambda: [])
+    assert [v for v, _label in service.base_choices(workspace, 'linux')] == [
+        'gourry/base',
+        'main',
+        'HEAD',
+    ]
+    branches = [v for v, _label in service.branch_choices(workspace, 'linux')]
+    assert 'gourry/fixes' in branches and 'b4/review/x' not in branches
+    series = make_series('cxl: region mode', revision=3)
+    bench = Workbench(
+        'w',
+        'W',
+        (
+            Entry(
+                'linux',
+                'gourry/base',
+                (Item(series.identity, 3, series.subject), Item(branch='gourry/fixes')),
+            ),
+            Entry('ndctl', '', (Item('gone@example.org', 1, 'daxctl: old'),)),
+        ),
+    )
+    text = service.preview(workspace, bench, {series.identity: series}, {series.identity: 4})
+    assert 'linux on gourry/base' in text
+    assert '1. cxl: region mode v3' in text and 'v4 available' in text
+    assert '2. gourry/fixes · 2 commits beyond the base' in text
+    assert 'ndctl on the base b4 chooses' in text
+    assert 'daxctl: old v1 · not in the cache' in text

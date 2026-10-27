@@ -6,16 +6,23 @@ in order: posted series (applied by b4) and local branches (their own commits re
 project branch, or `tree:<session>:<branch>` from another session's tree). Each is one
 TOML file in state/workbenches/ (synced; another machine's edit to a different workbench
 never collides). Edits are pure functions returning the new workbench; the store reads
-and writes the files. Model only: preparing trees from one is the sessions' business.
+and writes the files. WorkbenchService gathers what the Workbench screen offers and
+previews (plain git; blocking: call from a worker). Preparing trees is the sessions'.
 """
 
 import json
 import os
 import pathlib
 import re
+import subprocess
 import tomllib
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
+
+from .model import Series
+from .sessions.records import SessionRecord, session_trees
+from .sessions.trees import classify_tree
+from .workspace import Workspace
 
 DIRECTORY = 'workbenches'  # Under state/.
 _TOP = frozenset({'label', 'entry'})
@@ -241,3 +248,134 @@ def reroll(bench: Workbench, project: str, index: int, revision: int) -> Workben
     items = list(entry.items)
     items[index] = replace(items[index], revision=revision)
     return _with_entry(bench, replace(entry, items=tuple(items)))
+
+
+# The screen's data.
+
+
+def _git(repo: pathlib.Path, *args: str) -> Optional[str]:
+    run = subprocess.run(
+        ['git', *args], cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL
+    )
+    return run.stdout.strip() if run.returncode == 0 else None
+
+
+class WorkbenchService:
+    """Workbenches for the screen: the store, and per project what may go in a tree."""
+
+    def __init__(
+        self,
+        root: pathlib.Path,
+        store: WorkbenchStore,
+        records: Callable[[], Sequence[SessionRecord]],
+    ) -> None:
+        self.root = root
+        self.store = store
+        self._records = records
+
+    def _repo(self, workspace: Workspace, project: str) -> Optional[pathlib.Path]:
+        found = workspace.project(project)
+        repo = self.root / found.path if found else None
+        return repo if repo is not None and (repo / '.git').exists() else None
+
+    def base_choices(self, workspace: Workspace, project: str) -> list[tuple[str, str]]:
+        """(base, label): the project's maintainer bases, its configured refs, HEAD."""
+        found = workspace.project(project)
+        if found is None:
+            return []
+        choices = [
+            (b.branch, f'{b.branch}  (maintainer base on {b.upstream})') for b in found.bases
+        ]
+        choices += [(r.name, f'{r.name}  ({r.authority.name.lower()})') for r in found.refs]
+        choices.append(('HEAD', "HEAD  (the checkout's)"))
+        return list({v: (v, label) for v, label in choices}.values())
+
+    def branch_choices(self, workspace: Workspace, project: str) -> list[tuple[str, str]]:
+        """(branch item, label): the project's local branches (not b4's review branches),
+        then the branches with commits in its session trees (`tree:<tree>:<branch>`)."""
+        choices: list[tuple[str, str]] = []
+        repo = self._repo(workspace, project)
+        if repo is not None:
+            names = _git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/') or ''
+            for name in names.split():
+                if not name.startswith(('b4/review/', 'b4m/prep-start/')):
+                    choices.append((name, name))
+        for record in self._records():
+            for tree_project, tree in session_trees(record):
+                if tree_project != project or not pathlib.Path(tree.path).is_dir():
+                    continue
+                where = f'{record.id}/{tree_project}' if record.trees else record.id
+                for branch in classify_tree(pathlib.Path(tree.path), tree).branches:
+                    if branch.commits:
+                        label = f'{branch.name}  (session {record.id}, {len(branch.commits)})'
+                        choices.append((f'tree:{where}:{branch.name}', label))
+        return choices
+
+    def branch_repo(self, workspace: Workspace, project: str, branch: str) -> tuple[str, str]:
+        """(repository, branch) a branch item reads from: a session tree, or the project."""
+        if branch.startswith('tree:'):
+            where, _, name = branch.removeprefix('tree:').partition(':')
+            sid, _, tree_project = where.partition('/')
+            record = next((r for r in self._records() if r.id == sid), None)
+            trees = session_trees(record) if record else ()
+            tree = next((t for p, t in trees if not tree_project or p == tree_project), None)
+            return (tree.path if tree else ''), name
+        repo = self._repo(workspace, project)
+        return (str(repo) if repo else ''), branch
+
+    def preview(
+        self,
+        workspace: Workspace,
+        bench: Workbench,
+        series: Mapping[str, Series],
+        latest: Mapping[str, int],
+    ) -> str:
+        """What launching *bench* prepares, tree by tree, and what stands in the way."""
+        if not bench.entries:
+            return 'Nothing yet: w adds a series from the series list or a thread.'
+        lines: list[str] = []
+        for entry in bench.entries:
+            repo = self._repo(workspace, entry.project)
+            where = f'on {entry.base}' if entry.base else 'on the base b4 chooses'
+            lines.append(f'{entry.project} {where}')
+            if repo is None:
+                lines.append(f'  ! {entry.project} has no checkout')
+                continue
+            start = (
+                _git(repo, 'rev-parse', '--verify', '--quiet', entry.base) if entry.base else None
+            )
+            if entry.base and start is None:
+                lines.append(f'  ! {entry.base} is not a commit in {entry.project}')
+            for n, item in enumerate(entry.items, 1):
+                lines.append(
+                    f'  {n}. {self._describe(workspace, entry, item, start, series, latest)}'
+                )
+        return '\n'.join(lines)
+
+    def _describe(
+        self,
+        workspace: Workspace,
+        entry: Entry,
+        item: Item,
+        start: Optional[str],
+        series: Mapping[str, Series],
+        latest: Mapping[str, int],
+    ) -> str:
+        if item.series:
+            text = item.label
+            known = series.get(item.series)
+            if known is None:
+                return f'{text} · not in the cache (F5 fetches it)'
+            if known.revision == item.revision:
+                text += f' · {len(known.patches)} patches'
+            newer = latest.get(item.series, 0)
+            return text + (f' · v{newer} available (v)' if newer > item.revision else '')
+        repo, name = self.branch_repo(workspace, entry.project, item.branch)
+        if not repo:
+            return f'{item.branch} · its tree is gone'
+        if start is None:
+            return item.branch
+        count = _git(pathlib.Path(repo), 'rev-list', '--count', '--no-merges', f'{start}..{name}')
+        if count is None:
+            return f'{item.branch} · not a branch there'
+        return f'{item.branch} · {count} commit{"s" if count != "1" else ""} beyond the base'

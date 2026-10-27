@@ -34,7 +34,7 @@ from .applydialog import ApplyDialog
 from .attachdialog import AttachDialog
 from .attachments import Attachment, gather, git_identity, preview, render
 from .branches import ApplyChoices, DropChoices
-from .branchscreen import Branches, BranchesScreen, Pick
+from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import Derived, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
@@ -73,10 +73,13 @@ from .sessions.store import SessionView
 from .sessions.trees import TreeState
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TextPane, printable
+from .workbench import Workbench, WorkbenchError, add_series
+from .workbenchscreen import WorkbenchScreen
 from .workspace import Snapshot, Workspace
 
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult  # b4: only when applying.
+    from .workbench import WorkbenchService
 
 SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
 WORKTREE_ACTIONS = frozenset({'mark_worktree', 'remove_worktrees'})
@@ -431,6 +434,8 @@ class MaintainerApp(App[None]):
         Binding('d', 'drop_series', 'drop'),
         Binding('M', 'mark_read', 'read all'),
         Binding('f3', 'branches', 'branches', key_display='F3'),
+        Binding('f4', 'workbench', 'workbenches', key_display='F4'),
+        Binding('w', 'add_to_workbench', 'to workbench'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
         Binding('f12', 'focus_session', 'to session', key_display='F12'),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
@@ -442,6 +447,7 @@ class MaintainerApp(App[None]):
         loader: Callable[[], Snapshot],
         sessions: Optional[SessionHub] = None,
         branches: Optional[Branches] = None,
+        workbenches: Optional['WorkbenchService'] = None,
         breakpoints: Optional[Breakpoints] = None,
         symbols: Symbols = DEFAULT_SYMBOLS,
         thread_loader: Callable[[Series], SeriesThread] = load_thread,
@@ -487,6 +493,7 @@ class MaintainerApp(App[None]):
         # Agent sessions: polled for the drawer; only the maintainer's keys act on them.
         self._sessions = sessions
         self._branches = branches  # The Branches screen's data and actions (live only).
+        self._workbenches = workbenches  # F4's workbenches (live only).
         self._overview = Overview()
         self._polling = False
         self._drawer_tab = 'sessions'
@@ -755,7 +762,7 @@ class MaintainerApp(App[None]):
             return action == 'cycle_pane'  # Tab moves between the dialog's sections.
         if isinstance(self.screen, ModalScreen):
             return False  # A prompt or dialog owns every key while it is open.
-        if isinstance(self.screen, BranchesScreen):
+        if isinstance(self.screen, (BranchesScreen, WorkbenchScreen)):
             return action == 'quit'  # The screen has its own keys.
         if action == 'branches':
             if self._drawer_focused() or self.snapshot is None:
@@ -815,6 +822,11 @@ class MaintainerApp(App[None]):
             if self._saved_draft is not None and reading:
                 return True
             return self._reply_msgid() is not None if reading else self._item is not None
+        if action == 'workbench':
+            return self._workbenches is not None and not reading
+        if action == 'add_to_workbench':
+            item = self._reading or self._item
+            return self._workbenches is not None and item is not None and not item.series.discussion
         if action in ('apply_series', 'drop_series'):
             item = self._reading or self._item
             return self._branches is not None and item is not None and not item.series.discussion
@@ -2475,6 +2487,83 @@ class MaintainerApp(App[None]):
         self._set_notice(f'Dropping from {branch}…')
         self.run_worker(work, thread=True, group='apply')
 
+    def action_workbench(self) -> None:
+        """F4: the workbenches, recipes for sessions over several projects."""
+        service, snapshot = self._workbenches, self.snapshot
+        if service is None or snapshot is None:
+            return
+        series = {i.identity: i.series for i in snapshot.items}
+        latest = {i.identity: i.series.revision for i in snapshot.items}
+        self.push_screen(WorkbenchScreen(service, snapshot.workspace, series, latest))
+
+    def action_add_to_workbench(self) -> None:
+        """w: the open or selected series onto a workbench (or a new one), under its
+        project; one not routed to a project asks which."""
+        service, snapshot = self._workbenches, self.snapshot
+        item = self._reading or self._item
+        if service is None or snapshot is None or item is None:
+            return
+        workspace = snapshot.workspace
+
+        def chose_project(project: Optional[str]) -> None:
+            if project:
+                self._pick_workbench(item, project)
+
+        if item.project:
+            self._pick_workbench(item, item.project)
+        else:
+            projects = [(p.id, p.label) for p in workspace.projects]
+            self.push_screen(
+                Pick(f'Which project is {item.series.subject} for?', projects), chose_project
+            )
+
+    def _pick_workbench(self, item: WorkItem, project: str) -> None:
+        service = self._workbenches
+        if service is None:
+            return
+
+        def work() -> None:
+            benches, _problems = service.store.list()
+            self.call_from_thread(show, benches)
+
+        def show(benches: list[Workbench]) -> None:
+            options = [(b.id, b.label) for b in benches] + [(NEW_BENCH, 'New workbench…')]
+
+            def picked(wid: Optional[str]) -> None:
+                if wid == NEW_BENCH:
+                    self.push_screen(Ask('Name the new workbench'), named)
+                elif wid:
+                    bench = next((b for b in benches if b.id == wid), None)
+                    if bench is not None:
+                        self._add_to(bench, item, project)
+
+            def named(label: Optional[str]) -> None:
+                if label:
+                    self._add_to(Workbench(service.store.new_id(label), label), item, project)
+
+            self.push_screen(
+                Pick(f'Add {item.series.subject} to which workbench?', options), picked
+            )
+
+        self.run_worker(work, thread=True, group='workbench')
+
+    def _add_to(self, bench: Workbench, item: WorkItem, project: str) -> None:
+        service, snapshot = self._workbenches, self.snapshot
+        if service is None or snapshot is None:
+            return
+        found = snapshot.workspace.project(project)
+        base = found.bases[0].branch if found and found.bases else ''
+        s = item.series
+        try:
+            changed = add_series(bench, project, item.identity, s.revision, s.subject, base=base)
+            service.store.save(changed)
+        except (WorkbenchError, OSError) as exc:
+            self._set_notice(f'Not added: {exc}')
+            return
+        self._set_notice(
+            f'Added {s.subject} v{s.revision} to {bench.label} ({project}) · F4 shows it'
+        )
+
     def _show_artifacts(self) -> None:
         hub, item = self._sessions, self._reading
         if hub is None or item is None:
@@ -3086,3 +3175,6 @@ def _target_label(key: str, targets: Sequence[tuple[str, str]]) -> str:
     if len({_target_project(k) for k, _b in targets}) > 1:
         return f'{_target_project(key)}: {branch}'
     return branch
+
+
+NEW_BENCH = '+new'  # w's "new workbench" choice (workbench ids never hold '+').
