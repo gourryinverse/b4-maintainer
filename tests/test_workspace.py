@@ -372,3 +372,20 @@ def test_a_subject_tag_routes_a_series_on_a_shared_list_to_its_project():
     assert items['cxl: fix the region mode'].project == 'linux'
     assert items['cxl/list: show the region mode'].project == 'ndctl'
     assert items['cxl/list: show the region mode'].candidates == ()
+
+
+def test_a_profile_named_like_its_project_stands_in_for_the_project_view():
+    config = {
+        'projects': [
+            {'id': 'linux', 'label': 'Linux', 'lists': ['linux-mm@kvack.org']},
+            {'id': 'ndctl', 'lists': ['nvdimm@lists.linux.dev'], 'subject_tags': ['ndctl']},
+        ],
+        'profiles': [
+            {'id': 'mm', 'label': 'MM', 'project': 'linux', 'lists': ['linux-mm@kvack.org']},
+            {'id': 'ndctl', 'project': 'ndctl', 'lists': ['nvdimm@lists.linux.dev']},
+        ],
+    }
+    ws = Workspace.from_config(config)
+    labels = [v.label for v in ViewIndex(ws, ()).views]
+    assert labels.count('ndctl') == 1 and 'profile:ndctl' in [v.id for v in ViewIndex(ws, ()).views]
+    assert 'Linux' in labels and 'MM' in labels  # Different labels: both kept.

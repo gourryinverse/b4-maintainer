@@ -33,7 +33,11 @@ class ViewIndex:
         specs: list[tuple[View, Callable[[WorkItem], bool], tuple[WorkItem, ...]]] = []
         multi = len(ws.projects) > 1
         specs.append((View('all', 'All projects' if multi else 'All', 'all'), _always, active))
+        # A profile carrying its project's label stands in for that project's view.
+        named = {(prof.project, prof.label) for prof in ws.profiles if prof.enabled}
         for p in ws.projects:
+            if (p.id, p.label) in named:
+                continue
             specs.append(
                 (
                     View(f'project:{p.id}', p.label, 'project'),

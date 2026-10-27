@@ -105,7 +105,8 @@ Python 3.11 or newer.
 - Series go to the project whose `lists` they were sent to. On lists projects share, a
   project's `subject_tags` (e.g. `["ndctl", "daxctl"]` for `[ndctl PATCH]`) claim the
   series whose subject prefix carries one; a project with tags takes only those. Only
-  `[[profiles]]` lists are fetched by `F5`.
+  `[[profiles]]` lists are fetched by `F5`; a profile labelled like its project stands in
+  for that project's own sidebar view.
 - A ref's `authority` is `mainline`, `acceptance`, or `preliminary` (highest first); an
   unknown one is reported, and a reload with it keeps the current view.
 - When b4 cannot apply the series for an F1 worktree session, you choose: hand it to the
