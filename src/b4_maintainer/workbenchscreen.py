@@ -18,6 +18,7 @@ the app. `w` in the series list or a thread adds series (see the app).
 from dataclasses import replace
 from typing import Callable, Mapping, Optional
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -26,8 +27,17 @@ from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .branchscreen import Ask, Pick
-from .model import Series
-from .widgets import TabBar
+from .model import Reply, Series, SeriesThread, WorkItem
+from .reader import (
+    TreeRow,
+    find_post,
+    message_blocks,
+    post_keys,
+    root_blocks,
+    thread_replies,
+    tree_rows,
+)
+from .widgets import Block, TabBar, TextPane
 from .workbench import (
     ContentRow,
     Workbench,
@@ -78,6 +88,17 @@ class WorkbenchScreen(Screen[None]):
         border-title-color: $accent;
     }
     WorkbenchScreen #bench-status { height: 1; padding: 0 1; }
+    /* A thread opened from Mailboxes takes Contents' and the text pane's place. */
+    WorkbenchScreen #bench-thread { display: none; width: 9fr; }
+    WorkbenchScreen.-thread #bench-contents, WorkbenchScreen.-thread #bench-show-pane {
+        display: none;
+    }
+    WorkbenchScreen.-thread #bench-thread { display: block; }
+    WorkbenchScreen #thread-tree { width: 3fr; }
+    WorkbenchScreen #thread-content { width: 5fr; }
+    WorkbenchScreen #thread-tree, WorkbenchScreen #thread-content {
+        border: none; border-top: solid $panel-lighten-2; border-left: solid $panel-lighten-2;
+    }
     """
     BINDINGS = [
         Binding('escape', 'back', 'back'),
@@ -94,8 +115,12 @@ class WorkbenchScreen(Screen[None]):
         Binding('v', 'reroll', 'newer revision'),
         Binding('f1', 'launch', 'session', key_display='F1'),
         Binding('o', 'open_live', 'open session'),
-        # On a session: beside the app (before the list's own Enter).
+        # On a session: beside the app; on a mailbox: its thread (before the lists' Enter).
         Binding('enter', 'open_session', 'open beside', priority=True),
+        Binding('enter', 'open_thread', 'open thread', priority=True),
+        # In a thread opened here: reply to the selected message (without, or with output).
+        Binding('r', 'reply', 'reply'),
+        Binding('R', 'reply_attach', 'reply + session output'),
     ]
 
     def __init__(
@@ -121,6 +146,10 @@ class WorkbenchScreen(Screen[None]):
         self._pending: tuple[str, str] = ('', '')  # (workbench, session) to select.
         self._unfiled = False  # Sessions without a workbench exist: list them apart.
         self._keep: tuple[str, str, int] = ('', '', -1)  # The row to keep after a reload.
+        self._thread: Optional[SeriesThread] = None  # A thread opened from Mailboxes.
+        self._thread_item: Optional[WorkItem] = None
+        self._thread_rows: list[TreeRow] = []
+        self._blocks: list[Block] = []  # The selected message's text.
 
     def compose(self) -> ComposeResult:
         yield TabBar('workbench')
@@ -132,6 +161,9 @@ class WorkbenchScreen(Screen[None]):
             yield OptionList(id='bench-contents')
             with VerticalScroll(id='bench-show-pane'):
                 yield Static('', id='bench-show', markup=False)
+            with Horizontal(id='bench-thread'):
+                yield OptionList(id='thread-tree')
+                yield TextPane(id='thread-content')
         yield Static('', id='bench-status', markup=False)
         yield Footer()
 
@@ -394,6 +426,100 @@ class WorkbenchScreen(Screen[None]):
         if sid and opened is not None:
             opened(sid)
 
+    # A thread opened from Mailboxes.
+
+    def thread_open(self) -> bool:
+        return self.has_class('-thread')
+
+    def action_open_thread(self) -> None:
+        row = self.row()
+        load = getattr(self.app, 'bench_thread', None)
+        if row is None or row.kind != 'mailbox' or load is None:
+            return
+        identity = row.series
+
+        def work() -> None:
+            try:
+                item, thread = load(identity)
+            except Exception as exc:
+                self.app.call_from_thread(self._status, f'Cannot open the thread: {exc}')
+                return
+            self.app.call_from_thread(self._thread_loaded, item, thread)
+
+        self._status('Loading the thread…')
+        self.run_worker(work, thread=True, group='bench-thread', exclusive=True)
+
+    def _thread_loaded(self, item: WorkItem, thread: SeriesThread) -> None:
+        self._thread_item, self._thread = item, thread
+        self._thread_rows = tree_rows(
+            thread, item, set(post_keys(thread)), bots=self.workspace.bots
+        )
+        tree = self.query_one('#thread-tree', OptionList)
+        with self.prevent(OptionList.OptionHighlighted):
+            tree.clear_options()
+            tree.add_options([Option(Text(r.label)) for r in self._thread_rows])
+            if self._thread_rows:
+                tree.highlighted = 0
+        tree.border_title = f'{item.series.subject} v{item.series.revision}'[:60]
+        self.add_class('-thread')
+        tree.focus()
+        self._show_message()
+        self._status('r replies to the selected message, R with session output; escape closes')
+        self.refresh_bindings()
+
+    def _message(self) -> tuple[Optional[TreeRow], Optional[Reply]]:
+        index = self.query_one('#thread-tree', OptionList).highlighted
+        if self._thread is None or index is None or index >= len(self._thread_rows):
+            return None, None
+        row = self._thread_rows[index]
+        replies = thread_replies(self._thread, row.key) if row.node else ()
+        return row, (replies[row.node - 1] if row.node and row.node <= len(replies) else None)
+
+    def _show_message(self) -> None:
+        row, reply = self._message()
+        content = self.query_one('#thread-content', TextPane)
+        if row is None or self._thread is None or self._thread_item is None:
+            content.set_text('')
+            return
+        if reply is None:
+            self._blocks = root_blocks(self._thread, row.key, self._thread_item)
+        else:
+            self._blocks = message_blocks(reply, False)
+        content.set_blocks(self._blocks)
+
+    def thread_msgid(self) -> str:
+        """The selected message's id: a reply's, or the posting's."""
+        row, reply = self._message()
+        if reply is not None:
+            return reply.message.msgid
+        post = find_post(self._thread, row.key) if row is not None and self._thread else None
+        return post.message.msgid if post is not None else ''
+
+    def thread_labels(self) -> list[str]:
+        return [r.label for r in self._thread_rows]
+
+    def thread_text(self) -> str:
+        return '\n'.join(b.text for b in self._blocks)
+
+    def action_close_thread(self) -> None:
+        self.remove_class('-thread')
+        self._thread = self._thread_item = None
+        self.query_one('#bench-contents', OptionList).focus()
+        self._status('')
+        self.refresh_bindings()
+
+    def action_reply(self) -> None:
+        self._reply(False)
+
+    def action_reply_attach(self) -> None:
+        self._reply(True)
+
+    def _reply(self, attach: bool) -> None:
+        reply = getattr(self.app, 'reply_from_bench', None)
+        msgid = self.thread_msgid()
+        if reply is not None and self._thread_item is not None and msgid:
+            reply(self._thread_item, msgid, attach)
+
     # Text, for tests.
 
     def bench_labels(self) -> list[str]:
@@ -457,6 +583,8 @@ class WorkbenchScreen(Screen[None]):
             self._show_row()
         elif event.option_list.id == 'bench-sessions':
             self._show_session()
+        elif event.option_list.id == 'thread-tree':
+            self._show_message()
         self.refresh_bindings()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -464,6 +592,8 @@ class WorkbenchScreen(Screen[None]):
 
     def action_cycle(self, step: int) -> None:
         names = ('bench-list', 'bench-sessions', 'bench-contents', 'bench-show-pane')
+        if self.thread_open():
+            names = ('bench-list', 'bench-sessions', 'thread-tree', 'thread-content')
         panes = [self.query_one(f'#{p}') for p in names]
         index = next((n for n, p in enumerate(panes) if p is self.focused), 0)
         panes[(index + step) % len(panes)].focus()
@@ -476,6 +606,9 @@ class WorkbenchScreen(Screen[None]):
         self.refresh_bindings()
 
     def action_back(self) -> None:
+        if self.thread_open():
+            self.action_close_thread()  # Escape closes a thread first.
+            return
         tab = getattr(self.app, 'action_tab', None)  # Back to LKML, the column with it.
         if tab is not None:
             tab('lkml')
@@ -503,7 +636,7 @@ class WorkbenchScreen(Screen[None]):
         if action in edits and not self._editable():
             return False
         if action == 'rename':
-            return pane == 'bench-list' and bench is not None
+            return pane == 'bench-list' and bench is not None and not self.thread_open()
         if action == 'remove':
             if pane == 'bench-contents':
                 return bool(self._project())
@@ -519,6 +652,13 @@ class WorkbenchScreen(Screen[None]):
             return bench is not None and bool(bench.entries) and launchable
         if action == 'open_session':
             return pane == 'bench-sessions' and bool(self.selected_session())
+        if action == 'open_thread':
+            row = self.row()
+            return pane == 'bench-contents' and row is not None and row.kind == 'mailbox'
+        if action in ('reply', 'reply_attach'):
+            return self.thread_open() and hasattr(self.app, 'reply_from_bench')
+        if action == 'close_thread':
+            return self.thread_open()
         if action == 'open_live':
             return bool(self._live_session())
         return True

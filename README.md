@@ -104,7 +104,11 @@ Python 3.11 or newer.
   sections: Items (each project and its items, edited as above), Mailboxes (each
   series), Trees (each session tree and its commits by class), Artifacts (each
   session's prompt, reports, results, files); right, the selected row's text (for
-  Items, the launch preview). Enter on a session (or on it in the drawer) puts it
+  Items, the launch preview). Enter on a Mailboxes row opens that thread in the tab (its
+  tree and the selected message; Escape closes it), where `r` replies to the selected
+  message and `R` adds session output (with the tmux editor the draft opens beside the
+  app and `ctrl+s` sends from the tab; otherwise the reply opens on LKML). Enter on a
+  session (or on it in the drawer) puts it
   beside the app, `o` opens the workbench's live session from any pane, and one launched
   from the tab joins beside at once. The column follows the tab: back on LKML the
   workbench session returns to its own window.

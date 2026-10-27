@@ -783,6 +783,12 @@ class MaintainerApp(App[None]):
             return True
         if isinstance(self.screen, WorkbenchScreen) and action == 'focus_session':
             return bool(self._app_pane) and self._beside is not None
+        if isinstance(self.screen, WorkbenchScreen) and action == 'send_draft':
+            return self._draft is not None  # A reply begun from a thread there.
+        if isinstance(self.screen, WorkbenchScreen) and action == 'discard_draft':
+            return self._draft is not None or self._saved_draft is not None
+        if isinstance(self.screen, WorkbenchScreen) and action == 'focus_editor':
+            return self._draft is not None and bool(self._draft.pane)
         if isinstance(self.screen, (BranchesScreen, WorkbenchScreen)):
             return action == 'quit'  # The screen has its own keys.
         if action == 'focus_session':
@@ -1282,7 +1288,14 @@ class MaintainerApp(App[None]):
             found = self._reply_args()
         if found is None:
             return
-        item, msgid, quote = found
+        self._reply_with_output(*found)
+
+    def _reply_with_output(self, item: WorkItem, msgid: str, quote: Optional[str]) -> None:
+        """Pick session output for a reply to *msgid*, then write it (off the UI thread)."""
+        hub = self._sessions
+        if hub is None:
+            self._begin_reply(item, msgid, quote)
+            return
 
         def work() -> None:
             try:
@@ -1295,6 +1308,42 @@ class MaintainerApp(App[None]):
             self.call_from_thread(self._pick_attachments, item, msgid, quote, offered, models)
 
         self.run_worker(work, thread=True, group='session-action')
+
+    def bench_thread(self, identity: str) -> tuple[WorkItem, SeriesThread]:
+        """A series' thread for the Workbench tab (blocking)."""
+        item = self.snapshot.item_by_identity(identity) if self.snapshot else None
+        if item is None:
+            raise ValueError('not in the cache (F5 fetches it)')
+        return item, self._with_sashiko(item, self._thread_loader(item.series))
+
+    def reply_from_bench(self, item: WorkItem, msgid: str, attach: bool) -> None:
+        """r/R in a thread opened on the Workbench tab: with the tmux editor the draft
+        opens beside the app and the tab stays; otherwise the reply opens on LKML, whose
+        reader holds the draft."""
+        if self._actions is None:
+            self._set_notice('Replies need a live workspace')
+            return
+        if self._draft is not None:
+            self._set_notice('Finish or close the open draft first')
+            return
+        if self._editor is not None:
+            self._start_bench_reply(item, msgid, attach)
+            return
+        self.action_tab('lkml')
+
+        def on_lkml() -> None:
+            self._series_list.select_identity(item.identity)
+            self._item = item
+            self._open_reader(pane=False)
+            self._start_bench_reply(item, msgid, attach)
+
+        self.call_after_refresh(on_lkml)
+
+    def _start_bench_reply(self, item: WorkItem, msgid: str, attach: bool) -> None:
+        if attach:
+            self._reply_with_output(item, msgid, None)
+        else:
+            self._begin_reply(item, msgid, None)
 
     def _offered_output(self, records: list[SessionRecord], item: WorkItem) -> list[Attachment]:
         """What R offers (blocking): every session's output, the series' own first, then
