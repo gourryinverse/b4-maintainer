@@ -108,13 +108,10 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         items: dict[str, tuple[ContextItem, ...]],
         problems: Sequence[str] = (),
         derived: Optional[Derived] = None,
-        others: Sequence[tuple[str, int, str]] = (),
     ) -> None:
         super().__init__()
         self.target = target  # The selected or open series; None offers the workspace only.
         self.derived = derived  # A session derived from another's output.
-        # Series that may be applied after this one (source, revision, subject).
-        self.others = list(others)
         self.profiles = list(profiles)
         self.situation = situation
         self.items = items  # By scope.
@@ -256,14 +253,6 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             if skills
             else [Static('No skills installed.', markup=False)]
         )
-        if self.others and self.scope == 'series':
-            others = [
-                (str(n), f'{subject} v{rev}', False)
-                for n, (_src, rev, subject) in enumerate(self.others)
-            ]
-            children += self._checks(
-                'Also apply, after this series in list order (worktree)', 'also', others
-            )
         catalog = [(m.label, m.id) for m in self.situation.models if m.kind == 'catalog']
         children.append(self._label("Other model (pi's catalog; overrides Model)"))
         children.append(self._select('other-model', catalog, 'Use Model above'))
@@ -402,7 +391,6 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             frozenset(self._skills_off),
             self._context_off(),
             *self._derived_choice(),
-            tuple(self.others[int(n)] for n in self.ticked('also')),
         )
 
     def _derived_choice(self) -> tuple[str, str, str]:
@@ -574,11 +562,6 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         if p.skills:
             lines.append(f'Skills:   {", ".join(p.skills)}')
         lines.append(f'May:      {PERMISSION_LABELS.get(p.permissions, p.permissions)}')
-        also = [f'{subject} v{rev}' for _src, rev, subject in self._choice(None).also]
-        if also and p.mode == 'worktree':
-            lines.append(f'Also:     {"; ".join(also)} (applied after it, in order)')
-        elif also:
-            lines.append('Warning:  Also apply needs worktree mode; ignored in lightweight')
         if p.mode == 'worktree':
             base = self._inputs['base'].value.strip() if 'base' in self._inputs else ''
             where = base or 'the base b4 chooses'

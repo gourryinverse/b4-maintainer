@@ -470,24 +470,6 @@ async def test_pis_model_list_is_read_in_the_background_at_startup(demo_root, st
     assert runner.launches == []
 
 
-async def test_also_apply_makes_a_combined_tree(demo_root, store, runner):
-    trees = FakeWorktrees()
-    app = make_app(demo_root, store, runner, trees, sandbox=lambda: True)
-    async with app.run_test(size=(180, 50)) as pilot:
-        dialog = await open_dialog(pilot)
-        assert dialog.others  # The view's other series with their mail here.
-        assert 'Also apply, after this series in list order (worktree)' in dialog.labels()
-        await act(pilot, dialog.pick, 'goal', 'reproduce')  # Worktree mode.
-        await act(pilot, dialog.pick, 'also', '0')
-        source, revision, subject = dialog.others[0]
-        assert f'Also:     {subject} v{revision}' in dialog.summary_text()
-        await pilot.press('ctrl+s')
-        await settle(pilot)
-        [(sid, _request)] = runner.launches
-        assert trees.also == [((source, revision, subject),)]
-        assert store.record(sid).choices['also'] == [f'{subject} v{revision}']
-
-
 async def test_the_summary_names_the_guidance_and_its_commit(demo_root, store, runner, tmp_path):
     from b4_maintainer.sessions.skills import Skill
 

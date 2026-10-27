@@ -2188,26 +2188,8 @@ class MaintainerApp(App[None]):
         target = _target(item) if item is not None else None
         series = series_context(item) if item is not None else ()
         items: dict[str, tuple[ContextItem, ...]] = {'series': series, 'workspace': ()}
-        others = self._other_series(item) if item is not None else ()
-        dialog = LaunchDialog(target, profiles, situation, items, problems, others=others)
+        dialog = LaunchDialog(target, profiles, situation, items, problems)
         self.push_screen(dialog, self._launch_chosen)
-
-    def _other_series(self, item: WorkItem, limit: int = 40) -> tuple[tuple[str, int, str], ...]:
-        """Series of the same project in the current view, with their mail here, that a
-        combined tree may apply after *item* (source, revision, subject)."""
-        if self.index is None:
-            return ()
-        found = []
-        for other in self.index.items(self.current_view):
-            s = other.series
-            if other.identity == item.identity or other.project != item.project:
-                continue
-            if s.discussion or not s.source or not pathlib.Path(s.source).exists():
-                continue
-            found.append((s.source, s.revision, s.subject))
-            if len(found) >= limit:
-                break
-        return tuple(found)
 
     def launch_derived(
         self, parent: str, derived: Derived, context: Optional[ContextItem] = None
