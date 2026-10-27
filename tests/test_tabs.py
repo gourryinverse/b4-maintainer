@@ -118,7 +118,8 @@ async def test_question_mark_lists_every_key_and_the_footer_only_common_ones(dem
         await settle(pilot)
         shown = footer_keys(app)
         assert {'enter', 'slash', 'question_mark', 'Q'} <= shown
-        assert not {'M', 'w', 'a', 'd', 'z', 'f2', 'f3', 'f4'} & shown  # In ? and the tabs.
+        assert 'w' in shown  # Adding to a workbench is a common move.
+        assert not {'M', 'a', 'd', 'z', 'f2', 'f3', 'f4'} & shown  # In ? and the tabs.
         await pilot.press('question_mark')
         await settle(pilot)
         help_screen = app.screen

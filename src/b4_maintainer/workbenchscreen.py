@@ -15,6 +15,7 @@ F1 launches a session; Enter on a session, or `o` anywhere, puts its live sessio
 the app. `w` in the series list or a thread adds series (see the app).
 """
 
+import pathlib
 from dataclasses import replace
 from typing import Any, Callable, Mapping, Optional, TypeVar
 
@@ -44,6 +45,9 @@ from .workbench import (
     WorkbenchError,
     WorkbenchService,
     add_branch,
+    add_file,
+    add_mail,
+    add_series,
     move_item,
     remove_item,
     reroll,
@@ -110,6 +114,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('r', 'rename', 'rename', show=False),
         Binding('x', 'remove', 'remove'),
         Binding('b', 'base', 'base'),
+        Binding('a', 'add', 'add'),
         Binding('B', 'add_branch', 'add branch'),
         Binding('shift+up', 'move(-1)', 'move up', key_display='⇧↑', show=False),
         Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓', show=False),
@@ -829,7 +834,7 @@ class WorkbenchScreen(Screen[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
         pane, bench = self._pane(), self.bench()
-        edits = ('rename', 'remove', 'base', 'add_branch', 'move', 'reroll', 'launch')
+        edits = ('rename', 'remove', 'base', 'add_branch', 'move', 'reroll', 'launch', 'add')
         if action in edits and not self._editable():
             return False
         if action == 'rename':
@@ -861,7 +866,8 @@ class WorkbenchScreen(Screen[None]):
             return pane == 'bench-sessions' and bool(self.selected_session())
         if action == 'open_thread':
             row = self.row()
-            return pane == 'bench-contents' and row is not None and row.kind == 'mailbox'
+            mail = row is not None and row.kind == 'mailbox' and bool(row.series)
+            return pane == 'bench-contents' and mail  # Files have no thread.
         if action in ('reply', 'reply_attach'):
             return self.thread_open() and hasattr(self.app, 'reply_from_bench')
         if action == 'close_thread':
@@ -964,6 +970,90 @@ class WorkbenchScreen(Screen[None]):
             lambda base: self._save(set_base(bench, project, base), keep, f'{project} on {base}'),
             typed=True,
         )
+
+    def action_add(self) -> None:
+        """a: add a thread (by lore link or Message-ID, fetched into the cache) or a file
+        from disk."""
+        bench = self.bench()
+        if bench is None or not self._editable():
+            return
+        ways = [
+            ('link', 'A thread: lore link or Message-ID (series or discussion)'),
+            ('file', 'A file from disk (patches are applied, anything else is read)'),
+        ]
+
+        def picked(way: Optional[str]) -> None:
+            if way == 'link':
+                self.app.push_screen(Ask('Lore link or Message-ID'), self._add_link)
+            elif way == 'file':
+                self.app.push_screen(Ask('Path of the file'), self._add_file)
+
+        self.app.push_screen(Pick(f'Add to {bench.label}', ways), picked)
+
+    def _add_link(self, text: Optional[str]) -> None:
+        fetch = getattr(self.app, 'bench_fetch', None)
+        if not text or fetch is None:
+            return
+        self._act(lambda: fetch(text), self._add_fetched, 'Fetching the thread…')
+
+    def _add_fetched(self, item: WorkItem) -> None:
+        s = item.series
+        self.series = {**self.series, item.identity: s}
+        self.latest = {**self.latest, item.identity: s.revision}
+        msgid = s.msgids[0] if s.msgids else ''
+
+        def add(project: str) -> None:
+            bench = self.bench()
+            if bench is None:
+                return
+            try:
+                if s.discussion:
+                    changed = add_mail(bench, project, item.identity, s.subject, msgid)
+                else:
+                    changed = add_series(
+                        bench, project, item.identity, s.revision, s.subject, msgid=msgid
+                    )
+            except WorkbenchError as ex:
+                self._status(str(ex))
+                return
+            self._save(changed, None, f'Added {s.subject} ({project})')
+
+        self._for_project(item.project or '', add)
+
+    def _add_file(self, text: Optional[str]) -> None:
+        if not text:
+            return
+        path = pathlib.Path(text).expanduser()
+        if not path.is_absolute():
+            path = pathlib.Path.cwd() / path
+        if not path.is_file():
+            self._status(f'{path} does not exist')
+            return
+
+        def add(project: str) -> None:
+            bench = self.bench()
+            if bench is None:
+                return
+            try:
+                changed = add_file(bench, project, str(path))
+            except WorkbenchError as ex:
+                self._status(str(ex))
+                return
+            self._save(changed, None, f'Added {path.name} ({project})')
+
+        self._for_project('', add)
+
+    def _for_project(self, hint: str, then: Callable[[str], None]) -> None:
+        """Run *then* with the project to add under: the selected row's, else *hint*,
+        else the workbench's only one, else the one picked."""
+        bench = self.bench()
+        entries = [e.project for e in bench.entries] if bench is not None else []
+        project = self._project() or hint or (entries[0] if len(entries) == 1 else '')
+        if project:
+            then(project)
+            return
+        choices = [(p.id, p.label) for p in self.workspace.projects]
+        self.app.push_screen(Pick('Under which project?', choices), lambda p: p and then(p))
 
     def action_add_branch(self) -> None:
         bench, project = self.bench(), self._project()

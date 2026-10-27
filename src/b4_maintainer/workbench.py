@@ -31,7 +31,8 @@ if TYPE_CHECKING:
 DIRECTORY = 'workbenches'  # Under state/.
 _TOP = frozenset({'label', 'origin', 'entry'})
 _ENTRY = frozenset({'project', 'base', 'items'})
-_ITEM = frozenset({'series', 'revision', 'subject', 'branch'})
+_ITEM = frozenset({'series', 'revision', 'subject', 'branch', 'mail', 'file', 'msgid'})
+_KINDS = ('series', 'branch', 'mail', 'file')  # An item is exactly one of these.
 
 
 class WorkbenchError(ValueError):
@@ -44,10 +45,19 @@ class Item:
     revision: int = 0
     subject: str = ''  # As shown.
     branch: str = ''  # Else a local branch: a project ref, or tree:<session>:<branch>.
+    mail: str = ''  # Else a discussion's identity: read, never applied.
+    file: str = ''  # Else a file from disk: applied if b4 finds patches in it, else read.
+    msgid: str = ''  # A message of a mail item's thread: kept in the cache, fetched by it.
 
     @property
     def label(self) -> str:
-        return f'{self.subject} v{self.revision}' if self.series else self.branch
+        if self.series:
+            return f'{self.subject} v{self.revision}'
+        if self.mail:
+            return f'{self.subject} (discussion)'
+        if self.file:
+            return f'{pathlib.Path(self.file).name} (file)'
+        return self.branch
 
 
 @dataclass(frozen=True)
@@ -81,12 +91,18 @@ def _item(raw: Any, project: str) -> Item:
     if not isinstance(raw, dict):
         raise WorkbenchError(f'an item of {project} is not a table')
     _known(raw, _ITEM, f'in an item of {project}')
-    series, branch = str(raw.get('series', '')), str(raw.get('branch', ''))
-    if bool(series) == bool(branch):
-        raise WorkbenchError(f'an item of {project} is a series or a branch, not both or none')
-    if series:
-        return Item(series, int(raw.get('revision', 0)), str(raw.get('subject', '')))
-    return Item(branch=branch)
+    if sum(1 for k in _KINDS if raw.get(k)) != 1:
+        kinds = ', '.join(_KINDS)
+        raise WorkbenchError(f'an item of {project} is one of {kinds}, not several or none')
+    return Item(
+        str(raw.get('series', '')),
+        int(raw.get('revision', 0)),
+        str(raw.get('subject', '')),
+        str(raw.get('branch', '')),
+        str(raw.get('mail', '')),
+        str(raw.get('file', '')),
+        str(raw.get('msgid', '')),
+    )
 
 
 def parse_workbench(text: str, wid: str) -> Workbench:
@@ -126,8 +142,14 @@ def workbench_toml(bench: Workbench) -> str:
                     f'series = {_s(item.series)}, revision = {item.revision}, '
                     f'subject = {_s(item.subject)}'
                 )
+            elif item.mail:
+                fields = f'mail = {_s(item.mail)}, subject = {_s(item.subject)}'
+            elif item.file:
+                fields = f'file = {_s(item.file)}'
             else:
                 fields = f'branch = {_s(item.branch)}'
+            if item.msgid:
+                fields += f', msgid = {_s(item.msgid)}'
             lines.append(f'  {{ {fields} }},')
         lines.append(']')
     return '\n'.join(lines) + '\n'
@@ -214,14 +236,39 @@ def _entry(bench: Workbench, project: str, base: str = '') -> Entry:
 
 
 def add_series(
-    bench: Workbench, project: str, series: str, revision: int, subject: str, base: str = ''
+    bench: Workbench,
+    project: str,
+    series: str,
+    revision: int,
+    subject: str,
+    base: str = '',
+    msgid: str = '',
 ) -> Workbench:
     """The series last under *project* (an entry made at *base* if it has none)."""
     entry = _entry(bench, project, base)
     if any(i.series == series for i in entry.items):
         raise WorkbenchError(f'{subject} is already on this workbench')
-    item = Item(series, revision, subject)
+    item = Item(series, revision, subject, msgid=msgid)
     return _with_entry(bench, replace(entry, items=entry.items + (item,)))
+
+
+def add_mail(
+    bench: Workbench, project: str, mail: str, subject: str, msgid: str = '', base: str = ''
+) -> Workbench:
+    """A discussion last under *project*: read by sessions, never applied."""
+    entry = _entry(bench, project, base)
+    if any(i.mail == mail for i in entry.items):
+        raise WorkbenchError(f'{subject} is already on this workbench')
+    item = Item(subject=subject, mail=mail, msgid=msgid)
+    return _with_entry(bench, replace(entry, items=entry.items + (item,)))
+
+
+def add_file(bench: Workbench, project: str, path: str, base: str = '') -> Workbench:
+    """A file from disk last under *project*: applied if b4 finds patches in it."""
+    entry = _entry(bench, project, base)
+    if any(i.file == path for i in entry.items):
+        raise WorkbenchError(f'{path} is already on this workbench')
+    return _with_entry(bench, replace(entry, items=entry.items + (Item(file=path),)))
 
 
 def add_branch(bench: Workbench, project: str, branch: str, base: str = '') -> Workbench:
@@ -273,6 +320,16 @@ def reroll(bench: Workbench, project: str, index: int, revision: int) -> Workben
 
 
 # The screen's data.
+
+
+def _has_patches(path: pathlib.Path) -> bool:
+    """Whether b4 finds a patch series in a file from disk (an mbox, a .patch file)."""
+    from .adapters.b4mbox import parse_mbox  # b4: only when asked.
+
+    try:
+        return any(s.patches and not s.discussion for s in parse_mbox(path))
+    except Exception:
+        return False
 
 
 def _git(repo: pathlib.Path, *args: str) -> Optional[str]:
@@ -378,6 +435,22 @@ class WorkbenchService:
         for entry in bench.entries:
             items: list[TreeItem] = []
             for item in entry.items:
+                if item.mail:
+                    talk = series.get(item.mail)
+                    if talk is None:
+                        problems.append(f'{item.label}: not in the cache (F5 fetches it)')
+                    else:
+                        items.append(TreeItem(item.label, talk.source, apply=False))
+                    continue
+                if item.file:
+                    path = pathlib.Path(item.file).expanduser()
+                    if not path.is_file():
+                        problems.append(f'{item.label}: {path} does not exist')
+                    elif _has_patches(path):
+                        items.append(TreeItem(item.label, str(path)))  # b4 applies it.
+                    else:
+                        items.append(TreeItem(item.label, file=str(path), apply=False))
+                    continue
                 if item.series:
                     known = series.get(item.series)
                     if known is None:
@@ -425,11 +498,15 @@ class WorkbenchService:
                 rows.append(ContentRow(text, 'item', entry.project, n))
         mailboxes = [
             ContentRow(
-                f'  {item.label} ({entry.project})', 'mailbox', entry.project, series=item.series
+                f'  {item.label} ({entry.project})',
+                'mailbox',
+                entry.project,
+                series=item.series or item.mail,
+                path=item.file,
             )
             for entry in bench.entries
             for item in entry.items
-            if item.series
+            if item.series or item.mail or item.file
         ]
         if mailboxes:
             rows += [ContentRow('Mailboxes', 'heading'), *mailboxes]
@@ -480,6 +557,14 @@ class WorkbenchService:
             return self.preview(workspace, bench, series, latest)
         if row.attachment is not None:
             return preview(row.attachment)
+        if row.kind == 'mailbox' and row.path:
+            try:
+                text = pathlib.Path(row.path).expanduser().read_text(errors='replace')
+            except OSError as ex:
+                return f'{row.path}: {ex.strerror}'
+            lines = text.splitlines()
+            more = f'\n… {len(lines) - 400} more lines' if len(lines) > 400 else ''
+            return f'{row.path}\n\n' + '\n'.join(lines[:400]) + more
         if row.kind == 'mailbox':
             known = series.get(row.series)
             if known is None:
@@ -542,6 +627,16 @@ class WorkbenchService:
         series: Mapping[str, Series],
         latest: Mapping[str, int],
     ) -> str:
+        if item.mail:
+            if series.get(item.mail) is None:
+                return f'{item.label} · not in the cache (F5 fetches it)'
+            return f'{item.label} · read by the session, not applied'
+        if item.file:
+            path = pathlib.Path(item.file).expanduser()
+            if not path.is_file():
+                return f'{item.label} · {path} does not exist'
+            how = 'patches: b4 applies them' if _has_patches(path) else 'read by the session'
+            return f'{item.label} · {how}'
         if item.series:
             text = item.label
             known = series.get(item.series)

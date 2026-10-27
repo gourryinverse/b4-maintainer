@@ -74,7 +74,14 @@ from .sessions.store import SessionView
 from .sessions.trees import TreeState
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TabBar, TextPane, printable
-from .workbench import ContentRow, Workbench, WorkbenchError, add_series, series_bench
+from .workbench import (
+    ContentRow,
+    Workbench,
+    WorkbenchError,
+    add_mail,
+    add_series,
+    series_bench,
+)
 from .workbenchscreen import WorkbenchScreen
 from .workspace import Snapshot, Workspace
 
@@ -435,7 +442,7 @@ class MaintainerApp(App[None]):
         Binding('a', 'apply_series', 'apply', show=False),
         Binding('d', 'drop_series', 'drop', show=False),
         Binding('M', 'mark_read', 'read all', show=False),
-        Binding('w', 'add_to_workbench', 'to workbench', show=False),
+        Binding('w', 'add_to_workbench', 'to workbench'),
         # The tabs (shown in the tab bar): F4 in a thread shows its sessions' output instead.
         Binding('f2', "tab('lkml')", 'LKML', key_display='F2', show=False),
         Binding('f3', "tab('workbench')", 'Workbench', key_display='F3', show=False),
@@ -846,7 +853,7 @@ class MaintainerApp(App[None]):
             return self._reply_msgid() is not None if reading else self._item is not None
         if action == 'add_to_workbench':
             item = self._reading or self._item
-            return self._workbenches is not None and item is not None and not item.series.discussion
+            return self._workbenches is not None and item is not None
         if action in ('apply_series', 'drop_series'):
             item = self._reading or self._item
             return self._branches is not None and item is not None and not item.series.discussion
@@ -1309,6 +1316,24 @@ class MaintainerApp(App[None]):
             self.call_from_thread(self._pick_attachments, item, msgid, quote, offered, models)
 
         self.run_worker(work, thread=True, group='session-action')
+
+    def bench_fetch(self, target: str) -> WorkItem:
+        """A thread fetched into the cache by a lore link or Message-ID, the snapshot
+        reloaded with it (blocking): its work item."""
+        fetch = getattr(self._actions, 'fetch_thread', None)
+        if fetch is None:
+            raise RuntimeError('fetching needs a live workspace')
+        msgid = fetch(target)
+        snapshot = self._loader()
+        self.call_from_thread(
+            self._apply_snapshot, snapshot, ViewIndex(snapshot.workspace, snapshot.items)
+        )
+        found = next(
+            (i for i in snapshot.items if msgid in i.series.msgids or i.identity == msgid), None
+        )
+        if found is None:
+            raise ValueError(f'lore has no thread for <{msgid}>')
+        return found
 
     def bench_thread(self, identity: str) -> tuple[WorkItem, SeriesThread]:
         """A series' thread for the Workbench tab (blocking)."""
@@ -2678,8 +2703,14 @@ class MaintainerApp(App[None]):
         found = snapshot.workspace.project(project)
         base = found.bases[0].branch if found and found.bases else ''
         s = item.series
+        msgid = s.msgids[0] if s.msgids else ''
         try:
-            changed = add_series(bench, project, item.identity, s.revision, s.subject, base=base)
+            if s.discussion:  # Read by sessions, never applied.
+                changed = add_mail(bench, project, item.identity, s.subject, msgid, base=base)
+            else:
+                changed = add_series(
+                    bench, project, item.identity, s.revision, s.subject, base=base, msgid=msgid
+                )
             service.store.save(changed)
         except (WorkbenchError, OSError) as exc:
             self._set_notice(f'Not added: {exc}')

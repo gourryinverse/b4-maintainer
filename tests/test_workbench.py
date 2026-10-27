@@ -51,9 +51,9 @@ def test_a_workbench_round_trips_through_its_toml():
         ('label = "x"\n[[entry]]\nproject = "a"\n[[entry]]\nproject = "a"\n', 'twice'),
         (
             'label = "x"\n[[entry]]\nproject = "a"\nitems = [{ series = "s", branch = "b" }]\n',
-            'series or a branch',
+            'one of series, branch',
         ),
-        ('label = "x"\n[[entry]]\nproject = "a"\nitems = [{ revision = 2 }]\n', 'series or a'),
+        ('label = "x"\n[[entry]]\nproject = "a"\nitems = [{ revision = 2 }]\n', 'one of'),
         ('label = [\n', 'TOML'),
     ],
 )
@@ -372,3 +372,55 @@ def test_a_workbenchs_contents_come_in_sections(tmp_path):
     assert commit.attachment is not None and commit.attachment.repo == str(tree)
     artifact = next(r for r in rows if r.kind == 'artifact' and 'Compare A and B' in r.text)
     assert artifact.session == 's1' and artifact.attachment is not None
+
+
+def test_discussions_and_files_are_items_too():
+    from b4_maintainer.workbench import add_file, add_mail
+
+    bench = add_mail(
+        Workbench('w', 'W'), 'linux', 'talk@example.org', 'RFC: memory tiers', 'talk@example.org'
+    )
+    bench = add_file(bench, 'linux', '/home/me/fix.patch')
+    talk, fix = bench.entries[0].items
+    assert (talk.mail, talk.subject, talk.msgid) == (
+        'talk@example.org',
+        'RFC: memory tiers',
+        'talk@example.org',
+    )
+    assert talk.label == 'RFC: memory tiers (discussion)' and fix.label == 'fix.patch (file)'
+    assert parse_workbench(workbench_toml(bench), 'w') == bench
+    with_msgid = add_series(bench, 'linux', 'change-id:x', 2, 'mm: x', msgid='x@example.org')
+    assert with_msgid.entries[0].items[-1].msgid == 'x@example.org'
+    assert parse_workbench(workbench_toml(with_msgid), 'w') == with_msgid
+    with pytest.raises(WorkbenchError, match='one of'):
+        parse_workbench(
+            'label = "x"\n[[entry]]\nproject = "a"\nitems = [{ mail = "m", file = "f" }]\n', 'x'
+        )
+    assert rerolls(bench, {'talk@example.org': 5}) == []  # Only series take revisions.
+
+
+def test_discussions_are_read_files_with_patches_applied_and_others_read(tmp_path):
+    import dataclasses
+
+    from b4_maintainer.fixtures import make_series, write_series_mbox
+    from b4_maintainer.sessions.trees import TreeItem
+    from b4_maintainer.workbench import WorkbenchService, add_file, add_mail
+
+    workspace = service_root(tmp_path)
+    service = WorkbenchService(tmp_path, WorkbenchStore(tmp_path / 'wb'), lambda: [])
+    talk = dataclasses.replace(make_series('RFC: tiers'), source='/mail/talk.mbx', discussion=True)
+    patch = write_series_mbox(tmp_path / 'fix.mbx', subject='mm: fix it').path
+    notes = tmp_path / 'notes.md'
+    notes.write_text('ideas\n')
+    bench = add_mail(Workbench('w', 'W'), 'linux', talk.identity, talk.subject)
+    bench = add_file(add_file(bench, 'linux', str(patch)), 'linux', str(notes))
+    plans, problems, _tree = service.plans(workspace, bench, {talk.identity: talk})
+    assert problems == []
+    assert plans[0].items == (
+        TreeItem('RFC: tiers (discussion)', '/mail/talk.mbx', apply=False),
+        TreeItem('fix.mbx (file)', str(patch)),
+        TreeItem('notes.md (file)', file=str(notes), apply=False),
+    )
+    gone = add_file(Workbench('g', 'G'), 'linux', str(tmp_path / 'nope.patch'))
+    _plans, problems, _tree = service.plans(workspace, gone, {})
+    assert problems == [f'nope.patch (file): {tmp_path / "nope.patch"} does not exist']

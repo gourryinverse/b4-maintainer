@@ -292,3 +292,30 @@ def test_a_lightweight_workbench_session_compares_mailboxes_without_trees(tmp_pa
     assert 'Edit, build' not in system and 'trees sit side by side' not in system
     [(sid, _request)] = runner.launches
     assert sid == record.id
+
+
+def test_read_only_items_reach_the_context_and_never_a_tree(tmp_path, store):
+    from b4_maintainer.fixtures import write_series_mbox
+
+    talk = write_series_mbox(tmp_path / 'talk.mbx', subject='RFC: tiers')
+    notes = tmp_path / 'notes.md'
+    notes.write_text('ideas\n')
+    plans = (
+        TreePlan(
+            'linux',
+            'gourry/base',
+            (
+                TreeItem('RFC: tiers (discussion)', str(talk.path), apply=False),
+                TreeItem('notes.md (file)', file=str(notes), apply=False),
+            ),
+        ),
+    )
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees, sandbox=lambda: True)
+    light = LaunchChoice('series-test', {'goal': 'review'}, model='dry-run', mode='lightweight')
+    record = launch(hub, plans=plans, choice=light)
+    context = store.directory(record.id) / 'work' / 'context'
+    assert (context / 'linux-1.mbx').is_file()
+    assert (context / 'files' / 'notes.md').read_text() == 'ideas\n'
+    system = (store.directory(record.id) / 'system.md').read_text()
+    assert 'files/notes.md (notes.md (file) (linux))' in system

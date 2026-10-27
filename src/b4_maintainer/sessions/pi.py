@@ -238,10 +238,12 @@ def prepare_session(
     sandboxed: bool = False,
     items: Optional[Sequence[ContextItem]] = None,
     threads: Sequence[tuple[str, str, str]] = (),
+    files: Sequence[tuple[str, str, str]] = (),
 ) -> None:
     """system.md, and work/ with context/ (the task and the prompt package's *items*;
     None: the thread mbox from *source*) and out/, for a new session. *threads*: (file
-    name, mail source, what it is) of further threads, e.g. each series of a workbench."""
+    name, mail source, what it is) of further threads, e.g. each series of a workbench;
+    *files*: (name, path, what it is) of files from disk, copied into context/files/."""
     directory = store.directory(record.id)
     work = directory / WORK
     context = work / 'context'
@@ -250,18 +252,25 @@ def prepare_session(
     (context / 'task.md').write_text(request.prompt + '\n')
     if items is None:
         items = [ContextItem('mbox', 'the series thread')] if source else []
-    files = []
+    listed: list[tuple[str, str]] = []
     for item in items:
         if item.id == 'mbox':
             if source and write_thread(pathlib.Path(source), context / 'thread.mbx'):
-                files.append(('thread.mbx', 'the series thread as an mbox'))
+                listed.append(('thread.mbx', 'the series thread as an mbox'))
         elif item.text:
             (context / f'{item.id}.md').write_text(item.text)
-            files.append((f'{item.id}.md', item.label))
+            listed.append((f'{item.id}.md', item.label))
     for name, thread, what in threads:
         if write_thread(pathlib.Path(thread), context / name):
-            files.append((name, what))
-    prompt = system_prompt(record, request, work, sandboxed, files)
+            listed.append((name, what))
+    for name, path, what in files:  # Files from disk, as they are.
+        try:
+            (context / 'files').mkdir(exist_ok=True)
+            shutil.copyfile(path, context / 'files' / name)
+        except OSError:
+            continue
+        listed.append((f'files/{name}', what))
+    prompt = system_prompt(record, request, work, sandboxed, listed)
     (directory / 'system.md').write_text(prompt)
 
 

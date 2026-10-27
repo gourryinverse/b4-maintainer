@@ -109,7 +109,7 @@ def _am_bytes(source: str, revision: int) -> tuple['b4.LoreSeries', bytes]:
     lmbx = b4.LoreMailbox()
     for msg in b4.get_msgs_from_mailbox_or_maildir(source):
         lmbx.add_message(msg)
-    lser = lmbx.get_series(revision, reroll=False, codereview_trailers=False)
+    lser = lmbx.get_series(revision or None, reroll=False, codereview_trailers=False)
     if lser is None or not any(lser.patches[1:]):
         raise PrepareError(f'no v{revision} series in {source}')
     b4.MAIN_CONFIG['attestation-policy'] = 'off'  # Offline; the session reviews the code.
@@ -314,7 +314,7 @@ def prepare_items_tree(
         if base and start is None:
             raise PrepareError(f'base {base!r} is not a commit in {project.name}')
         tip = start
-        for item in items:
+        for item in (i for i in items if i.apply):  # Read-only items stay out of trees.
             try:
                 if item.source and tip is None:
                     start, tip = _apply(project, dest, item.source, item.revision, None)
@@ -356,7 +356,7 @@ def items_mbox(project: pathlib.Path, start: str, items: Sequence[TreeItem]) -> 
     """Every item as one mbox, in order, for an agent to git am at *start*: b4's am-ready
     patches of each series, and each branch's commits beyond *start* (git format-patch)."""
     parts = []
-    for item in items:
+    for item in (i for i in items if i.apply):
         if item.source:
             parts.append(series_mbox(project, item.source, item.revision))
             continue

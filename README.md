@@ -93,7 +93,10 @@ Python 3.11 or newer.
 - Workbenches are recipes for agent sessions over several projects (e.g. a Linux tree and an
   ndctl tree, patched together): per project, a base and the series and local branches
   applied on it in order, one file each in `state/workbenches/` (synced). `w` in the
-  series list or a thread adds the series to one (or a new one); `F3` lists them with a
+  series list or a thread adds the series (or a discussion, which sessions read but never
+  apply) to one (or a new one); `a` on the Workbench tab adds a thread by lore link or
+  Message-ID (fetched into the cache, kept there while a workbench names it) or a file
+  from disk (applied if b4 finds patches in it, else read); `F3` lists them with a
   preview of what a launch prepares: `n` new, `r` rename, `x` remove (a workbench or
   project after a confirmation), `b` a project's base, `B` add a local branch (the
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,

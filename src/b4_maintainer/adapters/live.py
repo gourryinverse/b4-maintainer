@@ -10,14 +10,17 @@ import dataclasses
 import datetime
 import json
 import pathlib
+import re
 import subprocess
 import threading
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ..model import Coverage, Series, SeriesState, WorkItem
 from ..projectsetup import (
     CONFIG_NAME,
+    config_path,
     default_b4_command,
     describe_checkout,
     read_config,
@@ -526,7 +529,8 @@ class LiveSource:
 
     def _refresh(self, progress: Callable[[str], None]) -> str:
         ws = self.workspace()
-        self.cache.keep = self.watched.msgids()  # Watched threads outlive the window.
+        # Watched threads, and those workbenches name, outlive the window.
+        self.cache.keep = self.watched.msgids() | self.bench_msgids()
         lists = self.browse_lists(ws)
         if not lists:
             return f'Nothing to browse: add a [[profiles]] entry with lists to {CONFIG_NAME}'
@@ -592,6 +596,30 @@ class LiveSource:
             if cache.errors:
                 notes.append(f'{cache.errors} get_maintainer failure(s)')
         return ''.join(f'; {n}' for n in notes)
+
+    def bench_msgids(self) -> set[str]:
+        """Message-IDs workbench items name: their threads stay cached past the window."""
+        from ..workbench import WorkbenchStore
+
+        store = WorkbenchStore(config_path(self.root).parent / 'workbenches')
+        benches, _problems = store.list()
+        return {i.msgid for b in benches for e in b.entries for i in e.items if i.msgid}
+
+    def fetch_thread(self, target: str) -> str:
+        """Fetch a whole thread into the cache by a lore link or Message-ID in it (to add
+        it to a workbench); its Message-ID."""
+        msgid = message_id_of(target)
+        if not msgid:
+            raise ValueError(f'no Message-ID in {target!r} (a lore link or <id@host>)')
+        ws = self.workspace()
+        checkout = self._flags_checkout(ws)
+        if checkout is None:
+            raise RuntimeError('no project checkout to fetch with')
+        self.cache.keep = self.watched.msgids() | self.bench_msgids() | {msgid}
+        fetch = self._thread_for(checkout)
+        self.cache.refresh_thread(msgid, fetch, ws.window_days, now=self._now())
+        self.cache.series(parse_mbox)  # So the reload that follows reads summaries only.
+        return msgid
 
     def toggle_watched(self, item: WorkItem) -> str:
         """Follow or stop following a discussion; series are tracked through b4 instead."""
@@ -684,3 +712,15 @@ def _from_tracking(entry: b4state.Tracked) -> Series:
         change_id=entry.change_id,
         msgids=tuple(sorted(entry.msgids)),
     )
+
+
+def message_id_of(text: str) -> str:
+    """The Message-ID in a lore link (lore.kernel.org/<list>/<id>/..., /r/<id>,
+    patch.msgid.link/<id>), `id:<id>`, `<id>`, or a bare id; empty if there is none."""
+    text = text.strip()
+    if '://' in text:
+        path = urllib.parse.urlparse(text).path
+        parts = [urllib.parse.unquote(p) for p in path.split('/') if p]
+        text = next((p for p in parts if '@' in p), '')
+    text = text.removeprefix('id:').strip().strip('<>')
+    return text if re.fullmatch(r'[^@\s<>/]+@[^@\s<>/]+', text) else ''

@@ -4,6 +4,7 @@ import datetime
 import email.message
 import email.utils
 
+import pytest
 from test_live import MM, NOW, mail, reply_to, responses_source
 
 from b4_maintainer.adapters.b4mbox import load_thread
@@ -192,3 +193,28 @@ def test_watching_needs_a_discussion(tmp_path):
     [series] = source.load().items
     with pytest.raises(RuntimeError, match='discussion'):
         source.toggle_watched(series)
+
+
+def test_a_thread_is_fetched_by_link_or_message_id_and_kept_for_its_workbench(tmp_path):
+    from b4_maintainer.adapters.live import message_id_of
+    from b4_maintainer.projectsetup import config_path
+    from b4_maintainer.workbench import Workbench, WorkbenchStore, add_mail
+
+    assert message_id_of('<a@b.org>') == 'a@b.org'
+    assert message_id_of('id:a@b.org') == 'a@b.org'
+    assert message_id_of('https://lore.kernel.org/linux-mm/a@b.org/T/#t') == 'a@b.org'
+    assert message_id_of('https://lore.kernel.org/r/a%40b.org') == 'a@b.org'
+    assert message_id_of('https://patch.msgid.link/a@b.org') == 'a@b.org'
+    assert message_id_of('not a message id') == ''
+    source, fakes, _ = watching_source(tmp_path)
+    fakes.mine = discussion()
+    msgid = source.fetch_thread('https://lore.kernel.org/linux-mm/root@example.org/')
+    assert msgid == 'root@example.org' and fakes.thread_calls == ['root@example.org']
+    assert any('root@example.org' in i.series.msgids for i in source.load().items)
+    with pytest.raises(ValueError, match='Message-ID'):
+        source.fetch_thread('nothing here')
+    store = WorkbenchStore(config_path(source.root).parent / 'workbenches')
+    store.save(
+        add_mail(Workbench('w', 'W'), 'linux', 'root@example.org', 'Talk', 'root@example.org')
+    )
+    assert 'root@example.org' in source.bench_msgids()  # Kept past the browse window.

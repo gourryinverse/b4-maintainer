@@ -308,7 +308,7 @@ class RecordWorktrees:
             )
         else:
             tree = prepare_items_tree(project, dest, branch, plan.base, plan.items, identity)
-        return ProjectTree(plan.project, tree, tuple(i.label for i in plan.items))
+        return ProjectTree(plan.project, tree, tuple(i.label for i in plan.items if i.apply))
 
     def remove_home(self, record: SessionRecord) -> None:
         if self.directory is None:
@@ -601,6 +601,7 @@ class SessionHub:
         package: Callable[[SessionRecord], tuple[Optional[str], Sequence[ContextItem]]],
         trees: Optional[Callable[[SessionRecord], SessionRecord]] = None,
         threads: Sequence[tuple[str, str, str]] = (),
+        files: Sequence[tuple[str, str, str]] = (),
     ) -> SessionRecord:
         """Record the session (preparing, while *tree* prepares its worktree, or *trees* a
         workbench session's), write its package (*threads*: further series threads),
@@ -617,7 +618,7 @@ class SessionHub:
                 self._preparing.discard(record.id)
             source, items = package(record)
             prepare_session(
-                self.store, record, spec.request, source, spec.sandboxed, items, threads
+                self.store, record, spec.request, source, spec.sandboxed, items, threads, files
             )
             self.runner.launch(record, spec)
         except TreeError as exc:
@@ -731,9 +732,15 @@ class SessionHub:
             for entry in plans
             for n, item in enumerate((i for i in entry.items if i.source), 1)
         ]
+        files = [
+            (pathlib.Path(item.file).name, item.file, f'{item.label} ({entry.project})')
+            for entry in plans
+            for item in entry.items
+            if item.file
+        ]
         package = [i for i in planned.included if i.id != 'mbox']  # One thread per series.
         prepare = trees if planned.mode == 'worktree' else None
-        return self._start(record, spec, None, lambda r: (None, package), prepare, threads)
+        return self._start(record, spec, None, lambda r: (None, package), prepare, threads, files)
 
     def launch_apply(
         self,

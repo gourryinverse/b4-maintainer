@@ -132,9 +132,11 @@ class TreeItem:
 
     label: str
     source: str = ''
-    revision: int = 0
+    revision: int = 0  # 0: the latest b4 finds (a file from disk).
     branch: str = ''
     repo: str = ''
+    apply: bool = True  # False: given to the session to read (a discussion, a file).
+    file: str = ''  # A file from disk given as it is, not as mail.
 
 
 # Where a tree b4 could not apply the series in keeps b4's mbox for the agent: under .git,
