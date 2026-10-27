@@ -18,7 +18,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from b4.review.tracking import get_repo_identifier
 
-from .workspace import Project, Workspace, make_ref
+from .workspace import Project, Workspace, make_ref, merge_config
 
 CONFIG_NAME = 'workspace.toml'
 B4_DATA = ('var', 'b4', 'data')
@@ -35,6 +35,24 @@ def config_path(root: pathlib.Path) -> pathlib.Path:
     if local.is_file() or not (root / 'state').is_dir():
         return local
     return root / 'state' / CONFIG_NAME
+
+
+def local_config_path(root: pathlib.Path) -> pathlib.Path:
+    """This machine's overrides of the configuration: var/workspace.toml, never synced."""
+    return root / 'var' / CONFIG_NAME
+
+
+def read_config(root: pathlib.Path) -> dict[str, Any]:
+    """The configuration in effect: config_path()'s, with this machine's overrides."""
+    config = tomllib.loads(config_path(root).read_text())
+    local = local_config_path(root)
+    if local.is_file():
+        try:
+            overrides = tomllib.loads(local.read_text())
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(f'var/{CONFIG_NAME}: {e}') from e
+        config = merge_config(config, overrides)
+    return config
 
 
 def has_config(root: pathlib.Path) -> bool:

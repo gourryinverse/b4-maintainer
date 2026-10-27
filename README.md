@@ -86,6 +86,10 @@ Python 3.11 or newer.
   [setup](#setup));
   `state/workspace.toml` is the synced configuration. `b4-maintainer sync` syncs once by
   hand; the app syncs at startup, around `F5`, and on quit.
+- `var/workspace.toml` (optional, per machine, never synced) overrides it on this machine,
+  e.g. `[sessions] max_builds` or a checkout's `path`: tables merge key by key,
+  `[[projects]]`, `[[profiles]]`, and `[[models]]` entries by `id` (a new `id` is added);
+  any other value it sets replaces the shared one. `project add` writes the shared file.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.

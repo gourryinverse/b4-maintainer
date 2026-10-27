@@ -12,12 +12,16 @@ import json
 import pathlib
 import subprocess
 import threading
-import tomllib
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ..model import Coverage, Series, SeriesState, WorkItem
-from ..projectsetup import CONFIG_NAME, config_path, default_b4_command, describe_checkout
+from ..projectsetup import (
+    CONFIG_NAME,
+    default_b4_command,
+    describe_checkout,
+    read_config,
+)
 from ..workspace import Project, Snapshot, Workspace, build_items
 from . import b4state, sashiko, statesync
 from .b4mbox import parse_mbox
@@ -98,7 +102,7 @@ class LiveSource:
         self._sync_lock = threading.Lock()
 
     def workspace(self) -> Workspace:
-        return Workspace.from_config(tomllib.loads(config_path(self.root).read_text()))
+        return Workspace.from_config(read_config(self.root))
 
     def can_sync(self) -> bool:
         """Whether state/ syncs on its own: a state repository with a remote, and auto on."""

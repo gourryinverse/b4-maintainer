@@ -50,6 +50,29 @@ def _ref(r: Mapping[str, Any]) -> Ref:
     )
 
 
+def _entries(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(e, dict) and 'id' in e for e in value)
+
+
+def merge_config(shared: Mapping[str, Any], local: Mapping[str, Any]) -> dict[str, Any]:
+    """*local* (a machine's var/workspace.toml) over *shared* (the synced one): tables
+    merge key by key, lists of entries with ids ([[projects]], [[profiles]], [[models]])
+    entry by entry (new ids added), anything else is replaced."""
+    merged = dict(shared)
+    for key, value in local.items():
+        mine = merged.get(key)
+        if isinstance(mine, dict) and isinstance(value, dict):
+            merged[key] = merge_config(mine, value)
+        elif _entries(mine) and _entries(value):
+            entries = {e['id']: e for e in mine}
+            for entry in value:
+                entries[entry['id']] = merge_config(entries.get(entry['id'], {}), entry)
+            merged[key] = list(entries.values())
+        else:
+            merged[key] = value
+    return merged
+
+
 # The keys each table of workspace.toml may have; anything else is reported, not ignored.
 REF_KEYS = frozenset({'label', 'name', 'authority', 'view', 'ends_review'})
 BASE_KEYS = frozenset({'branch', 'upstream'})

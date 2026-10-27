@@ -53,13 +53,13 @@ def launch_check(
     if live >= limits.max_live:
         blockers.append(
             f'{live} sessions are live (max_live = {limits.max_live}); stop one first, or '
-            'raise [sessions] max_live in workspace.toml'
+            'raise [sessions] max_live (var/workspace.toml: this machine)'
         )
     if mode == 'worktree' and live_builds >= limits.max_builds:
         many = 'sessions are' if live_builds != 1 else 'session is'
         blockers.append(
             f'{live_builds} worktree {many} live (max_builds = {limits.max_builds}); stop one '
-            'first, or raise [sessions] max_builds in workspace.toml'
+            'first, or raise [sessions] max_builds (var/workspace.toml: this machine)'
         )
     if mode == 'worktree':
         if worktrees >= limits.worktree_warn:

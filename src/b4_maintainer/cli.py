@@ -294,13 +294,12 @@ def bases_main(argv: Sequence[str]) -> int:
     parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
     parser.add_argument('--rebase', metavar='BRANCH', help='rebase this base onto its upstream')
     args = parser.parse_args(argv)
-    import tomllib
 
     from .adapters.bases import base_status, rebase_base
-    from .projectsetup import config_path
+    from .projectsetup import read_config
 
     try:
-        workspace = Workspace.from_config(tomllib.loads(config_path(args.root).read_text()))
+        workspace = Workspace.from_config(read_config(args.root))
     except (OSError, ValueError) as e:
         print(f'b4-maintainer: {e}', file=sys.stderr)
         return 2
