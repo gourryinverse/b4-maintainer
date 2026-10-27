@@ -19,6 +19,7 @@ import tomllib
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
 
+from .attachments import Attachment, gather, preview
 from .model import Series
 from .sessions.records import SessionRecord, session_trees
 from .sessions.trees import TreeItem, classify_tree
@@ -281,18 +282,35 @@ def _git(repo: pathlib.Path, *args: str) -> Optional[str]:
     return run.stdout.strip() if run.returncode == 0 else None
 
 
+@dataclass(frozen=True)
+class ContentRow:
+    """One row of a workbench's contents (the Workbench tab's middle pane)."""
+
+    text: str  # As listed, indented under its section.
+    kind: str  # heading, entry (a project), item, mailbox, tree, commit, or artifact
+    project: str = ''
+    index: int = -1  # An item's place in its project's entry.
+    session: str = ''
+    series: str = ''  # A mailbox's series identity.
+    attachment: Optional[Attachment] = None  # A commit's or artifact's, for showing.
+    path: str = ''  # A tree's path.
+
+
 class WorkbenchService:
-    """Workbenches for the screen: the store, and per project what may go in a tree."""
+    """Workbenches for the screen: the store, per project what may go in a tree, and
+    each workbench's contents (its sessions' trees and output from *directory*)."""
 
     def __init__(
         self,
         root: pathlib.Path,
         store: WorkbenchStore,
         records: Callable[[], Sequence[SessionRecord]],
+        directory: Optional[Callable[[str], pathlib.Path]] = None,
     ) -> None:
         self.root = root
         self.store = store
         self._records = records
+        self._directory = directory
 
     def _repo(self, workspace: Workspace, project: str) -> Optional[pathlib.Path]:
         found = workspace.project(project)
@@ -380,6 +398,100 @@ class WorkbenchService:
         if not bench.entries:
             problems.append(f'{bench.label} has nothing to prepare: w adds series to it')
         return tuple(plans), problems, tree_problems
+
+    def contents(
+        self,
+        workspace: Workspace,
+        bench: Workbench,
+        series: Mapping[str, Series],
+        latest: Mapping[str, int],
+    ) -> list[ContentRow]:
+        """*bench* in sections: Items (each project and its items, in order), Mailboxes
+        (each series), Trees (each session tree and its commits by class), Artifacts
+        (each session's prompt, files, and findings)."""
+        rows = [ContentRow('Items', 'heading')]
+        newer = {(p, n): r for p, n, r in rerolls(bench, latest)}
+        for entry in bench.entries:
+            where = entry.base or 'the base b4 chooses'
+            rows.append(ContentRow(f'  {entry.project} on {where}', 'entry', entry.project))
+            for n, item in enumerate(entry.items):
+                mark = (
+                    f' · v{newer[(entry.project, n)]} available'
+                    if (entry.project, n) in newer
+                    else ''
+                )
+                text = f'    {n + 1}. {item.label}{mark}'
+                rows.append(ContentRow(text, 'item', entry.project, n))
+        mailboxes = [
+            ContentRow(
+                f'  {item.label} ({entry.project})', 'mailbox', entry.project, series=item.series
+            )
+            for entry in bench.entries
+            for item in entry.items
+            if item.series
+        ]
+        if mailboxes:
+            rows += [ContentRow('Mailboxes', 'heading'), *mailboxes]
+        records = [r for r in self._records() if bench.id and r.workbench == bench.id]
+        trees: list[ContentRow] = []
+        artifacts: list[ContentRow] = []
+        for record in sorted(records, key=lambda r: r.created, reverse=True):
+            found = gather([record], record.series, self._directory) if self._directory else []
+            for project, tree in session_trees(record):
+                label = f'  {record.id} · {project} · {tree.branch}'
+                trees.append(ContentRow(label, 'tree', project, session=record.id, path=tree.path))
+                for a in (x for x in found if x.kind == 'patch' and x.repo == tree.path):
+                    kind = a.label.split(' · ')[1] if ' · ' in a.label else 'commit'
+                    text = f'    {kind}: {a.title}'
+                    trees.append(
+                        ContentRow(text, 'commit', project, session=record.id, attachment=a)
+                    )
+            for a in (x for x in found if x.kind != 'patch'):
+                text = f'  {record.id}: {a.label.split("  (")[0]}'
+                artifacts.append(ContentRow(text, 'artifact', session=record.id, attachment=a))
+        if trees:
+            rows += [ContentRow('Trees', 'heading'), *trees]
+        if artifacts:
+            rows += [ContentRow('Artifacts', 'heading'), *artifacts]
+        return rows
+
+    def show(
+        self,
+        workspace: Workspace,
+        bench: Workbench,
+        row: Optional[ContentRow],
+        series: Mapping[str, Series],
+        latest: Mapping[str, int],
+    ) -> str:
+        """The text for a contents row: the launch preview for Items, a series' patches
+        and cover letter, a tree's state and recent commits, a commit or an artifact."""
+        if row is None or row.kind in ('heading', 'entry', 'item'):
+            return self.preview(workspace, bench, series, latest)
+        if row.attachment is not None:
+            return preview(row.attachment)
+        if row.kind == 'mailbox':
+            known = series.get(row.series)
+            if known is None:
+                return f'{row.text.strip()}: not in the cache (F5 fetches it)'
+            lines = [
+                f'{known.subject} v{known.revision}',
+                f'From: {known.author_name} <{known.author_email}>',
+                f'Lists: {", ".join(known.lists) or "-"}',
+                '',
+                *(f'  {p.counter}/{known.expected} {p.subject}' for p in known.patches),
+            ]
+            if known.preview:
+                lines += ['', known.preview_label or 'Cover letter', '', known.preview]
+            return '\n'.join(lines)
+        if row.kind == 'tree':
+            where = pathlib.Path(row.path)
+            status = _git(where, 'status', '--short') if where.is_dir() else None
+            log = _git(where, 'log', '--oneline', '-20', 'HEAD') if where.is_dir() else None
+            if log is None:
+                return f'{row.path}: the tree is gone'
+            changed = f'Uncommitted:\n{status}\n\n' if status else 'No uncommitted changes.\n\n'
+            return f'{row.path}\n\n{changed}Recent commits:\n{log}'
+        return ''
 
     def preview(
         self,

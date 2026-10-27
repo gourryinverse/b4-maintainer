@@ -124,7 +124,7 @@ def _workbenches(root: pathlib.Path, hub: 'SessionHub') -> 'WorkbenchService':
     from .workbench import WorkbenchService, WorkbenchStore
 
     store = WorkbenchStore(config_path(root).parent / 'workbenches')
-    return WorkbenchService(root, store, hub.records)
+    return WorkbenchService(root, store, hub.records, hub.store.directory)
 
 
 def _app_pane() -> str:

@@ -283,3 +283,92 @@ def test_a_series_workbench_is_made_once_and_found_again(tmp_path):
     assert again == bench  # Found by its origin, as it is (v on F3 takes v4).
     other = series_bench(store, 'linux', 'change-id:y', 1, 'mm: fix the leak', '')
     assert other.id == 'mm-fix-the-leak-2'
+
+
+def test_a_workbenchs_contents_come_in_sections(tmp_path):
+    import dataclasses
+
+    from gitutil import git
+    from sessiondata import make_record
+
+    from b4_maintainer.fixtures import make_series
+    from b4_maintainer.sessions.records import Worktree
+    from b4_maintainer.workbench import WorkbenchService
+
+    workspace = service_root(tmp_path)
+    linux = tmp_path / 'projects' / 'linux'
+    base = git('rev-parse', 'main', cwd=linux)
+    tree = tmp_path / 'var' / 'worktrees' / 's1'
+    git('clone', '-q', '--shared', str(linux), str(tree), cwd=tmp_path)
+    git('switch', '-q', '-c', 'b4m/session/s1', base, cwd=tree)
+    git('switch', '-q', '-c', 'b4m/fixup/leak', cwd=tree)
+    (tree / 'leak.c').write_text('fixed\n')
+    git('add', '-A', cwd=tree)
+    git(
+        '-c',
+        'user.name=A',
+        '-c',
+        'user.email=a@x',
+        'commit',
+        '-q',
+        '-m',
+        'mm: plug the leak',
+        cwd=tree,
+    )
+    out = tmp_path / 'sessions' / 's1' / 'work' / 'out'
+    out.mkdir(parents=True)
+    (out / 'report.md').write_text('B is better.\n')
+    (out / 'artifacts.toml').write_text(
+        '[[artifact]]\nkind = "analysis"\ntitle = "Compare A and B"\nsummary = "Take B."\n'
+        'path = "out/report.md"\n'
+    )
+    record = make_record(
+        's1',
+        series='workbench:w',
+        workbench='w',
+        mode='worktree',
+        worktree=Worktree(str(tree), 'b4m/session/s1', base, base),
+    )
+    cxl = dataclasses.replace(make_series('cxl: region mode', revision=3), source='/mail/cxl.mbx')
+    bench = Workbench(
+        'w',
+        'W',
+        (
+            Entry(
+                'linux',
+                'gourry/base',
+                (Item(cxl.identity, 3, cxl.subject), Item(branch='gourry/fixes')),
+            ),
+        ),
+    )
+    service = WorkbenchService(
+        tmp_path,
+        WorkbenchStore(tmp_path / 'wb'),
+        lambda: [record],
+        lambda sid: tmp_path / 'sessions' / sid,
+    )
+    rows = service.contents(workspace, bench, {cxl.identity: cxl}, {cxl.identity: 4})
+    text = [r.text for r in rows]
+    kinds = [r.kind for r in rows]
+    assert [t for t, k in zip(text, kinds) if k == 'heading'] == [
+        'Items',
+        'Mailboxes',
+        'Trees',
+        'Artifacts',
+    ]
+    assert '  linux on gourry/base' in text
+    item = next(r for r in rows if r.kind == 'item' and r.index == 0)
+    assert (
+        item.project == 'linux'
+        and 'cxl: region mode v3' in item.text
+        and 'v4 available' in item.text
+    )
+    mailbox = next(r for r in rows if r.kind == 'mailbox')
+    assert mailbox.series == cxl.identity and 'cxl: region mode v3 (linux)' in mailbox.text
+    tree_row = next(r for r in rows if r.kind == 'tree')
+    assert tree_row.session == 's1' and 'linux' in tree_row.text
+    commit = next(r for r in rows if r.kind == 'commit')
+    assert 'mm: plug the leak' in commit.text and 'fixup' in commit.text
+    assert commit.attachment is not None and commit.attachment.repo == str(tree)
+    artifact = next(r for r in rows if r.kind == 'artifact' and 'Compare A and B' in r.text)
+    assert artifact.session == 's1' and artifact.attachment is not None

@@ -98,12 +98,15 @@ Python 3.11 or newer.
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
   and `F1` launches a session over it: lightweight, no trees, each series' thread in its
   context to read and compare (series that conflict are fine); or worktree, one tree
-  per project, side by side in `var/worktrees/<id>/`, where the agent starts. A workbench
-  session lives in its tab: below the panes, the workbench's sessions, what the selected
-  one produced, and its text; Enter (there, or on it in the drawer) puts it beside the
-  app, `o` opens the workbench's live session from any pane, and one launched from the
-  tab joins beside at once. The column follows the tab: back on LKML the workbench
-  session returns to its own window.
+  per project, side by side in `var/worktrees/<id>/`, where the agent starts. The tab
+  shows, left, the workbenches and the selected one's sessions; middle, its Contents in
+  sections: Items (each project and its items, edited as above), Mailboxes (each
+  series), Trees (each session tree and its commits by class), Artifacts (each
+  session's prompt, reports, results, files); right, the selected row's text (for
+  Items, the launch preview). Enter on a session (or on it in the drawer) puts it
+  beside the app, `o` opens the workbench's live session from any pane, and one launched
+  from the tab joins beside at once. The column follows the tab: back on LKML the
+  workbench session returns to its own window.
 - Every session is filed in a workbench: F1 on a series makes that series' workbench the
   first time (named after it, the series on its base; `origin` in its file) and files
   the session there, so its sessions and their output are found in the Workbench tab; a

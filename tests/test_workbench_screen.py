@@ -93,18 +93,18 @@ async def test_a_projects_base_is_picked_and_items_move_go_and_reroll(demo_root,
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_screen(pilot)
         screen.latest = snapshot_latest
-        await pilot.press('tab')  # Projects.
+        screen.select_row('entry', 'linux')  # Contents: the project's row.
         await pilot.press('b')
         await settle(pilot)
         assert isinstance(app.screen, Pick)
         await pilot.press('down', 'enter')
         await settle(pilot)
         assert store.get('cxl').entries[0].base == 'mainline/master'
-        await pilot.press('tab')  # Items.
+        screen.select_row('item', 'linux', 0)  # The series.
         await pilot.press('shift+down')
         await settle(pilot)
         assert store.get('cxl').entries[0].items == (FIXES, CXL)
-        assert screen.item_index() == 1  # The cursor moved with it.
+        assert screen.row().index == 1  # The cursor moved with it.
         await pilot.press('v')
         await settle(pilot)
         assert store.get('cxl').entries[0].items[1].revision == 4
@@ -123,7 +123,8 @@ async def test_removing_a_project_asks_first(demo_root, tmp_path):
     app, store = make(demo_root, tmp_path, [BENCH])
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_screen(pilot)
-        await pilot.press('tab', 'x')
+        screen.select_row('entry', 'linux')
+        await pilot.press('x')
         await settle(pilot)
         assert isinstance(app.screen, Confirm) and 'linux' in app.screen.prompt
         await pilot.press('y')

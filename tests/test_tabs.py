@@ -73,7 +73,7 @@ async def test_switching_keeps_each_tabs_place(demo_root, tmp_path):
         await pilot.press('f3')
         await settle(pilot)
         workbench = app.screen
-        await pilot.press('tab')  # The projects pane.
+        await pilot.press('tab')  # The sessions pane.
         await pilot.press('f4')
         await settle(pilot)
         artifacts = app.screen
@@ -82,7 +82,7 @@ async def test_switching_keeps_each_tabs_place(demo_root, tmp_path):
         chosen = artifacts.selected_item()
         await pilot.press('f3')
         await settle(pilot)
-        assert app.screen is workbench and workbench.focused.id == 'bench-entries'
+        assert app.screen is workbench and workbench.focused.id == 'bench-sessions'
         await pilot.press('f4')
         await settle(pilot)
         assert app.screen is artifacts and artifacts.selected_item() == chosen

@@ -21,7 +21,7 @@ def make(demo_root, tmp_path):
     hub = SessionHub(sessions, runner, FakeWorktrees(), sandbox=lambda: True)
     store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
     store.save(BENCH)
-    service = FakeService(tmp_path, store, hub.records)
+    service = FakeService(tmp_path, store, hub.records, sessions.directory)
     app = MaintainerApp(
         FixtureSource(demo_root).load, sessions=hub, workbenches=service, app_pane=APP
     )
@@ -163,17 +163,9 @@ async def test_the_panes_are_titled(demo_root, tmp_path):
         await settle(pilot)
         await pilot.press('f3')
         await settle(pilot)
-        titles = [
-            str(w.border_title) for w in app.screen.query('#bench-panes > *, #bench-bottom > *')
-        ]
-        assert titles == [
-            'Workbenches',
-            'Projects (base)',
-            'Items, in order',
-            'Sessions',
-            'Output',
-            'Launch preview',
-        ]
+        panes = '#bench-list, #bench-sessions, #bench-contents, #bench-show-pane'
+        titles = [str(w.border_title) for w in app.screen.query(panes)]
+        assert titles == ['Workbenches', 'Sessions', 'Contents', 'Launch preview']
 
 
 async def test_f1_on_a_series_files_the_session_in_its_workbench(demo_root, tmp_path):
@@ -231,3 +223,28 @@ async def test_a_derived_session_is_filed_with_its_parent(demo_root, tmp_path):
         assert app._file_in(target, derived) == BENCH.id
         fresh = app._file_in(target, LaunchChoice('series'))
         assert fresh != BENCH.id and app._workbenches.store.get(fresh).origin == item.identity
+
+
+async def test_contents_keep_their_place_through_session_polls(demo_root, tmp_path):
+    app, runner = make(demo_root, tmp_path)
+    record = bench_session(runner, 'w1')
+    out = runner.store.directory('w1') / 'work' / 'out'
+    out.mkdir(parents=True, exist_ok=True)
+    for name in ('a', 'b', 'c'):
+        (out / f'{name}.md').write_text(f'{name}\n')
+    async with app.run_test(size=(220, 50)) as pilot:
+        app.poll_sessions()
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        screen = app.screen
+        rows = [r for r in screen._rows if r.kind == 'artifact']
+        assert len(rows) >= 3 and record.id == 'w1'
+        screen.select_row('artifact')
+        await pilot.press('down', 'down')
+        await settle(pilot)
+        place = screen.row()
+        for _ in range(3):  # Polls (each session event) must not move the cursor.
+            app.poll_sessions()
+            await settle(pilot)
+        assert screen.row() == place
