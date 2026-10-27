@@ -44,6 +44,7 @@ PERMISSION_LABELS = {
 }
 BASE_PLACEHOLDER = 'Base: empty lets b4 choose (HEAD if it applies, the series base, a guess)'
 NO_SERIES = 'a workspace session has no series to apply'
+LAUNCH = 'Launch (ctrl+s)'
 MODE_LABELS = {
     'lightweight': 'lightweight: analyze the series mail and the checkout; writes only out/',
     'worktree': 'worktree: the series applied in its own tree, to edit, build, run, and test',
@@ -151,7 +152,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 with VerticalScroll(id='launch-summary-pane', can_focus=False):
                     yield Static('', id='launch-summary', markup=False)
             with Horizontal(id='buttons'):
-                yield Button('Launch (ctrl+s)', id='launch-go', variant='primary')
+                yield Button(LAUNCH, id='launch-go', variant='primary')
                 yield Button('Cancel (esc)', id='launch-cancel')
 
     def _scope_options(self) -> list[tuple[str, str, bool]]:
@@ -434,7 +435,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                     skills.select(key)
         self._skills_shown = set(self.plan.skills)
         self.query_one('#launch-summary', Static).update(self.summary_text())
-        self.query_one('#launch-go', Button).disabled = not self.plan.ok
+        go = self.query_one('#launch-go', Button)
+        go.disabled = not self.plan.ok
+        go.label = LAUNCH if self.plan.ok else 'Cannot launch: see the summary'
 
     async def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         group = self._keys.get(id(event.radio_set), ('', ''))[0]
@@ -541,7 +544,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         p = self.plan
         if p is None:
             return ''
-        lines = [
+        lines = [f'Cannot launch: {b}' for b in p.blockers]  # First, where it is seen.
+        lines += [
             f'Session:  {session_label(self._target())} · {p.mode}',
             f'Model:    {_model_text(p.model, p.thinking)}',
         ]
@@ -568,7 +572,6 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             lines.append(f'Worktree: the series applied on {where}, on its own branch')
         lines += [f'Note:     {n}' for n in p.notes]
         lines += [f'Warning:  {w}' for w in (*p.warnings, *self.problems)]
-        lines += [f'Cannot launch: {b}' for b in p.blockers]
         if p.request is not None:
             lines += ['', 'Prompt:', *(f'  {line}' for line in p.request.prompt.splitlines())]
         return '\n'.join(lines)

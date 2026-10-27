@@ -51,11 +51,15 @@ def launch_check(
     *live_builds*: live worktree sessions, which build and boot kernels."""
     blockers, warnings = [], []
     if live >= limits.max_live:
-        blockers.append(f'{live} sessions are live (max_live = {limits.max_live}); stop one first')
+        blockers.append(
+            f'{live} sessions are live (max_live = {limits.max_live}); stop one first, or '
+            'raise [sessions] max_live in workspace.toml'
+        )
     if mode == 'worktree' and live_builds >= limits.max_builds:
         many = 'sessions are' if live_builds != 1 else 'session is'
         blockers.append(
-            f'{live_builds} worktree {many} live (max_builds = {limits.max_builds}); stop one first'
+            f'{live_builds} worktree {many} live (max_builds = {limits.max_builds}); stop one '
+            'first, or raise [sessions] max_builds in workspace.toml'
         )
     if mode == 'worktree':
         if worktrees >= limits.worktree_warn:

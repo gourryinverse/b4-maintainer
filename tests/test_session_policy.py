@@ -8,7 +8,10 @@ def test_limits_block_live_sessions_and_warn_on_worktrees():
     limits = SessionLimits(max_live=2, max_builds=1, worktree_warn=3, worktree_warn_gb=10)
     assert launch_check(limits, live=1, worktrees=0, worktree_bytes=0, mode='worktree') == ([], [])
     blockers, _ = launch_check(limits, live=2, worktrees=0, worktree_bytes=0, mode='lightweight')
-    assert blockers == ['2 sessions are live (max_live = 2); stop one first']
+    assert blockers == [
+        '2 sessions are live (max_live = 2); stop one first, or raise [sessions] max_live '
+        'in workspace.toml'
+    ]
     _, warnings = launch_check(
         limits, live=0, worktrees=3, worktree_bytes=11 * 2**30, mode='worktree'
     )
@@ -23,7 +26,10 @@ def test_limits_block_live_sessions_and_warn_on_worktrees():
 def test_live_worktree_sessions_cap_new_ones():
     limits = SessionLimits(max_live=4, max_builds=1)
     blockers, _ = launch_check(limits, 1, 1, 0, 'worktree', live_builds=1)
-    assert blockers == ['1 worktree session is live (max_builds = 1); stop one first']
+    assert blockers == [
+        '1 worktree session is live (max_builds = 1); stop one first, or raise [sessions] '
+        'max_builds in workspace.toml'
+    ]
     assert launch_check(limits, 1, 1, 0, 'lightweight', live_builds=1) == ([], [])
 
 

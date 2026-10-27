@@ -503,3 +503,28 @@ async def test_a_command_goes_first_in_the_prompt(demo_root, store, runner):
         await settle(pilot)
         [(_sid, request)] = runner.launches
         assert request.prompt.startswith('/goal Help me review this series')
+
+
+async def test_a_limit_that_blocks_the_launch_is_said_first(demo_root, store, runner):
+    import dataclasses
+
+    from textual.widgets import Button
+
+    app = make_app(demo_root, store, runner, sandbox=lambda: True)
+    hub = app._sessions
+    situation = hub.situation
+    hub.situation = lambda *a, **k: dataclasses.replace(situation(*a, **k), live_builds=2)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'review')
+        assert dialog.can_launch()  # A read-only session builds nothing.
+        await act(pilot, dialog.pick, 'apparatus', 'vng')  # Needs a worktree.
+        assert not dialog.can_launch()
+        first = dialog.summary_text().splitlines()[0]
+        assert first.startswith('Cannot launch: 2 worktree sessions are live (max_builds = 2)')
+        assert '[sessions] max_builds' in first  # Where to raise it.
+        button = dialog.query_one('#launch-go', Button)
+        assert button.disabled and 'Cannot launch' in str(button.label)
+        await act(pilot, dialog.pick, 'apparatus', 'vng')
+        await act(pilot, dialog.pick, 'mode', 'lightweight')
+        assert dialog.can_launch() and str(button.label) == 'Launch (ctrl+s)'
