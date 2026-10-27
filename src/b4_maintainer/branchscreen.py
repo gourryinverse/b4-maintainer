@@ -15,7 +15,7 @@ what goes. F5 reloads; F3 or Escape returns to the series list.
 
 import pathlib
 import re
-from typing import Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Optional, Protocol, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -26,11 +26,14 @@ from textual.widgets.option_list import Option
 
 from .adapters.bases import PluckResult, RebaseResult
 from .adapters.prep import SignResult, run_b4
-from .branches import BranchesSnapshot, CutResult, DetailRow, is_commit
+from .branches import ApplyChoices, BranchesSnapshot, CutResult, DetailRow, is_commit
 from .launchdialog import Derived
 from .sessions.policy import ContextItem
 from .sessions.records import SessionRecord
 from .workspace import Workspace
+
+if TYPE_CHECKING:
+    from .adapters.apply import ApplyResult
 
 
 class Branches(Protocol):
@@ -84,6 +87,20 @@ class Branches(Protocol):
     def losses(self, workspace: Workspace, item: str) -> str: ...
 
     def reap(self, workspace: Workspace, item: str) -> tuple[bool, str]: ...
+
+    def apply_choices(
+        self, workspace: Workspace, project_id: str, source: str, revision: int
+    ) -> ApplyChoices: ...
+
+    def apply(
+        self,
+        workspace: Workspace,
+        target: str,
+        source: str,
+        revision: int,
+        numbers: Sequence[int],
+        expected: str,
+    ) -> 'ApplyResult': ...
 
 
 class Ask(ModalScreen[Optional[str]]):

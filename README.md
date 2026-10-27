@@ -75,6 +75,13 @@ Python 3.11 or newer.
   patches for `git am --scissors`, their results and reproducers as text), and `ctrl+s`
   sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
+- `a` in the series list or a thread applies that series to a maintainer base or a b4 prep
+  branch: pick the branch (when there are several), then the patches (all ticked to
+  start). b4 applies them as `b4 am` would: authors kept, trailers given on the list
+  (and, online, on other postings of the same patches) and a Link added (`b4.linkmask`),
+  you as committer, no sign-off added. The branch must not be checked out; it moves only
+  if every patch applies. Your FETCH_HEAD is left as it was; b4 records the series for
+  `b4 ty`.
 - Workspace state syncs through a private state repository cloned as `state/` (see
   [setup](#setup));
   `state/workspace.toml` is the synced configuration. `b4-maintainer sync` syncs once by

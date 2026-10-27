@@ -17,7 +17,7 @@ import pathlib
 import re
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
 
 from .adapters.bases import (
     BaseStatus,
@@ -54,6 +54,9 @@ from .sessions.rebase import RESULT
 from .sessions.records import SessionRecord, session_label
 from .sessions.trees import TreeState, classify_tree, inspect_tree, tree_worktrees
 from .workspace import MaintainerBase, Project, Workspace
+
+if TYPE_CHECKING:
+    from .adapters.apply import ApplyResult, SeriesPatch
 
 SHOW_LINES = 4000  # A commit or file is cut here.
 LIST_LIMIT = 200  # Commits listed per branch or worktree.
@@ -113,6 +116,16 @@ def _count(n: int, one: str) -> str:
 
 def _commit_row(sha: str, subject: str, repo: pathlib.Path, note: str = '') -> DetailRow:
     return DetailRow(f'  {sha[:12]}  {subject}' + (f'  ({note})' if note else ''), sha, str(repo))
+
+
+@dataclass(frozen=True)
+class ApplyChoices:
+    """What applying a posted series offers (see BranchService.apply_choices)."""
+
+    patches: tuple['SeriesPatch', ...] = ()
+    targets: tuple[tuple[str, str], ...] = ()  # (key, branch), bases first.
+    tips: Mapping[str, str] = field(default_factory=dict)
+    problem: str = ''
 
 
 @dataclass(frozen=True)
@@ -505,6 +518,69 @@ class BranchService:
         return PluckResult(True, '', tuple(picked), tuple(dropped))
 
     # Where plucked commits came from: var/branches/<project>/plucked.json, local.
+
+    def apply_choices(
+        self, workspace: Workspace, project_id: str, source: str, revision: int
+    ) -> 'ApplyChoices':
+        """What applying a posted series offers: its patches, and the project's bases and
+        prep branches with their tips."""
+        from .adapters.apply import series_patches  # b4: only when applying.
+
+        project = workspace.project(project_id)
+        if project is None:
+            return ApplyChoices(problem=f'no project {project_id or "(none)"}')
+        repo = self.root / project.path
+        if not (repo / '.git').exists():
+            return ApplyChoices(problem=f'project {project.id} has no checkout')
+        names = _git(repo, 'for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads/')
+        heads = dict(line.split(' ', 1) for line in names.splitlines() if ' ' in line)
+        targets: list[tuple[str, str]] = []
+        tips: dict[str, str] = {}
+        for base in project.bases:
+            if base.branch in heads:
+                key = f'base:{project.id}:{base.branch}'
+                targets.append((key, base.branch))
+                tips[key] = heads[base.branch]
+        for name in sorted(heads):
+            if name.startswith('b4/') and not name.startswith('b4/review/'):
+                key = f'prep:{project.id}:{name}'
+                targets.append((key, name))
+                tips[key] = heads[name]
+        if not targets:
+            return ApplyChoices(
+                problem=f'{project.id} has no maintainer base or prep branch to apply to'
+            )
+        try:
+            patches = tuple(series_patches(repo, source, revision))
+        except Exception as ex:  # b4 reports through exceptions; the reason is shown.
+            return ApplyChoices(problem=f'b4 cannot read the series: {ex}')
+        return ApplyChoices(patches, tuple(targets), tips)
+
+    def apply(
+        self,
+        workspace: Workspace,
+        target: str,
+        source: str,
+        revision: int,
+        numbers: Sequence[int],
+        expected: str,
+    ) -> 'ApplyResult':
+        """Patches *numbers* of a posted series onto *target* (a base or a prep branch)."""
+        from .adapters.apply import ApplyResult, apply_series
+
+        try:
+            project, branch = self._target(workspace, target)
+        except SessionError as ex:
+            return ApplyResult(False, error=str(ex))
+        return apply_series(
+            self.root / project.path,
+            branch,
+            source,
+            revision,
+            numbers,
+            expected,
+            record_take=target.startswith('base:'),
+        )
 
     def _provenance_path(self, project: Project) -> pathlib.Path:
         return self.root / 'var' / 'branches' / project.id / 'plucked.json'

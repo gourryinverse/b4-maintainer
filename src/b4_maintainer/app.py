@@ -29,9 +29,11 @@ from textual.worker import Worker, WorkerState
 
 from .adapters.b4mbox import load_thread
 from .adapters.drafts import DraftStore, SavedDraft
+from .applydialog import ApplyDialog
 from .attachdialog import AttachDialog
 from .attachments import Attachment, gather, git_identity, preview, render
-from .branchscreen import Branches, BranchesScreen
+from .branches import ApplyChoices
+from .branchscreen import Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import Derived, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
@@ -420,6 +422,7 @@ class MaintainerApp(App[None]):
         Binding('f5', 'refresh', 'refresh', key_display='F5'),
         Binding('r', 'reply', 'reply'),
         Binding('R', 'reply_attach', 'reply + session output'),
+        Binding('a', 'apply_series', 'apply'),
         Binding('M', 'mark_read', 'read all'),
         Binding('f3', 'branches', 'branches', key_display='F3'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
@@ -802,6 +805,9 @@ class MaintainerApp(App[None]):
             if self._saved_draft is not None and reading:
                 return True
             return self._reply_msgid() is not None if reading else self._item is not None
+        if action == 'apply_series':
+            item = self._reading or self._item
+            return self._branches is not None and item is not None and not item.series.discussion
         if action == 'mark_read':
             return self._actions is not None and (self._reading or self._item) is not None
         if action in ('hide', 'unhide'):
@@ -2194,6 +2200,85 @@ class MaintainerApp(App[None]):
             return
         if self._branches is not None and self.snapshot is not None:
             self.push_screen(BranchesScreen(self._branches, self.snapshot.workspace))
+
+    def action_apply_series(self) -> None:
+        """a: the open or selected series onto a base or a prep branch, through b4: pick the
+        branch (when there are several), then the patches."""
+        service, snapshot = self._branches, self.snapshot
+        item = self._reading or self._item
+        if service is None or snapshot is None or item is None:
+            return
+        workspace, series = snapshot.workspace, item.series
+
+        def work() -> None:
+            try:
+                choices = service.apply_choices(
+                    workspace, item.project or '', series.source, series.revision
+                )
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot apply: {exc}')
+                return
+            self.call_from_thread(self._pick_apply_target, item, choices)
+
+        self._set_notice('Reading the series…')
+        self.run_worker(work, thread=True, group='apply')
+
+    def _pick_apply_target(self, item: WorkItem, choices: ApplyChoices) -> None:
+        if choices.problem:
+            self._set_notice(f'Cannot apply: {choices.problem}')
+            return
+        self._set_notice('')
+        if len(choices.targets) == 1:
+            self._pick_patches(item, choices, choices.targets[0][0])
+            return
+
+        def picked(target: Optional[str]) -> None:
+            if target is not None:
+                self._pick_patches(item, choices, target)
+
+        self.push_screen(Pick('Apply to which branch?', choices.targets), picked)
+
+    def _pick_patches(self, item: WorkItem, choices: ApplyChoices, target: str) -> None:
+        branch = dict(choices.targets)[target]
+        subject = f'{item.series.subject} v{item.series.revision}'
+
+        def picked(numbers: Optional[list[int]]) -> None:
+            if numbers is None:
+                return
+            if not numbers:
+                self._set_notice('Nothing applied: no patches ticked')
+                return
+            self._apply(item, target, branch, numbers, choices.tips[target])
+
+        self.push_screen(ApplyDialog(subject, branch, choices.patches), picked)
+
+    def _apply(
+        self, item: WorkItem, target: str, branch: str, numbers: list[int], expected: str
+    ) -> None:
+        service, snapshot = self._branches, self.snapshot
+        if service is None or snapshot is None:
+            return
+        workspace, series = snapshot.workspace, item.series
+
+        def work() -> None:
+            try:
+                result = service.apply(
+                    workspace, target, series.source, series.revision, numbers, expected
+                )
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot apply: {exc}')
+                return
+            if result.ok:
+                n = len(result.applied)
+                notice = f'Applied {n} patch{"es" if n != 1 else ""} to {branch} · F3 shows it'
+            elif 'does not apply' in result.error:
+                notice = f'{result.error}; nothing changed · F1 starts a session to work it out'
+            else:
+                notice = f'Not applied: {result.error}'
+            self.call_from_thread(self._action_done, notice, result.ok)
+
+        self._set_notice(f'Applying to {branch}…')
+        self.run_worker(work, thread=True, group='apply')
 
     def _show_artifacts(self) -> None:
         hub, item = self._sessions, self._reading
