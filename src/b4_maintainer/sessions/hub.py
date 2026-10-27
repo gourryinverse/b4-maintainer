@@ -40,10 +40,11 @@ COUNTED_LIVE = LIVE | {'preparing'}  # Limits count a session from its preparati
 
 
 class SessionError(Exception):
-    def __init__(self, message: str, detail: str = '', base: str = '') -> None:
+    def __init__(self, message: str, detail: str = '', base: str = '', project: str = '') -> None:
         super().__init__(message)
         self.detail = detail  # Tool output behind the message (b4's, for a tree).
         self.base = base  # A series that conflicts: where it would have applied.
+        self.project = project  # A workbench session's tree that conflicts: its project.
 
 
 class TreeError(Exception):
@@ -51,10 +52,11 @@ class TreeError(Exception):
     a series that conflicts, the commit it would have applied on (an agent can take it
     from there)."""
 
-    def __init__(self, message: str, output: str = '', base: str = '') -> None:
+    def __init__(self, message: str, output: str = '', base: str = '', project: str = '') -> None:
         super().__init__(message)
         self.output = output
         self.base = base
+        self.project = project  # In a workbench session: the tree's project.
 
 
 class SessionRunner(Protocol):
@@ -621,7 +623,9 @@ class SessionHub:
         except TreeError as exc:
             self._preparing.discard(record.id)
             self.store.set_state(record.id, 'failed')
-            raise SessionError(f'Session {record.id}: {exc}', exc.output, exc.base) from exc
+            raise SessionError(
+                f'Session {record.id}: {exc}', exc.output, exc.base, exc.project
+            ) from exc
         except Exception as exc:
             self._preparing.discard(record.id)
             self.store.set_state(record.id, 'failed')
@@ -715,7 +719,9 @@ class SessionHub:
                     made.append(self.worktrees.prepare_entry(r, entry))
                 except TreeError as exc:
                     self.worktrees.remove_home(r)
-                    raise TreeError(f'{entry.project}: {exc}', exc.output, exc.base) from exc
+                    raise TreeError(
+                        f'{entry.project}: {exc}', exc.output, exc.base, entry.project
+                    ) from exc
             return r.replace(
                 trees=tuple(made), home=str(pathlib.Path(made[0].worktree.path).parent)
             )

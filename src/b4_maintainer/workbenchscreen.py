@@ -6,7 +6,8 @@ starts from); that project's items in order (posted series, local branches). Bel
 launching it would prepare. `n` makes a workbench, `r` renames it, `x` removes what the
 focused pane shows (a workbench or project after a confirmation, an item at once); `b`
 picks a project's base; `B` adds a local branch; shift+up/down move an item; `v` takes a
-series' newer revision. `w` in the series list or a thread adds series (see the app).
+series' newer revision; F1 launches a session over its trees. `w` in the series list or
+a thread adds series (see the app).
 """
 
 from typing import Callable, Mapping, Optional
@@ -63,6 +64,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('shift+up', 'move(-1)', 'move up', key_display='⇧↑'),
         Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓'),
         Binding('v', 'reroll', 'newer revision'),
+        Binding('f1', 'launch', 'session', key_display='F1'),
     ]
 
     def __init__(
@@ -248,6 +250,10 @@ class WorkbenchScreen(Screen[None]):
             return pane == 'bench-items' and bool(self.item_labels())
         if action == 'reroll':
             return pane == 'bench-items' and self._newer() is not None
+        if action == 'launch':
+            return (
+                bench is not None and bool(bench.entries) and hasattr(self.app, 'launch_workbench')
+            )
         return True
 
     def _newer(self) -> Optional[int]:
@@ -398,6 +404,13 @@ class WorkbenchScreen(Screen[None]):
         changed = move_item(bench, self.project(), index, step)
         if changed != bench:
             self._save(changed, index + step)
+
+    def action_launch(self) -> None:
+        """F1: a session over the selected workbench's trees (the app's launch dialog)."""
+        bench = self.bench()
+        launch = getattr(self.app, 'launch_workbench', None)
+        if bench is not None and launch is not None:
+            launch(bench)
 
     def action_reroll(self) -> None:
         bench, index, newer = self.bench(), self.item_index(), self._newer()

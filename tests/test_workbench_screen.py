@@ -168,3 +168,85 @@ async def test_the_apps_own_keys_wait_while_the_screen_is_open(demo_root, tmp_pa
         await settle(pilot)
         assert isinstance(app.screen, WorkbenchScreen)
         assert main.has_class('-show-views') == shown
+
+
+def session_app(demo_root, tmp_path, benches):
+    from sessiondata import FakeSessionRunner, FakeWorktrees
+
+    from b4_maintainer.sessions.hub import SessionHub
+    from b4_maintainer.sessions.store import SessionStore
+
+    store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
+    for bench in benches:
+        store.save(bench)
+    sessions = SessionStore(tmp_path / 'var' / 'sessions')
+    runner, trees = FakeSessionRunner(sessions), FakeWorktrees()
+    hub = SessionHub(sessions, runner, trees, sandbox=lambda: True)
+    service = FakeService(tmp_path, store, hub.records)
+    app = MaintainerApp(FixtureSource(demo_root).load, sessions=hub, workbenches=service)
+    return app, runner, trees
+
+
+def demo_bench(app):
+    """A workbench of the demo's first two cached series, on Linux."""
+    a, b = app.snapshot.items[0], app.snapshot.items[1]
+    items = tuple(Item(i.identity, i.series.revision, i.series.subject) for i in (a, b))
+    return Workbench('demo', 'Demo', (Entry('linux', 'HEAD', items),)), (a, b)
+
+
+async def test_f1_on_a_workbench_launches_a_session_over_its_trees(demo_root, tmp_path):
+    from b4_maintainer.launchdialog import LaunchDialog
+
+    app, runner, trees = session_app(demo_root, tmp_path, [])
+    async with app.run_test(size=(180, 50)) as pilot:
+        await settle(pilot)
+        bench, (a, b) = demo_bench(app)
+        app._workbenches.store.save(bench)
+        await open_screen(pilot)
+        await pilot.press('f1')
+        await settle(pilot)
+        dialog = app.screen
+        assert isinstance(dialog, LaunchDialog)
+        assert 'Mode' not in dialog.labels()  # Always worktree.
+        text = dialog.summary_text()
+        assert 'Trees:' in text and 'linux on HEAD' in text and a.series.subject in text
+        dialog.pick('goal', 'review')
+        await pilot.pause()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, plan)] = trees.entries
+        assert plan.project == 'linux' and [i.source for i in plan.items] == [
+            a.series.source,
+            b.series.source,
+        ]
+        [(launched, _request)] = runner.launches
+        assert launched == sid
+        assert 'workbench Demo' in app.status_text()
+
+
+async def test_a_tree_that_conflicts_is_offered_to_the_agent(demo_root, tmp_path):
+    app, runner, trees = session_app(demo_root, tmp_path, [])
+    async with app.run_test(size=(180, 50)) as pilot:
+        await settle(pilot)
+        bench, _items = demo_bench(app)
+        app._workbenches.store.save(bench)
+        trees.fail_entry = (
+            'linux',
+            ('mm: x does not apply at HEAD', 'CONFLICT in mm/x.c', 'c' * 40),
+        )
+        await open_screen(pilot)
+        await pilot.press('f1')
+        await settle(pilot)
+        app.screen.pick('goal', 'review')
+        await pilot.pause()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        offer = app.screen
+        assert isinstance(offer, Pick) and 'CONFLICT in mm/x.c' in offer.title_text
+        assert "linux's tree" in offer.choices[0][1]
+        trees.fail_entry = None
+        await pilot.press('enter')  # Hand it to the agent.
+        await settle(pilot)
+        [(_sid, plan)] = trees.entries
+        assert plan.agent_apply == 'c' * 40
+        assert len(runner.launches) == 1

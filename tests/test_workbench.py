@@ -222,3 +222,46 @@ def test_the_service_offers_bases_and_branches_and_previews_a_launch(tmp_path):
     assert '2. gourry/fixes · 2 commits beyond the base' in text
     assert 'ndctl on the base b4 chooses' in text
     assert 'daxctl: old v1 · not in the cache' in text
+
+
+def test_a_workbench_becomes_tree_plans_from_the_cache_and_branches(tmp_path):
+    import dataclasses
+
+    from b4_maintainer.fixtures import make_series
+    from b4_maintainer.sessions.hub import TreePlan
+    from b4_maintainer.sessions.trees import TreeItem
+    from b4_maintainer.workbench import WorkbenchService
+
+    workspace = service_root(tmp_path)
+    service = WorkbenchService(tmp_path, WorkbenchStore(tmp_path / 'wb'), lambda: [])
+    cxl = dataclasses.replace(make_series('cxl: region mode', revision=3), source='/mail/cxl.mbx')
+    bench = Workbench(
+        'w',
+        'W',
+        (
+            Entry(
+                'linux',
+                'gourry/base',
+                (Item(cxl.identity, 3, cxl.subject), Item(branch='gourry/fixes')),
+            ),
+        ),
+    )
+    plans, problems = service.plans(workspace, bench, {cxl.identity: cxl})
+    assert problems == []
+    assert plans == (
+        TreePlan(
+            'linux',
+            'gourry/base',
+            (
+                TreeItem('cxl: region mode v3', '/mail/cxl.mbx', 3),
+                TreeItem('gourry/fixes', branch='gourry/fixes'),
+            ),
+        ),
+    )
+    stale = Workbench('w', 'W', (Entry('linux', '', (Item(cxl.identity, 2, cxl.subject),)),))
+    _plans, problems = service.plans(workspace, stale, {cxl.identity: cxl})
+    assert problems == ['cxl: region mode v2: only v3 is cached (v on F4 takes it)']
+    _plans, problems = service.plans(workspace, stale, {})
+    assert problems == ['cxl: region mode v2: not in the cache (F5 fetches it)']
+    _plans, problems = service.plans(workspace, Workbench('e', 'E'), {})
+    assert problems == ['E has nothing to prepare: w adds series to it']

@@ -109,8 +109,10 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         items: dict[str, tuple[ContextItem, ...]],
         problems: Sequence[str] = (),
         derived: Optional[Derived] = None,
+        trees: Sequence[str] = (),
     ) -> None:
         super().__init__()
+        self.trees = list(trees)  # A workbench launch: what each tree holds (worktree mode).
         self.target = target  # The selected or open series; None offers the workspace only.
         self.derived = derived  # A session derived from another's output.
         self.profiles = list(profiles)
@@ -177,8 +179,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         profiles = self._of_scope(self.scope)
         if self.profile not in profiles:
             self.profile = profiles[0] if profiles else None
-        # A derived session works in its own tree.
-        self._explicit_mode = 'worktree' if self.derived is not None else None
+        # A derived session works in its own tree; a workbench session in its trees.
+        self._explicit_mode = 'worktree' if self.derived is not None or self.trees else None
         self._skills_on.clear()
         self._skills_off.clear()
         body = self.query_one('#launch-body', Vertical)
@@ -214,13 +216,18 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 section = field.id if field.kind == 'text' else f'{field.id}:text'
                 widgets.append(self._input(field.id, section, placeholder))
         widgets += self._package()
-        modes = [(m, MODE_LABELS[m], False) for m in MODES]
-        widgets += self._group('Mode', 'mode', modes, 0)
-        bases = self.situation.bases
-        hint = f'{BASE_PLACEHOLDER}; → completes: {", ".join(bases)}' if bases else BASE_PLACEHOLDER
-        base = self._input('base', 'base', hint, bases)
-        base.display = False  # Worktree mode only.
-        widgets.append(base)
+        if not self.trees:  # A workbench names each tree's base itself.
+            modes = [(m, MODE_LABELS[m], False) for m in MODES]
+            widgets += self._group('Mode', 'mode', modes, 0)
+            bases = self.situation.bases
+            hint = (
+                f'{BASE_PLACEHOLDER}; → completes: {", ".join(bases)}'
+                if bases
+                else BASE_PLACEHOLDER
+            )
+            base = self._input('base', 'base', hint, bases)
+            base.display = False  # Worktree mode only.
+            widgets.append(base)
         self._mode_shown = 'lightweight'
         shown = [m for m in self.situation.models if m.kind != 'catalog']
         models = [(m.id, _model_label(m), not m.available) for m in shown]
@@ -423,7 +430,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             situation = dataclasses.replace(situation, worktree_reason=NO_SERIES)
         self._suggested_mode = plan(self.profile, self._choice(None), situation, items).mode
         self.plan = plan(self.profile, self._choice(self._explicit_mode), situation, items)
-        if self._explicit_mode is None and self._mode_shown != self.plan.mode:
+        if self._explicit_mode is None and self._mode_shown != self.plan.mode and not self.trees:
             self._show_mode(self.plan.mode)
         if 'base' in self._inputs:
             self._inputs['base'].display = self.plan.mode == 'worktree'
@@ -566,7 +573,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         if p.skills:
             lines.append(f'Skills:   {", ".join(p.skills)}')
         lines.append(f'May:      {PERMISSION_LABELS.get(p.permissions, p.permissions)}')
-        if p.mode == 'worktree':
+        if self.trees:
+            lines += ['Trees:', *(f'  {tree}' for tree in self.trees)]
+        elif p.mode == 'worktree':
             base = self._inputs['base'].value.strip() if 'base' in self._inputs else ''
             where = base or 'the base b4 chooses'
             lines.append(f'Worktree: the series applied on {where}, on its own branch')

@@ -62,7 +62,7 @@ from .reader import (
 )
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
-from .sessions.hub import Overview, SessionError, SessionHub
+from .sessions.hub import Overview, SessionError, SessionHub, TreePlan
 from .sessions.launch import Situation, Target, plan
 from .sessions.pane import pane_for
 from .sessions.policy import ContextItem
@@ -2564,6 +2564,114 @@ class MaintainerApp(App[None]):
             f'Added {s.subject} v{s.revision} to {bench.label} ({project}) · F4 shows it'
         )
 
+    def launch_workbench(self, bench: Workbench) -> None:
+        """F1 on the Workbench screen: the launch dialog for a session over *bench*'s
+        trees (worktree mode; each tree's base and items come from the workbench)."""
+        hub, snapshot, service = self._sessions, self.snapshot, self._workbenches
+        if hub is None or snapshot is None or service is None:
+            self._set_notice('Agent sessions are not available here')
+            return
+        workspace, overview = snapshot.workspace, self._overview
+        series = {i.identity: i.series for i in snapshot.items}
+
+        def work() -> None:
+            try:
+                plans, problems = service.plans(workspace, bench, series)
+                if problems:
+                    note = f'Cannot launch {bench.label}: ' + '; '.join(problems)
+                    self.call_from_thread(self._set_notice, note)
+                    return
+                blocker = hub.blocker()
+                if blocker is not None:
+                    self.call_from_thread(self.push_screen, Notice(f'Agent sessions: {blocker}'))
+                    return
+                profiles, profile_problems = hub.profiles()
+                skills, skill_problems = hub.skills()
+                situation = _bench_situation(hub, workspace, overview, skills, plans)
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Cannot open the session dialog: {exc}')
+                return
+            trees = [_tree_line(p) for p in plans]
+            target = Target('series', '', f'workbench:{bench.id}', 0, bench.label)
+            threads = (ContextItem('threads', "each series' thread"),)
+            items: dict[str, tuple[ContextItem, ...]] = {'series': threads, 'workspace': ()}
+            dialog = LaunchDialog(
+                target, profiles, situation, items, profile_problems + skill_problems, trees=trees
+            )
+            self.call_from_thread(
+                self.push_screen, dialog, lambda r: self._launch_bench(bench, plans, r)
+            )
+
+        self.run_worker(work, thread=True, group='session-action')
+
+    def _launch_bench(
+        self, bench: Workbench, plans: tuple[TreePlan, ...], result: Optional[LaunchResult]
+    ) -> None:
+        hub, snapshot = self._sessions, self.snapshot
+        if result is None or hub is None or snapshot is None:
+            return
+        workspace = snapshot.workspace
+
+        def launch() -> Optional[str]:
+            skills = hub.skills()[0]
+            situation = _bench_situation(hub, workspace, hub.overview(), skills, plans)
+            self.call_from_thread(self._set_notice, f'Preparing the trees of {bench.label}…')
+            try:
+                record = hub.launch_workbench(
+                    bench.id,
+                    bench.label,
+                    plans,
+                    result.profile,
+                    result.choice,
+                    situation,
+                    result.items,
+                )
+            except SessionError as exc:
+                handed = any(p.agent_apply for p in plans if p.project == exc.project)
+                if exc.base and exc.project and not handed:
+                    self.call_from_thread(self._offer_bench_handoff, bench, plans, result, exc)
+                    return None
+                if not exc.detail:
+                    raise
+                self.call_from_thread(self.push_screen, Notice(f'{exc}\n\n{exc.detail.strip()}'))
+                return None
+            self.call_from_thread(self._after_launch, record)
+            return f'Launched session {record.id}: workbench {bench.label}'
+
+        self._session_call(launch)
+
+    def _offer_bench_handoff(
+        self,
+        bench: Workbench,
+        plans: tuple[TreePlan, ...],
+        result: LaunchResult,
+        exc: SessionError,
+    ) -> None:
+        """A workbench tree whose items do not apply: hand that tree to the agent (it starts
+        at that base with every item as one mbox), or launch nothing."""
+        project, base = exc.project, exc.base
+
+        def picked(choice: Optional[str]) -> None:
+            if choice == 'agent':
+                again = tuple(
+                    dataclasses.replace(p, agent_apply=base) if p.project == project else p
+                    for p in plans
+                )
+                self._launch_bench(bench, again, result)
+            else:
+                self._set_notice(f'Not launched: {project} does not apply there')
+
+        options = [
+            (
+                'agent',
+                f"Hand {project}'s tree to the agent: it starts at {base[:12]} without its "
+                'items; the agent applies them (git am -3), resolves the conflicts, then does '
+                'the task',
+            ),
+            ('none', "Don't apply: launch nothing"),
+        ]
+        self.push_screen(Pick(_conflict_text(str(exc), exc.detail), options), picked)
+
     def _show_artifacts(self) -> None:
         hub, item = self._sessions, self._reading
         if hub is None or item is None:
@@ -3178,3 +3286,24 @@ def _target_label(key: str, targets: Sequence[tuple[str, str]]) -> str:
 
 
 NEW_BENCH = '+new'  # w's "new workbench" choice (workbench ids never hold '+').
+
+
+def _bench_situation(
+    hub: SessionHub,
+    workspace: Workspace,
+    overview: Overview,
+    skills: list[Skill],
+    plans: Sequence[TreePlan],
+) -> Situation:
+    """What a workbench launch is checked against: as for its first project, and refused
+    when any of its projects cannot have a tree."""
+    situation = hub.situation(workspace, overview, skills, plans[0].project, bases=False)
+    reason = next((r for r in (hub.worktree_reason(p.project) for p in plans) if r), '')
+    return dataclasses.replace(situation, worktree_reason=reason)
+
+
+def _tree_line(plan: TreePlan) -> str:
+    """A tree as the launch dialog lists it."""
+    where = plan.base or 'the base b4 chooses'
+    held = '; '.join(i.label for i in plan.items) or 'nothing applied'
+    return f'{plan.project} on {where}: {held}'

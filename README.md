@@ -92,7 +92,11 @@ Python 3.11 or newer.
   series list or a thread adds the series to one (or a new one); `F4` lists them with a
   preview of what a launch prepares: `n` new, `r` rename, `x` remove (a workbench or
   project after a confirmation), `b` a project's base, `B` add a local branch (the
-  project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision.
+  project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
+  and `F1` launches a session over its trees: one per project, side by side in
+  `var/worktrees/<id>/`, where the agent starts; each series' thread is in its context.
+  A tree whose items do not apply offers to hand that tree to the agent (it starts at
+  the base with every item as one mbox to `git am`), or to launch nothing.
 - `d` drops that series from a maintainer base again: its commits there (found by their
   Link, else subject) are taken out and the later commits replayed onto what remains,
   after a confirmation; if one does not replay without them, nothing changes. Your own

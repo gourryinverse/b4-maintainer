@@ -17,12 +17,15 @@ import re
 import subprocess
 import tomllib
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
 
 from .model import Series
 from .sessions.records import SessionRecord, session_trees
-from .sessions.trees import classify_tree
+from .sessions.trees import TreeItem, classify_tree
 from .workspace import Workspace
+
+if TYPE_CHECKING:
+    from .sessions.hub import TreePlan
 
 DIRECTORY = 'workbenches'  # Under state/.
 _TOP = frozenset({'label', 'entry'})
@@ -322,6 +325,41 @@ class WorkbenchService:
             return (tree.path if tree else ''), name
         repo = self._repo(workspace, project)
         return (str(repo) if repo else ''), branch
+
+    def plans(
+        self, workspace: Workspace, bench: Workbench, series: Mapping[str, Series]
+    ) -> tuple[tuple['TreePlan', ...], list[str]]:
+        """*bench* as the trees a session prepares: each series from the cache (*series*,
+        by identity) at the revision the workbench names, each local branch from its
+        repository; and what stands in the way of a launch."""
+        from .sessions.hub import TreePlan
+
+        plans: list[TreePlan] = []
+        problems: list[str] = []
+        for entry in bench.entries:
+            items: list[TreeItem] = []
+            for item in entry.items:
+                if item.series:
+                    known = series.get(item.series)
+                    if known is None:
+                        problems.append(f'{item.label}: not in the cache (F5 fetches it)')
+                    elif known.revision != item.revision:
+                        problems.append(
+                            f'{item.label}: only v{known.revision} is cached (v on F4 takes it)'
+                        )
+                    else:
+                        items.append(TreeItem(item.label, known.source, item.revision))
+                    continue
+                repo, name = self.branch_repo(workspace, entry.project, item.branch)
+                if not repo:
+                    problems.append(f'{item.branch}: its tree is gone')
+                    continue
+                other = repo if item.branch.startswith('tree:') else ''
+                items.append(TreeItem(item.branch, branch=name, repo=other))
+            plans.append(TreePlan(entry.project, entry.base, tuple(items)))
+        if not bench.entries:
+            problems.append(f'{bench.label} has nothing to prepare: w adds series to it')
+        return tuple(plans), problems
 
     def preview(
         self,
