@@ -97,8 +97,10 @@ Python 3.11 or newer.
   apply) to one (or a new one); `a` on the Workbench tab adds a thread by lore link or
   Message-ID (fetched into the cache, kept there while a workbench names it) or a file
   from disk (applied if b4 finds patches in it, else read), under the selected project or
-  the one picked (the thread's own suggested first); `m` moves an item to another project; `F3` lists them with a
-  preview of what a launch prepares: `n` new, `r` rename, `x` remove (a workbench or
+  the one picked (the thread's own suggested first); `m` moves an item to another project (a project stays until `x` removes it); `a` also adds a
+  project; `F3` lists them with a
+  preview of what a launch prepares: `n` new (named, with the projects ticked, each at
+  its first maintainer base: a project with no items still gets a tree at its base), `r` rename, `x` remove (a workbench or
   project after a confirmation), `b` a project's base, `B` add a local branch (the
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
   and `F1` launches a session over it, choosing for each project (in place of Mode): a

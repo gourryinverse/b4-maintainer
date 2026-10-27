@@ -6,7 +6,7 @@ from b4_maintainer.adapters.fixture import FixtureSource
 from b4_maintainer.app import Confirm, MaintainerApp
 from b4_maintainer.branchscreen import Ask, Pick
 from b4_maintainer.workbench import Entry, Item, Workbench, WorkbenchService, WorkbenchStore
-from b4_maintainer.workbenchscreen import WorkbenchScreen
+from b4_maintainer.workbenchscreen import PickMany, WorkbenchScreen
 
 CXL = Item('change-id:cxl', 3, 'cxl: region mode')
 FIXES = Item(branch='gourry/fixes')
@@ -71,6 +71,9 @@ async def test_n_makes_a_workbench_r_renames_it_x_deletes_it(demo_root, tmp_path
         await settle(pilot)
         assert isinstance(app.screen, Ask)
         await pilot.press(*'CXL tests', 'enter')
+        await settle(pilot)
+        assert isinstance(app.screen, PickMany)  # Which projects? None ticked yet.
+        await pilot.press('enter')
         await settle(pilot)
         assert store.get('cxl-tests') == Workbench('cxl-tests', 'CXL tests')
         await pilot.press('r')
@@ -307,3 +310,32 @@ async def test_a_project_can_take_its_items_for_the_agent(demo_root, tmp_path):
         [(sid, plan)] = trees.entries
         assert plan.use == 'deliver'
         assert app._sessions.store.record(sid).mode == 'worktree'
+
+
+async def test_a_new_workbench_takes_the_projects_ticked_and_a_adds_another(demo_root, tmp_path):
+    app, store = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_screen(pilot)
+        await pilot.press('n')
+        await settle(pilot)
+        await pilot.press(*'Both', 'enter')
+        await settle(pilot)
+        picker = app.screen
+        assert isinstance(picker, PickMany)
+        assert [key for key, _label in picker.choices] == ['linux', 'qemu']
+        await pilot.press('space', 'enter')  # linux.
+        await settle(pilot)
+        assert store.get('both').entries == (Entry('linux', '', ()),)
+        assert (
+            'linux on the base b4 chooses (no items: a tree at its base)' in screen.content_labels()
+        )
+        await pilot.press('a')
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        keys = [key for key, _label in app.screen.choices]
+        await pilot.press(*(['down'] * keys.index('project')), 'enter')
+        await settle(pilot)
+        assert [key for key, _label in app.screen.choices] == ['qemu']  # Not on it yet.
+        await pilot.press('enter')
+        await settle(pilot)
+        assert [e.project for e in store.get('both').entries] == ['linux', 'qemu']

@@ -17,15 +17,16 @@ the app. `w` in the series list or a thread adds series (see the app).
 
 import pathlib
 from dataclasses import replace
-from typing import Any, Callable, Mapping, Optional, TypeVar
+from typing import Any, Callable, Mapping, Optional, Sequence, TypeVar
 
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
-from textual.widgets import Footer, OptionList, Static
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Footer, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
+from textual.widgets.selection_list import Selection
 
 from .branchscreen import Ask, Pick
 from .model import Reply, Series, SeriesThread, WorkItem
@@ -47,10 +48,12 @@ from .workbench import (
     add_branch,
     add_file,
     add_mail,
+    add_project,
     add_series,
     move_item,
     move_to_project,
     remove_item,
+    remove_project,
     reroll,
     rerolls,
     set_base,
@@ -71,6 +74,49 @@ ITEMS = ('heading', 'entry', 'item')  # Rows whose text on the right is the laun
 
 def _count(n: int, one: str) -> str:
     return f'{n} {one}' + ('' if n == 1 else 's')
+
+
+class PickMany(ModalScreen[Optional[list[str]]]):
+    """Tick any of several: space ticks, Enter takes the ticked (none is fine), Escape
+    cancels."""
+
+    DEFAULT_CSS = """
+    PickMany { align: center middle; }
+    PickMany > Vertical { width: auto; height: auto; border: solid $accent; background: $panel; }
+    PickMany SelectionList { width: auto; height: auto; border: none; }
+    """
+    BINDINGS = [
+        Binding('escape', 'cancel', 'cancel'),
+        Binding('enter', 'confirm', 'take them', priority=True),
+    ]
+
+    def __init__(self, title: str, choices: Sequence[tuple[str, str]]) -> None:
+        super().__init__()
+        self.title_text = title
+        self.choices = list(choices)  # (key, label)
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(self.title_text, markup=False)
+            yield SelectionList[str](*(Selection(label, key) for key, label in self.choices))
+
+    def on_mount(self) -> None:
+        self.query_one(SelectionList).focus()
+
+    def on_selection_list_selection_highlighted(
+        self, event: SelectionList.SelectionHighlighted
+    ) -> None:
+        event.stop()
+
+    def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
+        event.stop()
+
+    def action_confirm(self) -> None:
+        chosen = set(self.query_one(SelectionList).selected)
+        self.dismiss([key for key, _label in self.choices if key in chosen])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class WorkbenchScreen(Screen[None]):
@@ -903,15 +949,31 @@ class WorkbenchScreen(Screen[None]):
         self._status(note)
 
     def action_new(self) -> None:
+        """n: a workbench, named, with the projects ticked (each at its first maintainer
+        base): a session can have their trees even before anything is added."""
+
         def named(label: Optional[str]) -> None:
             if not label:
                 return
-            bench = Workbench(self.service.store.new_id(label), label)
-            self.service.store.save(bench)
-            self._reload(bench.id)
-            self._status(f'Made {label}: w adds series from the series list or a thread')
+
+            def ticked(projects: Optional[list[str]]) -> None:
+                if projects is None:
+                    return
+                bench = Workbench(self.service.store.new_id(label), label)
+                for project in projects:
+                    bench = add_project(bench, project, self._default_base(project))
+                self.service.store.save(bench)
+                self._reload(bench.id)
+                self._status(f'Made {label}: w adds series from the series list or a thread')
+
+            choices = [(p.id, p.label) for p in self.workspace.projects]
+            self.app.push_screen(PickMany(f'Projects in {label} (space ticks)', choices), ticked)
 
         self.app.push_screen(Ask('Name the new workbench'), named)
+
+    def _default_base(self, project: str) -> str:
+        found = self.workspace.project(project)
+        return found.bases[0].branch if found is not None and found.bases else ''
 
     def action_rename(self) -> None:
         bench = self.bench()
@@ -944,8 +1006,7 @@ class WorkbenchScreen(Screen[None]):
 
             def drop_entry(yes: Optional[bool]) -> None:
                 if yes:
-                    entries = tuple(e for e in bench.entries if e.project != project)
-                    self._save(replace(bench, entries=entries), note=f'Removed {project}')
+                    self._save(remove_project(bench, project), note=f'Removed {project}')
 
             entry = bench.entry(project)
             what = _count(len(entry.items) if entry is not None else 0, 'item')
@@ -983,15 +1044,36 @@ class WorkbenchScreen(Screen[None]):
         ways = [
             ('link', 'A thread: lore link or Message-ID (series or discussion)'),
             ('file', 'A file from disk (patches are applied, anything else is read)'),
+            ('project', 'A project (a tree at its base)'),
         ]
 
         def picked(way: Optional[str]) -> None:
-            if way == 'link':
+            if way == 'project':
+                self._add_project()
+            elif way == 'link':
                 self.app.push_screen(Ask('Lore link or Message-ID'), self._add_link)
             elif way == 'file':
                 self.app.push_screen(Ask('Path of the file'), self._add_file)
 
         self.app.push_screen(Pick(f'Add to {bench.label}', ways), picked)
+
+    def _add_project(self) -> None:
+        bench = self.bench()
+        if bench is None:
+            return
+        taken = {e.project for e in bench.entries}
+        choices = [(p.id, p.label) for p in self.workspace.projects if p.id not in taken]
+        if not choices:
+            self._status('Every project is on this workbench already')
+            return
+
+        def picked(project: Optional[str]) -> None:
+            bench = self.bench()
+            if project and bench is not None:
+                changed = add_project(bench, project, self._default_base(project))
+                self._save(changed, ('entry', project, -1), f'Added {project}')
+
+        self.app.push_screen(Pick('Which project?', choices), picked)
 
     def _add_link(self, text: Optional[str]) -> None:
         fetch = getattr(self.app, 'bench_fetch', None)
@@ -1078,9 +1160,7 @@ class WorkbenchScreen(Screen[None]):
         def moved(to: Optional[str]) -> None:
             if not to:
                 return
-            found = self.workspace.project(to)
-            base = found.bases[0].branch if found and found.bases else ''
-            changed = move_to_project(bench, item.project, item.index, to, base)
+            changed = move_to_project(bench, item.project, item.index, to, self._default_base(to))
             entry = changed.entry(to)
             keep = ('item', to, len(entry.items) - 1 if entry else -1)
             self._save(changed, keep, f'Moved to {to}')

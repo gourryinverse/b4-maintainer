@@ -219,16 +219,27 @@ def series_bench(
 
 
 def _with_entry(bench: Workbench, entry: Entry) -> Workbench:
-    """*bench* with *entry* replacing its project's (or added last); an empty one goes."""
+    """*bench* with *entry* replacing its project's (or added last). A project stays when
+    its items go (its tree can still be had); remove_project takes it out."""
     entries = list(bench.entries)
     at = next((n for n, e in enumerate(entries) if e.project == entry.project), None)
     if at is None:
         entries.append(entry)
-    elif entry.items:
-        entries[at] = entry
     else:
-        del entries[at]
+        entries[at] = entry
     return replace(bench, entries=tuple(entries))
+
+
+def add_project(bench: Workbench, project: str, base: str = '') -> Workbench:
+    """*project* on the workbench at *base*, with no items yet: a session can have its
+    tree at the base."""
+    if bench.entry(project) is not None:
+        raise WorkbenchError(f'{project} is already on this workbench')
+    return _with_entry(bench, Entry(project, base))
+
+
+def remove_project(bench: Workbench, project: str) -> Workbench:
+    return replace(bench, entries=tuple(e for e in bench.entries if e.project != project))
 
 
 def _entry(bench: Workbench, project: str, base: str = '') -> Entry:
@@ -501,7 +512,8 @@ class WorkbenchService:
         newer = {(p, n): r for p, n, r in rerolls(bench, latest)}
         for entry in bench.entries:
             where = entry.base or 'the base b4 chooses'
-            rows.append(ContentRow(f'  {entry.project} on {where}', 'entry', entry.project))
+            empty = '' if entry.items else ' (no items: a tree at its base)'
+            rows.append(ContentRow(f'  {entry.project} on {where}{empty}', 'entry', entry.project))
             for n, item in enumerate(entry.items):
                 mark = (
                     f' · v{newer[(entry.project, n)]} available'
@@ -630,6 +642,8 @@ class WorkbenchService:
                 lines.append(
                     f'  {n}. {self._describe(workspace, entry, item, start, series, latest)}'
                 )
+            if not entry.items:
+                lines.append('  no items: a session tree at its base')
         return '\n'.join(lines)
 
     def _describe(

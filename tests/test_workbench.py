@@ -97,12 +97,12 @@ def test_series_and_branches_go_under_their_project_in_order():
     assert add_branch(bench, 'linux', 'more', base='other').entries[0].base == 'gourry/base'
 
 
-def test_items_move_and_go_and_an_empty_entry_goes_with_them():
+def test_items_move_and_go_and_an_emptied_project_stays():
     bench = move_item(BENCH, 'linux', 1, -1)
     assert bench.entries[0].items == (FIXES, CXL)
     assert move_item(bench, 'linux', 0, -1) == bench  # Already first.
     bench = remove_item(BENCH, 'ndctl', 0)
-    assert [e.project for e in bench.entries] == ['linux']
+    assert bench.entries[1] == Entry('ndctl', 'origin/main', ())  # Its tree can still be had.
     assert set_base(BENCH, 'ndctl', 'pending').entries[1].base == 'pending'
 
 
@@ -432,5 +432,16 @@ def test_an_item_moves_to_another_project():
     bench = move_to_project(BENCH, 'linux', 1, 'ndctl')
     assert bench.entries[0].items == (CXL,) and bench.entries[1].items == (DAX, FIXES)
     alone = move_to_project(BENCH, 'ndctl', 0, 'qemu', base='master')
-    assert [e.project for e in alone.entries] == ['linux', 'qemu']  # ndctl emptied, gone.
-    assert alone.entries[1] == Entry('qemu', 'master', (DAX,))
+    assert [e.project for e in alone.entries] == ['linux', 'ndctl', 'qemu']  # ndctl stays.
+    assert alone.entries[2] == Entry('qemu', 'master', (DAX,))
+
+
+def test_a_project_joins_without_items_and_leaves_only_when_removed():
+    from b4_maintainer.workbench import add_project, remove_project
+
+    bench = add_project(Workbench('w', 'W'), 'ndctl', 'origin/main')
+    assert bench.entries == (Entry('ndctl', 'origin/main', ()),)
+    assert parse_workbench(workbench_toml(bench), 'w') == bench
+    with pytest.raises(WorkbenchError, match='already'):
+        add_project(bench, 'ndctl')
+    assert remove_project(bench, 'ndctl').entries == ()

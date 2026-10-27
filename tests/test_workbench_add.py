@@ -128,7 +128,7 @@ async def test_a_adds_a_file_from_disk(demo_root, tmp_path):
         assert isinstance(app.screen, Pick)
         await pilot.press('enter')
         await settle(pilot)
-        assert store.get('w').entry('qemu') is None
+        assert store.get('w').entry('qemu').items == ()  # Emptied; it stays.
         assert store.get('w').entry('linux').items[-1].file == str(patch)
         await pilot.press('a')
         await settle(pilot)
