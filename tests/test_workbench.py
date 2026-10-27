@@ -265,3 +265,21 @@ def test_a_workbench_becomes_tree_plans_from_the_cache_and_branches(tmp_path):
     assert problems == ['cxl: region mode v2: not in the cache (F5 fetches it)']
     _plans, problems, _tree = service.plans(workspace, Workbench('e', 'E'), {})
     assert problems == ['E has nothing to prepare: w adds series to it']
+
+
+def test_a_series_workbench_is_made_once_and_found_again(tmp_path):
+    from b4_maintainer.workbench import series_bench
+
+    store = WorkbenchStore(tmp_path / 'wb')
+    bench = series_bench(store, 'linux', 'change-id:x', 3, 'mm: fix the leak', 'gourry/base')
+    assert bench.id == 'mm-fix-the-leak' and bench.origin == 'change-id:x'
+    assert bench.label == 'mm: fix the leak'
+    assert bench.entries == (
+        Entry('linux', 'gourry/base', (Item('change-id:x', 3, 'mm: fix the leak'),)),
+    )
+    assert store.get(bench.id) == bench  # Saved.
+    assert parse_workbench(workbench_toml(bench), bench.id) == bench  # origin round-trips.
+    again = series_bench(store, 'linux', 'change-id:x', 4, 'mm: fix the leak', '')
+    assert again == bench  # Found by its origin, as it is (v on F3 takes v4).
+    other = series_bench(store, 'linux', 'change-id:y', 1, 'mm: fix the leak', '')
+    assert other.id == 'mm-fix-the-leak-2'

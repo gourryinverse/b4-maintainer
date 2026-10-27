@@ -174,3 +174,60 @@ async def test_the_panes_are_titled(demo_root, tmp_path):
             'Output',
             'Launch preview',
         ]
+
+
+async def test_f1_on_a_series_files_the_session_in_its_workbench(demo_root, tmp_path):
+    app, runner = make(demo_root, tmp_path)
+    async with app.run_test(size=(220, 50)) as pilot:
+        await settle(pilot)
+        item = app.query_one('SeriesList').highlighted_item
+        for _ in range(2):  # Twice: the second finds the same workbench.
+            await pilot.press('f1')
+            await settle(pilot)
+            app.screen.pick('goal', 'review')
+            await pilot.pause()
+            await pilot.press('ctrl+s')
+            await settle(pilot)
+        records = [app._sessions.store.record(sid) for sid, _r in runner.launches]
+        benches = {r.workbench for r in records}
+        assert len(benches) == 1 and '' not in benches
+        bench = app._workbenches.store.get(benches.pop())
+        assert bench.origin == item.identity and bench.label == item.series.subject
+        assert bench.entries[0].items[0].series == item.identity
+
+
+async def test_sessions_from_before_are_listed_as_unfiled(demo_root, tmp_path):
+    app, runner = make(demo_root, tmp_path)
+    first = FixtureSource(demo_root).load().items[0]
+    runner.add(make_record('old', series=first.identity, subject=first.series.subject))
+    async with app.run_test(size=(220, 50)) as pilot:
+        app.poll_sessions()
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        screen = app.screen
+        assert screen.bench_labels()[-1] == 'Unfiled sessions'
+        while (
+            screen.bench_labels()[screen.query_one('#bench-list').highlighted] != 'Unfiled sessions'
+        ):
+            await pilot.press('down')
+        await settle(pilot)
+        assert any(label.startswith('old') for label in screen.session_labels())
+        assert not screen.check_action('rename', ()) and not screen.check_action('launch', ())
+
+
+async def test_a_derived_session_is_filed_with_its_parent(demo_root, tmp_path):
+    from b4_maintainer.sessions.launch import LaunchChoice, Target
+
+    app, runner = make(demo_root, tmp_path)
+    bench_session(runner, 'w1')  # Filed in BENCH.
+    async with app.run_test(size=(220, 50)) as pilot:
+        await settle(pilot)
+        item = app.snapshot.items[0]
+        target = Target(
+            'series', item.project, item.identity, item.series.revision, item.series.subject
+        )
+        derived = LaunchChoice('series', parent='w1')
+        assert app._file_in(target, derived) == BENCH.id
+        fresh = app._file_in(target, LaunchChoice('series'))
+        assert fresh != BENCH.id and app._workbenches.store.get(fresh).origin == item.identity

@@ -56,6 +56,8 @@ class LaunchChoice:
     # b4 could not apply the series at this base: the tree starts there without it, and the
     # agent applies it by hand.
     agent_apply: str = ''
+    # The workbench the session is filed in (F1 finds or makes its series' one).
+    workbench: str = ''
 
 
 @dataclass(frozen=True)
@@ -184,4 +186,5 @@ def new_record(
         context=tuple(i.id for i in planned.included),
         skills=planned.skills,
         parent=choice.parent,
+        workbench=choice.workbench,
     )

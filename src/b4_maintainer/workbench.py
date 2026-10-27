@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from .sessions.hub import TreePlan
 
 DIRECTORY = 'workbenches'  # Under state/.
-_TOP = frozenset({'label', 'entry'})
+_TOP = frozenset({'label', 'origin', 'entry'})
 _ENTRY = frozenset({'project', 'base', 'items'})
 _ITEM = frozenset({'series', 'revision', 'subject', 'branch'})
 
@@ -61,6 +61,7 @@ class Workbench:
     id: str
     label: str
     entries: tuple[Entry, ...] = ()
+    origin: str = ''  # Made by F1 for one series: its identity (found again by it).
 
     def entry(self, project: str) -> Optional[Entry]:
         return next((e for e in self.entries if e.project == project), None)
@@ -104,7 +105,7 @@ def parse_workbench(text: str, wid: str) -> Workbench:
             raise WorkbenchError(f'project {project} appears twice')
         items = tuple(_item(i, project) for i in table.get('items', []))
         entries.append(Entry(project, str(table.get('base', '')), items))
-    return Workbench(wid, str(raw.get('label', wid)), tuple(entries))
+    return Workbench(wid, str(raw.get('label', wid)), tuple(entries), str(raw.get('origin', '')))
 
 
 def _s(value: str) -> str:
@@ -113,6 +114,8 @@ def _s(value: str) -> str:
 
 def workbench_toml(bench: Workbench) -> str:
     lines = [f'label = {_s(bench.label)}']
+    if bench.origin:
+        lines.append(f'origin = {_s(bench.origin)}')
     for entry in bench.entries:
         lines += ['', '[[entry]]', f'project = {_s(entry.project)}', f'base = {_s(entry.base)}']
         lines.append('items = [')
@@ -172,6 +175,21 @@ class WorkbenchStore:
             n += 1
             wid = f'{base}-{n}'
         return wid
+
+
+def series_bench(
+    store: WorkbenchStore, project: str, series: str, revision: int, subject: str, base: str
+) -> Workbench:
+    """The workbench F1 files a series' sessions in: the one made for it before (by its
+    origin), else a new one (named after the series, the series on *base*), saved."""
+    benches, _problems = store.list()
+    found = next((b for b in benches if b.origin == series), None)
+    if found is not None:
+        return found
+    item = Item(series, revision, subject)
+    bench = Workbench(store.new_id(subject), subject, (Entry(project, base, (item,)),), series)
+    store.save(bench)
+    return bench
 
 
 # Edits.

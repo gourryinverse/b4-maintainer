@@ -104,6 +104,11 @@ Python 3.11 or newer.
   app, `o` opens the workbench's live session from any pane, and one launched from the
   tab joins beside at once. The column follows the tab: back on LKML the workbench
   session returns to its own window.
+- Every session is filed in a workbench: F1 on a series makes that series' workbench the
+  first time (named after it, the series on its base; `origin` in its file) and files
+  the session there, so its sessions and their output are found in the Workbench tab; a
+  derived session goes with its parent. Sessions from before are listed under
+  Unfiled sessions.
 - Every session (lightweight too) writes its results under `out/` and records them in
   `out/artifacts.toml` (the b4m-artifacts skill): findings, reports, comparisons,
   reproducers, results, and, without a tree, proposed changes as `diff` files.

@@ -12,6 +12,7 @@ session puts it beside the app. `w` in the series list or
 a thread adds series (see the app).
 """
 
+from dataclasses import replace
 from typing import Callable, Mapping, Optional
 
 from textual.app import ComposeResult
@@ -39,6 +40,7 @@ from .workbench import (
 from .workspace import Workspace
 
 TYPE_BASE = '\0type'  # The base picker's "type one" entry.
+UNFILED = '\0unfiled'  # Sessions from before workbenches: listed, not editable.
 TITLES = {
     'bench-list': 'Workbenches',
     'bench-entries': 'Projects (base)',
@@ -113,6 +115,7 @@ class WorkbenchScreen(Screen[None]):
         self._outputs: list[Attachment] = []  # What the selected session produced.
         self._shown = ''  # The text below: the launch preview, or an output.
         self._pending: tuple[str, str] = ('', '')  # (workbench, session) to select.
+        self._unfiled = False  # Sessions without a workbench exist: list them apart.
 
     def compose(self) -> ComposeResult:
         yield TabBar('workbench')
@@ -148,6 +151,23 @@ class WorkbenchScreen(Screen[None]):
         self.benches, self._problems = self.service.store.list()
         self._fill_benches(select or self._pending[0] or self._bench_id())
         self._status('; '.join(self._problems) or ('' if self.benches else 'n makes a workbench'))
+        rows = getattr(self.app, 'workbench_sessions', None)
+        if rows is None:
+            return
+
+        def work() -> None:
+            try:
+                unfiled = bool(rows(''))
+            except Exception:
+                return
+            self.app.call_from_thread(self._show_unfiled, unfiled)
+
+        self.run_worker(work, thread=True, group='bench-unfiled', exclusive=True)
+
+    def _show_unfiled(self, unfiled: bool) -> None:
+        if unfiled != self._unfiled:
+            self._unfiled = unfiled
+            self._fill_benches(self._pending[0] or self._bench_id())
 
     def _bench_id(self) -> str:
         option = self.query_one('#bench-list', OptionList).highlighted_option
@@ -155,7 +175,13 @@ class WorkbenchScreen(Screen[None]):
 
     def bench(self) -> Optional[Workbench]:
         wid = self._bench_id()
+        if wid == UNFILED:
+            return Workbench(UNFILED, 'Unfiled sessions')
         return next((b for b in self.benches if b.id == wid), None)
+
+    def _editable(self) -> bool:
+        bench = self.bench()
+        return bench is not None and bench.id != UNFILED
 
     def project(self) -> str:
         option = self.query_one('#bench-entries', OptionList).highlighted_option
@@ -169,7 +195,9 @@ class WorkbenchScreen(Screen[None]):
         lists.clear_options()
         for b in self.benches:
             lists.add_option(Option(f'{b.label} · {_count(len(b.entries), "project")}', id=b.id))
-        ids = [b.id for b in self.benches]
+        if self._unfiled:
+            lists.add_option(Option('Unfiled sessions', id=UNFILED))
+        ids = [b.id for b in self.benches] + ([UNFILED] if self._unfiled else [])
         if ids:
             with self.prevent(OptionList.OptionHighlighted):
                 lists.highlighted = ids.index(select) if select in ids else 0
@@ -211,6 +239,12 @@ class WorkbenchScreen(Screen[None]):
         if bench is None:
             self._set_preview('')
             return
+        if bench.id == UNFILED:
+            self._set_preview(
+                'Sessions from before workbenches. Each new session is filed in its '
+                "series' workbench (F1 makes it the first time)."
+            )
+            return
         series, latest, workspace = self.series, self.latest, self.workspace
 
         def work() -> None:
@@ -247,7 +281,7 @@ class WorkbenchScreen(Screen[None]):
 
         def work() -> None:
             try:
-                found = rows(wid)
+                found = rows('' if wid == UNFILED else wid)
             except Exception as exc:  # Shown; the rest of the tab still works.
                 self.app.call_from_thread(self._status, f'Cannot list its sessions: {exc}')
                 return
@@ -422,6 +456,9 @@ class WorkbenchScreen(Screen[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
         pane, bench = self._pane(), self.bench()
+        edits = ('rename', 'remove', 'base', 'add_branch', 'move', 'reroll', 'launch')
+        if action in edits and not self._editable():
+            return False
         if action == 'rename':
             return pane == 'bench-list' and bench is not None
         if action == 'remove':
@@ -487,7 +524,7 @@ class WorkbenchScreen(Screen[None]):
 
         def named(label: Optional[str]) -> None:
             if label:
-                self._save(Workbench(bench.id, label, bench.entries), note=f'Renamed to {label}')
+                self._save(replace(bench, label=label), note=f'Renamed to {label}')
 
         self.app.push_screen(Ask('Rename the workbench', bench.label), named)
 
@@ -508,7 +545,7 @@ class WorkbenchScreen(Screen[None]):
             def drop_entry(yes: Optional[bool]) -> None:
                 if yes:
                     entries = tuple(e for e in bench.entries if e.project != project)
-                    self._save(Workbench(bench.id, bench.label, entries), note=f'Removed {project}')
+                    self._save(replace(bench, entries=entries), note=f'Removed {project}')
 
             entry = bench.entry(project)
             what = _count(len(entry.items) if entry is not None else 0, 'item')

@@ -63,7 +63,7 @@ from .reader import (
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
 from .sessions.hub import Overview, SessionError, SessionHub, TreePlan
-from .sessions.launch import Situation, Target, plan
+from .sessions.launch import LaunchChoice, Situation, Target, plan
 from .sessions.pane import pane_for
 from .sessions.policy import ContextItem
 from .sessions.profiles import Profile
@@ -73,7 +73,7 @@ from .sessions.store import SessionView
 from .sessions.trees import TreeState
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TabBar, TextPane, printable
-from .workbench import Workbench, WorkbenchError, add_series
+from .workbench import Workbench, WorkbenchError, add_series, series_bench
 from .workbenchscreen import WorkbenchScreen
 from .workspace import Snapshot, Workspace
 
@@ -2935,16 +2935,20 @@ class MaintainerApp(App[None]):
         def launch() -> Optional[str]:
             # Checked again with fresh counts: the dialog may have been open a while.
             target = result.target
+            choice = result.choice
+            if target.scope == 'series' and not choice.workbench:
+                choice = dataclasses.replace(choice, workbench=self._file_in(target, choice))
             skills = hub.skills()[0]
             situation = _situation(hub, workspace, hub.overview(), skills, target.project)
             if plan(result.profile, result.choice, situation, result.items).mode == 'worktree':
                 note = f'Preparing a worktree for {label} (b4 applies the series)…'
                 self.call_from_thread(self._set_notice, note)
             try:
-                record = hub.launch(target, result.profile, result.choice, situation, result.items)
+                record = hub.launch(target, result.profile, choice, situation, result.items)
             except SessionError as exc:
-                if exc.base and not result.choice.also and not result.choice.agent_apply:
-                    self.call_from_thread(self._offer_handoff, result, exc)
+                if exc.base and not choice.also and not choice.agent_apply:
+                    retry = dataclasses.replace(result, choice=choice)
+                    self.call_from_thread(self._offer_handoff, retry, exc)
                     return None
                 if not exc.detail:
                     raise
@@ -2955,6 +2959,30 @@ class MaintainerApp(App[None]):
             return f'Launched session {record.id}: {label}'
 
         self._session_call(launch)
+
+    def _file_in(self, target: Target, choice: LaunchChoice) -> str:
+        """The workbench a series session is filed in (blocking): its parent's, else the
+        series' own (made once: the series on the chosen base, else the project's first
+        maintainer base). Without workbenches: none."""
+        hub, service, snapshot = self._sessions, self._workbenches, self.snapshot
+        if service is None or snapshot is None:
+            return ''
+        if choice.parent and hub is not None:
+            try:
+                parent = hub.store.record(choice.parent)
+            except (OSError, ValueError):
+                parent = None
+            if parent is not None and parent.workbench:
+                return parent.workbench
+        project = snapshot.workspace.project(target.project)
+        base = choice.base or (project.bases[0].branch if project and project.bases else '')
+        try:
+            bench = series_bench(
+                service.store, target.project, target.series, target.revision, target.subject, base
+            )
+        except (OSError, WorkbenchError):
+            return ''  # Filed nowhere: it still launches.
+        return bench.id
 
     def _offer_handoff(self, result: LaunchResult, exc: SessionError) -> None:
         """b4 could not apply the series for a session: hand it to the agent (its tree at
