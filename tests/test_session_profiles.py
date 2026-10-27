@@ -179,3 +179,32 @@ def test_a_command_field_goes_first_in_the_prompt():
     assert plain.prompt.startswith('Help me review this series')
     workspace = parse_profile((BUILTIN_DIR / 'workspace.toml').read_text())
     assert any(f.id == 'command' and f.prefix for f in workspace.fields)
+
+
+def test_each_kind_of_test_is_asked_for_by_what_it_is():
+    """Reproducer: out of tree, shows a bug. Selftest: in tree, needs a running kernel.
+    KUnit: in tree, no running kernel."""
+    from b4_maintainer.sessions.profiles import BUILTIN_DIR
+
+    series = parse_profile((BUILTIN_DIR / 'series.toml').read_text())
+
+    def prompt(choice):
+        return compose(series, {'goal': ['review'], 'artifacts': [choice]}).prompt
+
+    reproducer = prompt('reproducers')
+    assert 'never sent upstream' in reproducer and 'out/reproducers/' in reproducer
+    assert 'kind = "reproducer"' in reproducer and 'b4m/tests/' not in reproducer
+    selftest = prompt('selftest')
+    assert 'tools/testing/selftests/' in selftest and 'running kernel' in selftest
+    assert 'b4m/tests/' in selftest and 'kind = "test"' in selftest
+    assert 'out/selftest' not in selftest
+    assert 'vng' in suggested_skills(series, {'artifacts': ['selftest']})
+    kunit = prompt('unittests')
+    assert 'KUnit' in kunit and 'kunit.py run' in kunit and 'without' in kunit
+    assert 'b4m/tests/' in kunit and 'kind = "test"' in kunit and 'out/kunit' not in kunit
+    for choice in ('reproducers', 'selftest', 'unittests'):
+        assert (
+            next(c for f in series.fields for c in f.choices if c.id == choice).needs == 'worktree'
+        )
+    skill = (BUILTIN_DIR.parent / 'skills' / 'b4m-branches' / 'SKILL.md').read_text()
+    assert '## Which kind of test' in skill

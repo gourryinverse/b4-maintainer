@@ -24,7 +24,7 @@ One branch per piece of work, named by what it is. Names are local: they are nev
 | --- | --- | --- |
 | `b4m/pull-ahead/<slug>` | a bug that is already upstream (pre-existing, not caused by the series) | the **base**: `git switch -c b4m/pull-ahead/<slug> <base>` |
 | `b4m/fixup/<slug>` | a bug the series introduces | the **series' last commit**: `git switch -c b4m/fixup/<slug> <last>` |
-| `b4m/tests/<slug>` | a test for the series' behaviour (selftest, KUnit) | the series' last commit |
+| `b4m/tests/<slug>` | an in-tree test for the series' behaviour (selftest, KUnit) | the series' last commit |
 
 - One bug or one test per branch; `<slug>` is short and descriptive (`foo-refcount`).
 - A pull-ahead must not contain the series: if reproducing the bug needs the series,
@@ -32,6 +32,20 @@ One branch per piece of work, named by what it is. Names are local: they are nev
   branch you then delete, or a cherry-pick you do not keep).
 - Other branches, or commits on the session branch itself, show as "other": the
   maintainer will ask what they are.
+
+## Which kind of test
+
+| Kind | What it is | Where it goes | Manifest `kind` |
+| --- | --- | --- | --- |
+| Reproducer | demonstrates a bug and validates its fix; never sent upstream as an in-tree test | files under `out/reproducers/<slug>/`, with how to run it | `reproducer` (with `path`) |
+| Selftest | an in-tree test that needs a running kernel (a full runtime environment) | `tools/testing/selftests/`, committed on `b4m/tests/<slug>` | `test` (with `branch`) |
+| KUnit test | an in-tree unit test that runs without a full runtime environment, on the KUnit API | where the subsystem keeps its KUnit tests, on `b4m/tests/<slug>` | `test` (with `branch`) |
+
+- In-tree tests follow the subsystem's existing tests, so they can be sent upstream.
+- A reproducer is written to show the bug, not to kernel test conventions; run it where
+  the bug is and where it is fixed, and report both.
+- Run selftests in a booted kernel built from the tree; run KUnit tests with
+  `tools/testing/kunit/kunit.py run`. If a test could not run, say so in `tested`.
 
 ## Building another commit (base, single patches)
 

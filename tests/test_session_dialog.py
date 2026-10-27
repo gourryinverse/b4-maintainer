@@ -186,7 +186,8 @@ async def test_skills_the_maintainer_unticks_stay_off(demo_root, store, runner):
         assert dialog.ticked('skills') == ['b4m-branches']  # vng stays off.
         await act(pilot, dialog.pick, 'skills', 'vng')  # Tick again: back to the default.
         await act(pilot, dialog.pick, 'apparatus', 'vng')  # Untick the apparatus.
-        assert dialog.ticked('skills') == ['b4m-branches']  # Selftests still need a tree.
+        # A selftest needs a running kernel, so it suggests vng on its own.
+        assert dialog.ticked('skills') == ['b4m-branches', 'vng']
 
 
 async def test_worktree_sessions_are_refused_without_a_sandbox(demo_root, store, runner):

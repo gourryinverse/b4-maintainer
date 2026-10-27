@@ -63,22 +63,45 @@ label = "Inline email draft"
 prompt = "Write an inline review reply, quoting the relevant hunks, to out/draft/reply.txt, following the kernel skill's inline-template.md, in the review tone kernel-style describes."
 skills = ["kernel", "kernel-style"]
 
+# Three kinds of test. A reproducer demonstrates a bug and validates its fix, and stays
+# out of tree. A selftest belongs in tree but needs a running kernel. A KUnit test belongs
+# in tree and runs without a full runtime environment.
 [[fields.choices]]
 id = "reproducers"
-label = "Reproducers"
-prompt = "Write reproducers under out/reproducers/."
+label = "Reproducer (out of tree, shows the bug)"
+prompt = """Write a reproducer: a test that demonstrates the bug and validates the fix. \
+It is never sent upstream as an in-tree test, so write it for the demonstration, not \
+to kernel test conventions. Put it under out/reproducers/<slug>/ with a README saying \
+how to build and run it and what failure looks like. Run it on the base and on the \
+series (or, for a bug the series introduces, on the series and on the fix) and report \
+both results. Record it in out/artifacts.toml as kind = "reproducer" with its path."""
 needs = "worktree"
 
 [[fields.choices]]
 id = "selftest"
-label = "Selftest"
-prompt = "Write a kselftest exercising the change under out/selftest/."
+label = "Selftest (in tree, needs a running kernel)"
+prompt = """Write a kselftest: an in-tree test under tools/testing/selftests/ for \
+behaviour that needs a running kernel (a full runtime environment) to exercise. Follow \
+the subsystem's existing selftests (its Makefile, TEST_PROGS or TEST_GEN_PROGS, the \
+kselftest helpers and exit codes) so it can be sent upstream. Commit it on \
+b4m/tests/<slug>, started from the series' last commit. Build it and run it in a booted \
+kernel built from the series; if this session cannot boot one, say so and report it as \
+not run. Record it in out/artifacts.toml as kind = "test" with its branch and what the \
+run showed."""
 needs = "worktree"
+skills = ["vng"]
 
 [[fields.choices]]
 id = "unittests"
-label = "Unit tests"
-prompt = "Write KUnit tests exercising the change under out/kunit/."
+label = "KUnit tests (in tree, no running kernel)"
+prompt = """Write KUnit tests: in-tree unit tests that exercise the change without a \
+full runtime environment, written against the KUnit API. Put them where the subsystem \
+keeps its KUnit tests (or beside the code, as the subsystem's convention has it), with \
+their Kconfig entry and a .kunitconfig, so they can be sent upstream. Commit them on \
+b4m/tests/<slug>, started from the series' last commit. Run them with \
+tools/testing/kunit/kunit.py run and report the result. If what needs testing cannot \
+be reached without a running kernel, say so and suggest a selftest instead. Record \
+them in out/artifacts.toml as kind = "test" with their branch and the run's result."""
 needs = "worktree"
 
 [[fields.choices]]
