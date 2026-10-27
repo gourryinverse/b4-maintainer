@@ -36,7 +36,7 @@ def situation(**changes):
 
 
 def choice():
-    return LaunchChoice('series-test', {'goal': 'review'}, model='dry-run')
+    return LaunchChoice('series-test', {'goal': 'review'}, model='dry-run', mode='worktree')
 
 
 def launch(hub, **changes):
@@ -255,3 +255,35 @@ def test_a_tree_whose_items_conflict_can_be_left_to_the_agent(tmp_path, home):
     ).read_text()
     assert mbox.index('ndctl: me/a') < mbox.index('ndctl: me/b')
     assert made.applied == ('me/a', 'me/b')
+
+
+def test_a_lightweight_workbench_session_compares_mailboxes_without_trees(tmp_path, store):
+    from b4_maintainer.fixtures import write_series_mbox
+
+    a = write_series_mbox(tmp_path / 'a.mbx', subject='mm: fix it one way')
+    b = write_series_mbox(tmp_path / 'b.mbx', subject='mm: fix it another way')
+    plans = (
+        TreePlan(
+            'linux',
+            'gourry/base',
+            (
+                TreeItem('mm: fix it one way v1', str(a.path), 1),
+                TreeItem('mm: fix it another way v1', str(b.path), 1),
+                TreeItem('gourry/fixes', branch='gourry/fixes'),  # A tree's only.
+            ),
+        ),
+    )
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees, sandbox=lambda: True)
+    light = LaunchChoice('series-test', {'goal': 'review'}, model='dry-run', mode='lightweight')
+    record = launch(hub, plans=plans, choice=light, situation=situation(live_builds=2))
+    assert record.mode == 'lightweight' and record.permissions == 'read-only'
+    assert record.trees == () and record.home == '' and trees.entries == []
+    assert record.scope == 'workbench' and record.workbench == 'cxl-dax'
+    context = store.directory(record.id) / 'work' / 'context'
+    assert sorted(p.name for p in context.glob('*.mbx')) == ['linux-1.mbx', 'linux-2.mbx']
+    system = (store.directory(record.id) / 'system.md').read_text()
+    assert 'linux-1.mbx (mm: fix it one way v1 (linux))' in system
+    assert 'Edit, build' not in system and 'trees sit side by side' not in system
+    [(sid, _request)] = runner.launches
+    assert sid == record.id

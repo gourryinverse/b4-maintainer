@@ -2612,8 +2612,9 @@ class MaintainerApp(App[None]):
         )
 
     def launch_workbench(self, bench: Workbench) -> None:
-        """F1 on the Workbench screen: the launch dialog for a session over *bench*'s
-        trees (worktree mode; each tree's base and items come from the workbench)."""
+        """F1 on the Workbench screen: the launch dialog for a session over *bench*: its
+        trees (worktree mode; each tree's base and items from the workbench), or only its
+        series' mail to read and compare (lightweight)."""
         hub, snapshot, service = self._sessions, self.snapshot, self._workbenches
         if hub is None or snapshot is None or service is None:
             self._set_notice('Agent sessions are not available here')
@@ -2623,7 +2624,7 @@ class MaintainerApp(App[None]):
 
         def work() -> None:
             try:
-                plans, problems = service.plans(workspace, bench, series)
+                plans, problems, tree_problems = service.plans(workspace, bench, series)
                 if problems:
                     note = f'Cannot launch {bench.label}: ' + '; '.join(problems)
                     self.call_from_thread(self._set_notice, note)
@@ -2639,20 +2640,34 @@ class MaintainerApp(App[None]):
                 self.call_from_thread(self._set_notice, f'Cannot open the session dialog: {exc}')
                 return
             trees = [_tree_line(p) for p in plans]
+            mailboxes = [f'{i.label} ({p.project})' for p in plans for i in p.items if i.source]
             target = Target('series', '', f'workbench:{bench.id}', 0, bench.label)
+            warned = [f'trees only: {w}' for w in tree_problems]
             threads = (ContextItem('threads', "each series' thread"),)
             items: dict[str, tuple[ContextItem, ...]] = {'series': threads, 'workspace': ()}
             dialog = LaunchDialog(
-                target, profiles, situation, items, profile_problems + skill_problems, trees=trees
+                target,
+                profiles,
+                situation,
+                items,
+                profile_problems + skill_problems + warned,
+                trees=trees,
+                mailboxes=mailboxes,
             )
             self.call_from_thread(
-                self.push_screen, dialog, lambda r: self._launch_bench(bench, plans, r)
+                self.push_screen,
+                dialog,
+                lambda r: self._launch_bench(bench, plans, r, tree_problems),
             )
 
         self.run_worker(work, thread=True, group='session-action')
 
     def _launch_bench(
-        self, bench: Workbench, plans: tuple[TreePlan, ...], result: Optional[LaunchResult]
+        self,
+        bench: Workbench,
+        plans: tuple[TreePlan, ...],
+        result: Optional[LaunchResult],
+        tree_problems: Sequence[str] = (),
     ) -> None:
         hub, snapshot = self._sessions, self.snapshot
         if result is None or hub is None or snapshot is None:
@@ -2662,7 +2677,11 @@ class MaintainerApp(App[None]):
         def launch() -> Optional[str]:
             skills = hub.skills()[0]
             situation = _bench_situation(hub, workspace, hub.overview(), skills, plans)
-            self.call_from_thread(self._set_notice, f'Preparing the trees of {bench.label}…')
+            mode = plan(result.profile, result.choice, situation, result.items).mode
+            if mode == 'worktree' and tree_problems:
+                return f'Cannot prepare the trees of {bench.label}: ' + '; '.join(tree_problems)
+            if mode == 'worktree':
+                self.call_from_thread(self._set_notice, f'Preparing the trees of {bench.label}…')
             try:
                 record = hub.launch_workbench(
                     bench.id,

@@ -685,10 +685,10 @@ class SessionHub:
         items: Sequence[ContextItem] = (),
         now: Optional[datetime.datetime] = None,
     ) -> SessionRecord:
-        """A session over workbench *bench*'s trees, one per project (*plans*), side by side
-        in one folder; it counts once against the limits. A tree that cannot be prepared
-        leaves none of them."""
-        choice = dataclasses.replace(choice, mode='worktree')
+        """A session over workbench *bench*: in worktree mode its trees, one per project
+        (*plans*), side by side in one folder (a tree that cannot be prepared leaves none
+        of them); lightweight, no trees, only each series' thread to read and compare. It
+        counts once against the limits."""
         planned = plan(profile, choice, situation, items)
         if not planned.ok:
             raise SessionError('; '.join(planned.blockers))
@@ -732,7 +732,8 @@ class SessionHub:
             for n, item in enumerate((i for i in entry.items if i.source), 1)
         ]
         package = [i for i in planned.included if i.id != 'mbox']  # One thread per series.
-        return self._start(record, spec, None, lambda r: (None, package), trees, threads)
+        prepare = trees if planned.mode == 'worktree' else None
+        return self._start(record, spec, None, lambda r: (None, package), prepare, threads)
 
     def launch_apply(
         self,

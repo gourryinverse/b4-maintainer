@@ -246,8 +246,8 @@ def test_a_workbench_becomes_tree_plans_from_the_cache_and_branches(tmp_path):
             ),
         ),
     )
-    plans, problems = service.plans(workspace, bench, {cxl.identity: cxl})
-    assert problems == []
+    plans, problems, tree_problems = service.plans(workspace, bench, {cxl.identity: cxl})
+    assert problems == [] and tree_problems == []
     assert plans == (
         TreePlan(
             'linux',
@@ -259,9 +259,9 @@ def test_a_workbench_becomes_tree_plans_from_the_cache_and_branches(tmp_path):
         ),
     )
     stale = Workbench('w', 'W', (Entry('linux', '', (Item(cxl.identity, 2, cxl.subject),)),))
-    _plans, problems = service.plans(workspace, stale, {cxl.identity: cxl})
+    _plans, problems, _tree = service.plans(workspace, stale, {cxl.identity: cxl})
     assert problems == ['cxl: region mode v2: only v3 is cached (v on F4 takes it)']
-    _plans, problems = service.plans(workspace, stale, {})
+    _plans, problems, _tree = service.plans(workspace, stale, {})
     assert problems == ['cxl: region mode v2: not in the cache (F5 fetches it)']
-    _plans, problems = service.plans(workspace, Workbench('e', 'E'), {})
+    _plans, problems, _tree = service.plans(workspace, Workbench('e', 'E'), {})
     assert problems == ['E has nothing to prepare: w adds series to it']

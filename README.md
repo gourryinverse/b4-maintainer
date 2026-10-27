@@ -96,8 +96,9 @@ Python 3.11 or newer.
   preview of what a launch prepares: `n` new, `r` rename, `x` remove (a workbench or
   project after a confirmation), `b` a project's base, `B` add a local branch (the
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
-  and `F1` launches a session over its trees: one per project, side by side in
-  `var/worktrees/<id>/`, where the agent starts; each series' thread is in its context.
+  and `F1` launches a session over it: lightweight, no trees, each series' thread in its
+  context to read and compare (series that conflict are fine); or worktree, one tree
+  per project, side by side in `var/worktrees/<id>/`, where the agent starts.
   A tree whose items do not apply offers to hand that tree to the agent (it starts at
   the base with every item as one mbox to `git am`), or to launch nothing.
 - `d` drops that series from a maintainer base again: its commits there (found by their

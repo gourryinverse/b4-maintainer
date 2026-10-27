@@ -328,14 +328,16 @@ class WorkbenchService:
 
     def plans(
         self, workspace: Workspace, bench: Workbench, series: Mapping[str, Series]
-    ) -> tuple[tuple['TreePlan', ...], list[str]]:
+    ) -> tuple[tuple['TreePlan', ...], list[str], list[str]]:
         """*bench* as the trees a session prepares: each series from the cache (*series*,
         by identity) at the revision the workbench names, each local branch from its
-        repository; and what stands in the way of a launch."""
+        repository; what stands in the way of any launch; and what stands in the way of
+        trees only (a lightweight session reads the series' mail alone)."""
         from .sessions.hub import TreePlan
 
         plans: list[TreePlan] = []
         problems: list[str] = []
+        tree_problems: list[str] = []
         for entry in bench.entries:
             items: list[TreeItem] = []
             for item in entry.items:
@@ -352,14 +354,14 @@ class WorkbenchService:
                     continue
                 repo, name = self.branch_repo(workspace, entry.project, item.branch)
                 if not repo:
-                    problems.append(f'{item.branch}: its tree is gone')
+                    tree_problems.append(f'{item.branch}: its tree is gone')
                     continue
                 other = repo if item.branch.startswith('tree:') else ''
                 items.append(TreeItem(item.branch, branch=name, repo=other))
             plans.append(TreePlan(entry.project, entry.base, tuple(items)))
         if not bench.entries:
             problems.append(f'{bench.label} has nothing to prepare: w adds series to it')
-        return tuple(plans), problems
+        return tuple(plans), problems, tree_problems
 
     def preview(
         self,

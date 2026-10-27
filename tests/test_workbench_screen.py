@@ -207,11 +207,12 @@ async def test_f1_on_a_workbench_launches_a_session_over_its_trees(demo_root, tm
         await settle(pilot)
         dialog = app.screen
         assert isinstance(dialog, LaunchDialog)
-        assert 'Mode' not in dialog.labels()  # Always worktree.
+        assert 'Mode' in dialog.labels() and 'base' not in dialog._inputs  # Bases: per tree.
+        dialog.pick('goal', 'review')
+        dialog.pick('mode', 'worktree')
+        await pilot.pause()
         text = dialog.summary_text()
         assert 'Trees:' in text and 'linux on HEAD' in text and a.series.subject in text
-        dialog.pick('goal', 'review')
-        await pilot.pause()
         await pilot.press('ctrl+s')
         await settle(pilot)
         [(sid, plan)] = trees.entries
@@ -238,6 +239,7 @@ async def test_a_tree_that_conflicts_is_offered_to_the_agent(demo_root, tmp_path
         await pilot.press('f1')
         await settle(pilot)
         app.screen.pick('goal', 'review')
+        app.screen.pick('mode', 'worktree')
         await pilot.pause()
         await pilot.press('ctrl+s')
         await settle(pilot)
@@ -250,3 +252,36 @@ async def test_a_tree_that_conflicts_is_offered_to_the_agent(demo_root, tmp_path
         [(_sid, plan)] = trees.entries
         assert plan.agent_apply == 'c' * 40
         assert len(runner.launches) == 1
+
+
+async def test_a_lightweight_workbench_session_reads_the_mail_without_trees(demo_root, tmp_path):
+    from b4_maintainer.launchdialog import LaunchDialog
+
+    app, runner, trees = session_app(demo_root, tmp_path, [])
+    async with app.run_test(size=(180, 50)) as pilot:
+        await settle(pilot)
+        bench, (a, b) = demo_bench(app)
+        gone = Item(branch='tree:nosuch:b4m/fixup/x')  # Matters to trees only.
+        bench = Workbench(
+            bench.id, bench.label, (Entry('linux', 'HEAD', (*bench.entries[0].items, gone)),)
+        )
+        app._workbenches.store.save(bench)
+        await open_screen(pilot)
+        await pilot.press('f1')
+        await settle(pilot)
+        dialog = app.screen
+        assert isinstance(dialog, LaunchDialog)
+        dialog.pick('goal', 'review')
+        dialog.pick('mode', 'lightweight')
+        await pilot.pause()
+        text = dialog.summary_text()
+        assert 'Mailboxes:' in text and 'Trees:' not in text
+        assert f'{a.series.subject} v{a.series.revision} (linux)' in text
+        assert 'trees only: tree:nosuch:b4m/fixup/x' in text
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        assert trees.entries == []
+        [(sid, _request)] = runner.launches
+        record = app._sessions.store.record(sid)
+        assert record.mode == 'lightweight' and record.trees == ()
+        assert record.workbench == 'demo'
