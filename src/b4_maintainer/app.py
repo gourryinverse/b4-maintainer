@@ -30,7 +30,7 @@ from textual.worker import Worker, WorkerState
 from .adapters.b4mbox import load_thread
 from .adapters.drafts import DraftStore, SavedDraft
 from .attachdialog import AttachDialog
-from .attachments import Attachment, gather, git_identity, render
+from .attachments import Attachment, gather, git_identity, preview, render
 from .branchscreen import Branches, BranchesScreen
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import Derived, LaunchDialog, LaunchResult
@@ -354,11 +354,18 @@ class MaintainerApp(App[None]):
     #content { width: 1fr; padding: 0 1; scrollbar-gutter: stable; }
     #draft { width: 1fr; display: none; }
     Screen.-drafting #draft { display: block; }
+    #artifacts { width: 1fr; display: none; border-top: solid $panel-lighten-2; }
+    #artifact-list { height: auto; max-height: 40%; border: none; }
+    #artifact-show { height: 1fr; padding: 0 1; border-top: solid $panel-lighten-2; }
+    Screen.-artifacts #content { display: none; }
+    Screen.-artifacts #artifacts { display: block; }
     Screen.-narrow.-reading #tree, Screen.-narrow.-reading #content,
     Screen.-narrow.-reading #draft { display: none; }
     Screen.-narrow.-rpane-tree #tree { display: block; width: 1fr; }
     Screen.-narrow.-rpane-content #content { display: block; width: 1fr; }
     Screen.-narrow.-rpane-draft #draft { display: block; width: 1fr; }
+    Screen.-narrow.-reading #artifacts { display: none; }
+    Screen.-narrow.-artifacts.-rpane-content #artifacts { display: block; width: 1fr; }
     Screen.-reading #main { display: none; }
     Screen.-reading #reader { display: block; }
     #drawer { height: 1; background: $panel; }
@@ -505,6 +512,7 @@ class MaintainerApp(App[None]):
         self._shown: Optional[tuple[str, int]] = None
         self._expand_quotes = False
         self._reader_pane = 'tree'
+        self._artifacts: list[Attachment] = []  # The thread's session output (F3).
 
     def compose(self) -> ComposeResult:
         yield StatusLine(self._status, id='status')
@@ -515,6 +523,9 @@ class MaintainerApp(App[None]):
         with Horizontal(id='reader'):
             yield OptionList(id='tree')
             yield TextPane(id='content')
+            with Vertical(id='artifacts'):
+                yield OptionList(id='artifact-list')
+                yield TextPane(id='artifact-show')
             yield TextArea(id='draft', soft_wrap=True, show_line_numbers=False)
         with Vertical(id='drawer-panel'):
             yield Static('', id='drawer-tabs', markup=False)
@@ -648,6 +659,8 @@ class MaintainerApp(App[None]):
             self._sync_bindings()
         elif event.option_list.id == 'tree':
             self._show_row(event.option_index)
+        elif event.option_list.id == 'artifact-list':
+            self._preview_artifact(event.option_index)
         elif event.option_id:
             self.select_view(event.option_id)
 
@@ -726,12 +739,11 @@ class MaintainerApp(App[None]):
         if isinstance(self.screen, BranchesScreen):
             return action == 'quit'  # The screen has its own keys.
         if action == 'branches':
-            return (
-                self._branches is not None
-                and self._reading is None
-                and not self._drawer_focused()
-                and self.snapshot is not None
-            )
+            if self._drawer_focused() or self.snapshot is None:
+                return False
+            if self._reading is not None:
+                return self._sessions is not None  # The thread's session output.
+            return self._branches is not None
         if action == 'focus_session':
             return bool(self._app_pane) and self._beside is not None
         if action == 'launch_session':
@@ -832,8 +844,19 @@ class MaintainerApp(App[None]):
         if self._reading is None:
             return ()
         return tuple(
-            name for name in ('tree', 'content', 'draft') if self.query_one(f'#{name}').display
+            name
+            for name in ('tree', 'content', 'artifacts', 'draft')
+            if self.query_one(f'#{name}').display
         )
+
+    def artifacts_shown(self) -> bool:
+        return self.screen.has_class('-artifacts')
+
+    def artifact_labels(self) -> list[str]:
+        return [a.label for a in self._artifacts]
+
+    def artifact_text(self) -> str:
+        return self.query_one('#artifact-show', TextPane).text
 
     def visible_panes(self) -> tuple[str, ...]:
         if not self.query_one('#main').display:
@@ -900,6 +923,9 @@ class MaintainerApp(App[None]):
             self._apply_query('')
             self.refresh_bindings()
             return
+        if self._reading is not None and self.artifacts_shown():
+            self._hide_artifacts()  # Back to the thread/patch content.
+            return
         if self._reading is not None:
             # From the content or draft, Escape returns to the tree; from the tree, it closes.
             in_pane = self._reader_pane in ('content', 'draft') or self.focused in (
@@ -952,7 +978,8 @@ class MaintainerApp(App[None]):
 
     def _set_reader_pane(self, pane: str) -> None:
         self._mark_reader_pane(pane)
-        {'tree': self._tree, 'content': self._content, 'draft': self._draft_area}[pane].focus()
+        content = self.query_one('#artifact-list') if self.artifacts_shown() else self._content
+        {'tree': self._tree, 'content': content, 'draft': self._draft_area}[pane].focus()
         self.refresh_bindings()
 
     def _mark_reader_pane(self, pane: str) -> None:
@@ -965,6 +992,7 @@ class MaintainerApp(App[None]):
         if self._reading is None:
             return
         panes = {self._tree: 'tree', self._content: 'content', self._draft_area: 'draft'}
+        panes[self.query_one('#artifact-list')] = 'content'  # In place of the content (F3).
         pane = panes.get(event.widget)
         if pane is not None and pane != self._reader_pane:
             self._mark_reader_pane(pane)
@@ -1828,6 +1856,8 @@ class MaintainerApp(App[None]):
         self._node, self._rows, self._expanded = 0, [], set()
         self._collapsed = set()
         self.screen.remove_class('-reading')
+        self.screen.remove_class('-artifacts')  # The next thread opens on its content.
+        self.workers.cancel_group(self, 'artifacts')
         for name in ('tree', 'content', 'draft'):
             self.screen.remove_class(f'-rpane-{name}')
         self._series_list.focus()
@@ -2148,9 +2178,61 @@ class MaintainerApp(App[None]):
         self.poll_sessions()
 
     def action_branches(self) -> None:
-        """F3: the Branches screen (maintainer bases, session trees, prep branches)."""
+        """F3: in the thread, its sessions' output in place of the content (F3 or Escape
+        returns); in the series list, the Branches screen."""
+        if self._reading is not None:
+            if self.artifacts_shown():
+                self._hide_artifacts()
+            else:
+                self._show_artifacts()
+            return
         if self._branches is not None and self.snapshot is not None:
             self.push_screen(BranchesScreen(self._branches, self.snapshot.workspace))
+
+    def _show_artifacts(self) -> None:
+        hub, item = self._sessions, self._reading
+        if hub is None or item is None:
+            return
+        self.screen.add_class('-artifacts')
+        self._set_artifacts([], 'Reading session output…')
+        self._set_reader_pane('content')
+
+        def work() -> None:
+            try:
+                found = gather(hub.records(), item.identity, hub.store.directory)
+            except Exception as exc:
+                self.call_from_thread(self._set_artifacts, [], f'Cannot list session output: {exc}')
+                return
+            empty = 'No session output for this series yet.'
+            self.call_from_thread(self._set_artifacts, found, '' if found else empty)
+
+        self.run_worker(work, thread=True, group='artifacts', exclusive=True)
+
+    def _set_artifacts(self, found: list[Attachment], note: str) -> None:
+        self._artifacts = found
+        rows = self.query_one('#artifact-list', OptionList)
+        rows.clear_options()
+        rows.add_options(Option(a.label) for a in found)
+        if found:
+            rows.highlighted = 0
+            self._preview_artifact(0)
+        else:
+            self.query_one('#artifact-show', TextPane).set_text(note)
+
+    def _preview_artifact(self, index: int) -> None:
+        if not 0 <= index < len(self._artifacts):
+            return
+        chosen = self._artifacts[index]
+
+        def work() -> None:
+            text = preview(chosen)
+            self.call_from_thread(self.query_one('#artifact-show', TextPane).set_text, text)
+
+        self.run_worker(work, thread=True, group='artifact-preview', exclusive=True)
+
+    def _hide_artifacts(self) -> None:
+        self.screen.remove_class('-artifacts')
+        self._set_reader_pane('content')
 
     def action_launch_session(self) -> None:
         """F1: the launch dialog for the open or selected series (or the workspace)."""

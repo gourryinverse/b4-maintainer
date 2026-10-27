@@ -148,3 +148,58 @@ async def test_with_the_tmux_editor_the_draft_file_holds_the_output(demo_root, t
         assert text.startswith('On ') and 'Both pass.' in text
         saved = drafts.get(app.draft_msgid())
         assert saved is not None and saved.quote != saved.text  # Not "untouched".
+
+
+async def test_f3_in_the_thread_shows_the_series_artifacts_in_place_of_the_content(
+    demo_root, tmp_path
+):
+    app, store, runner, _ = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        give_output(app, store, runner)
+        await reading(pilot)
+        assert 'f3' in bindings(app)
+        await pilot.press('f3')
+        await settle(pilot)
+        assert app.artifacts_shown()
+        assert 'content' not in app.reader_panes() and 'artifacts' in app.reader_panes()
+        labels = app.artifact_labels()
+        assert any('results: selftests on v3' in label for label in labels)
+        assert 'Both pass.' in app.artifact_text() and 'ok 2 selftest' in app.artifact_text()
+        await pilot.press('down')  # The next artifact: the reproducer.
+        await settle(pilot)
+        assert 'int main' in app.artifact_text()
+        await pilot.press('escape')
+        await settle(pilot)
+        assert not app.artifacts_shown() and 'content' in app.reader_panes()
+        assert app.reading is not None  # Still in the thread.
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('f3')  # F3 also returns.
+        await settle(pilot)
+        assert not app.artifacts_shown() and app.reading is not None
+
+
+async def test_f3_in_a_thread_without_session_output_says_so(demo_root, tmp_path):
+    app, _store, _runner, _ = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await reading(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        assert app.artifacts_shown()
+        assert 'No session output for this series yet' in app.artifact_text()
+
+
+async def test_closing_the_thread_leaves_the_artifacts_view(demo_root, tmp_path):
+    app, store, runner, _ = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        give_output(app, store, runner)
+        await reading(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        app._close_reader()
+        await settle(pilot)
+        await reading(pilot)
+        assert not app.artifacts_shown() and 'content' in app.reader_panes()

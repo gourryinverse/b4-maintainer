@@ -90,7 +90,9 @@ Python 3.11 or newer.
   in `workspace.toml` names integration branches on top of upstream branches.
   `b4-maintainer bases` shows how far behind each is and which of its commits have landed
   upstream; `--rebase BRANCH` replays the rest onto the upstream (never in a checkout; a
-  conflict changes nothing). In the app, `F3` opens Branches (`F3` or Escape returns):
+  conflict changes nothing). In the app, `F3` in a thread shows what its sessions
+  produced (commits, results, reproducers) in place of the content, and in the series
+  list opens Branches (`F3` or Escape returns from either):
   each project's bases, worktrees, session trees (commits by class, artifacts), b4 prep
   and review branches, and other local branches with work not on any remote; `r` rebases
   a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`

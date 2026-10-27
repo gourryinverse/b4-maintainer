@@ -187,3 +187,23 @@ def render(
         value = assisted if isinstance(assisted, str) else assisted.get(a.session, 'LLM')
         blocks.append(f'{SCISSORS}\n{_patch(a, agent_email, value, me).rstrip()}')
     return ('\n\n'.join(blocks) + '\n') if blocks else ''
+
+
+def preview(a: Attachment, max_lines: int = 4000) -> str:
+    """What the artifacts view shows for an entry: a commit's message, stat, and patch; a
+    file (with its artifact's summary above); an artifact's summary alone."""
+    if a.kind == 'patch':
+        try:
+            text = _git(a.repo, 'show', '--stat', '--patch', '--format=fuller', a.sha)
+        except OSError as ex:
+            return f'Cannot show {a.sha[:12]}: {ex}'
+        return _cut(text, max_lines)
+    lines = [a.title, '']
+    if a.text:
+        lines += [a.text.strip(), '']
+    if a.path is not None:
+        try:
+            lines.append(_cut(a.path.read_text(errors='replace'), max_lines))
+        except OSError as ex:
+            lines.append(f'(cannot read {a.path.name}: {ex})')
+    return '\n'.join(lines)
