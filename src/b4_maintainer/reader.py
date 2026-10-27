@@ -137,6 +137,39 @@ def with_sashiko(
     return dataclasses.replace(thread, patches=tuple(posts))
 
 
+# The line Sashiko's mail carries for a patch it reviewed and found nothing in.
+_CLEAN = re.compile(r'^Sashiko has reviewed this patch and found no issues', re.M)
+
+
+def _clean(reply: Reply, found: Optional[SashikoPatch]) -> bool:
+    """A Sashiko reply with nothing to say: its API review is done and found nothing, or
+    (without one) its mail says so."""
+    if found is not None and found.status == 'Reviewed':
+        return not found.findings
+    return bool(_CLEAN.search(reply.message.body))
+
+
+def without_clean_sashiko(
+    thread: SeriesThread, review: Optional[SashikoReview], bots: Collection[str]
+) -> SeriesThread:
+    """The thread without Sashiko replies that found nothing (noise in a busy thread);
+    one someone answered stays, with its answers."""
+
+    def kept(post: Post) -> Post:
+        replies = list(post.replies)
+        found = sashiko_patch(review, post)
+        out = []
+        for n, reply in enumerate(replies):
+            answered = n + 1 < len(replies) and replies[n + 1].depth > reply.depth
+            if is_sashiko(reply.message, bots) and not answered and _clean(reply, found):
+                continue
+            out.append(reply)
+        return post if len(out) == len(replies) else dataclasses.replace(post, replies=tuple(out))
+
+    cover = kept(thread.cover) if thread.cover is not None else None
+    return dataclasses.replace(thread, cover=cover, patches=tuple(kept(p) for p in thread.patches))
+
+
 def _new_findings(found: Optional[SashikoPatch]) -> list[Finding]:
     return [f for f in found.findings if not f.preexisting] if found else []
 

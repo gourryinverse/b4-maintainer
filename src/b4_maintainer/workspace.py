@@ -95,7 +95,7 @@ MODEL_KEYS = frozenset({'id', 'model', 'thinking', 'args', 'env', 'enabled'})
 TABLE_KEYS = {
     'layout': frozenset({'three_pane', 'single_pane', 'preview_width'}),
     'browse': frozenset({'window_days'}),
-    'sashiko': frozenset({'senders'}),
+    'sashiko': frozenset({'senders', 'hide_clean'}),
     'drafts': frozenset({'editor', 'tmux_width'}),
     'sync': frozenset({'auto', 'timeout'}),
     'refs': frozenset({'fetch'}),
@@ -215,6 +215,8 @@ class Workspace:
     window_days: int = 14
     # Senders of automated review mail; their replies are findings, not Responses.
     bots: tuple[str, ...] = SASHIKO_SENDERS
+    # Leave Sashiko replies that found nothing out of threads ([sashiko] hide_clean).
+    sashiko_hide_clean: bool = True
     # Where replies are drafted: auto (tmux when inside it), tmux, or app.
     drafts_editor: str = 'auto'
     tmux_width: int = 100
@@ -286,6 +288,7 @@ class Workspace:
             bots=tuple(
                 b.lower() for b in config.get('sashiko', {}).get('senders', SASHIKO_SENDERS)
             ),
+            sashiko_hide_clean=bool(config.get('sashiko', {}).get('hide_clean', True)),
             drafts_editor=str(config.get('drafts', {}).get('editor', 'auto')),
             tmux_width=int(config.get('drafts', {}).get('tmux_width', 100)),
             sync_auto=bool(config.get('sync', {}).get('auto', True)),

@@ -58,6 +58,7 @@ from .reader import (
     thread_replies,
     tree_rows,
     with_sashiko,
+    without_clean_sashiko,
 )
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
@@ -1047,7 +1048,7 @@ class MaintainerApp(App[None]):
     def _load_thread(self, item: WorkItem) -> None:
         restore, adopt = None, False
         try:
-            thread = with_sashiko(self._thread_loader(item.series), item.sashiko, self._bots())
+            thread = self._with_sashiko(item, self._thread_loader(item.series))
             error = None
             if self._drafts is not None:
                 restore = _drafted_in(thread, self._drafts.msgids())
@@ -1070,7 +1071,7 @@ class MaintainerApp(App[None]):
 
         def work() -> None:
             try:
-                thread = with_sashiko(self._thread_loader(item.series), item.sashiko, self._bots())
+                thread = self._with_sashiko(item, self._thread_loader(item.series))
             except Exception as exc:  # Shown; the thread already open stays.
                 self.call_from_thread(self._set_notice, f'Could not reload the thread: {exc}')
                 return
@@ -1148,6 +1149,14 @@ class MaintainerApp(App[None]):
             self.action_reply_attach()
         elif reply_now:
             self.action_reply()  # On the first posting: the cover letter, else the first patch.
+
+    def _with_sashiko(self, item: WorkItem, thread: SeriesThread) -> SeriesThread:
+        """The thread with Sashiko's API reviews joined, and (unless configured otherwise)
+        its replies that found nothing left out."""
+        merged = with_sashiko(thread, item.sashiko, self._bots())
+        if self.snapshot is not None and not self.snapshot.workspace.sashiko_hide_clean:
+            return merged
+        return without_clean_sashiko(merged, item.sashiko, self._bots())
 
     def _bots(self) -> tuple[str, ...]:
         return self.snapshot.workspace.bots if self.snapshot else ()

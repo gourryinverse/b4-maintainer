@@ -102,6 +102,9 @@ Python 3.11 or newer.
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
+- Threads leave out Sashiko replies that found nothing (its review of the patch has no
+  findings, or its mail says it found no issues), unless someone answered them;
+  `[sashiko] hide_clean = false` shows them.
 - Series go to the project whose `lists` they were sent to. On lists projects share, a
   project's `subject_tags` (e.g. `["ndctl", "daxctl"]` for `[ndctl PATCH]`) claim the
   series whose subject prefix carries one; a project with tags takes only those. Only

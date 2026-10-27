@@ -181,3 +181,58 @@ async def test_replying_to_an_api_review_answers_the_patch_quoting_sashiko():
         text = app.query_one('#draft').text
         assert text.startswith('Sashiko (https://sashiko.example.org/#/patchset/7) reported:\n')
         assert '> This leaks.' in text
+
+
+CLEAN = 'Sashiko has reviewed this patch and found no issues. It looks great!\n'
+
+
+def test_sashiko_replies_without_findings_are_left_out():
+    from b4_maintainer.reader import without_clean_sashiko
+
+    clean_api = SashikoPatch('p3@example.org', 3, 'Reviewed', (), 'No issues.\n')
+    review = dataclasses.replace(REVIEW, patches=(*REVIEW.patches, clean_api))
+    item = dataclasses.replace(make_item(subject='mm: reviewed'), sashiko=review)
+    bot = Reply(message('bot2@example.org', '', BOTS[0], 'Sashiko found 1 issue.'), 0)
+    clean_mail = Reply(message('bot3@example.org', '', BOTS[0], '> x\n\n' + CLEAN), 0)
+    answered = Reply(message('bot4@example.org', '', BOTS[0], CLEAN), 0)
+    answer = Reply(message('a@example.org', 'Contributor One'), 1)
+    posts = (
+        Post(1, message('p1@example.org'), '', DIFF, ()),  # API review with a finding.
+        Post(2, message('p2@example.org'), '', DIFF, (bot,)),  # Pre-existing finding.
+        Post(3, message('p3@example.org'), '', DIFF, ()),  # API: reviewed, no findings.
+        Post(4, message('p4@example.org'), '', DIFF, (clean_mail,)),  # No API: the mail says so.
+        Post(5, message('p5@example.org'), '', DIFF, (answered, answer)),  # Someone answered.
+    )
+    merged = with_sashiko(SeriesThread(item.identity, 1, None, posts), review, BOTS)
+    quiet = without_clean_sashiko(merged, review, BOTS)
+    replies = [[r.message.msgid for r in p.replies] for p in quiet.patches]
+    assert replies == [
+        ['sashiko:p1@example.org'],
+        ['bot2@example.org'],
+        [],
+        [],
+        ['bot4@example.org', 'a@example.org'],
+    ]
+    assert without_clean_sashiko(merged, None, ()) == merged  # No bots known: nothing hidden.
+
+
+def test_clean_sashiko_replies_are_hidden_unless_configured_to_show():
+    assert Workspace.from_config({}).sashiko_hide_clean
+    shown = Workspace.from_config({'sashiko': {'hide_clean': False}})
+    assert not shown.sashiko_hide_clean and shown.warnings == ()
+
+
+async def test_the_reader_leaves_out_sashiko_replies_that_found_nothing():
+    clean = SashikoPatch('p2@example.org', 2, 'Reviewed', (), '')
+    review = dataclasses.replace(REVIEW, patches=(REVIEW.patches[0], clean))
+    item = dataclasses.replace(make_item(subject='mm: reviewed'), sashiko=review)
+    for hide, expected in ((True, []), (False, ['bot@example.org'])):
+        config = workspace_config()
+        config['sashiko'] = {'hide_clean': hide}
+        snapshot = Snapshot(Workspace.from_config(config), (item,))
+        app = MaintainerApp(lambda s=snapshot: s, thread_loader=lambda s: thread(item))
+        async with app.run_test(size=(180, 40)) as pilot:
+            await loaded(pilot)
+            await open_reader(pilot)
+            second = app._thread.patches[1]
+            assert [r.message.msgid for r in second.replies] == expected
