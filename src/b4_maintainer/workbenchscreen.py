@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""F4: workbenches, the recipes for sessions over several projects.
+"""F3: workbenches, the recipes for sessions over several projects.
 
 Three panes: the workbenches; the selected one's projects (each with the base its tree
 starts from); that project's items in order (posted series, local branches). Below, what
-launching it would prepare. `n` makes a workbench, `r` renames it, `x` removes what the
+launching it would prepare. F2/F3/F4 switch tabs, keeping each tab's place. `n` makes a workbench, `r` renames it, `x` removes what the
 focused pane shows (a workbench or project after a confirmation, an item at once); `b`
 picks a project's base; `B` adds a local branch; shift+up/down move an item; `v` takes a
 series' newer revision; F1 launches a session over its trees. `w` in the series list or
@@ -21,6 +21,7 @@ from textual.widgets.option_list import Option
 
 from .branchscreen import Ask, Pick
 from .model import Series
+from .widgets import TabBar
 from .workbench import (
     Workbench,
     WorkbenchError,
@@ -53,16 +54,16 @@ class WorkbenchScreen(Screen[None]):
     """
     BINDINGS = [
         Binding('escape', 'back', 'back'),
-        Binding('f4', 'back', 'series', key_display='F4'),
-        Binding('tab', 'cycle(1)', 'next pane', priority=True),
+        # Less common keys stay off the footer; ? lists them all.
+        Binding('tab', 'cycle(1)', 'next pane', priority=True, show=False),
         Binding('shift+tab', 'cycle(-1)', 'previous pane', priority=True, show=False),
         Binding('n', 'new', 'new workbench'),
-        Binding('r', 'rename', 'rename'),
+        Binding('r', 'rename', 'rename', show=False),
         Binding('x', 'remove', 'remove'),
         Binding('b', 'base', 'base'),
         Binding('B', 'add_branch', 'add branch'),
-        Binding('shift+up', 'move(-1)', 'move up', key_display='⇧↑'),
-        Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓'),
+        Binding('shift+up', 'move(-1)', 'move up', key_display='⇧↑', show=False),
+        Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓', show=False),
         Binding('v', 'reroll', 'newer revision'),
         Binding('f1', 'launch', 'session', key_display='F1'),
     ]
@@ -83,8 +84,10 @@ class WorkbenchScreen(Screen[None]):
         self._problems: list[str] = []
         self._preview = ''
         self._status_text = ''
+        self.stale = False  # Set when the app switches back to this tab.
 
     def compose(self) -> ComposeResult:
+        yield TabBar('workbench')
         yield Static('Workbenches', id='bench-title')
         with Horizontal(id='bench-panes'):
             yield OptionList(id='bench-list')
@@ -98,6 +101,13 @@ class WorkbenchScreen(Screen[None]):
     def on_mount(self) -> None:
         self.query_one('#bench-list', OptionList).focus()
         self._reload()
+
+    def on_screen_resume(self) -> None:
+        # Switched back to (the app marks it stale), not just a prompt closing over it:
+        # reread, keeping the selection.
+        if self.stale:
+            self.stale = False
+            self._reload()
 
     # Loading and showing.
 

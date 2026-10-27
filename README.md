@@ -67,6 +67,9 @@ Python 3.11 or newer.
     .venv/bin/python -m pytest -m serial      # the timing tests, alone
     ./b4-maintainer --demo .local/demo
 
+- Tabs across the top: `F2` LKML (the series list and threads), `F3` Workbench, `F4`
+  Artifacts; each keeps its place when you switch away and back. The footer shows each
+  tab's common keys; `?` lists all of them.
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
   live: `F5` fetches profile lists and your own mail from lore (in a thread, the thread reloads
   in place), `t` tracks the selected series
@@ -84,12 +87,12 @@ Python 3.11 or newer.
   if every patch applies. Your FETCH_HEAD is left as it was; b4 records the series for
   `b4 ty`. When the patches conflict you choose: hand them to an agent (an apply session
   applies b4's mbox on a copy of the branch and resolves the conflicts; `A` on its tree in
-  `F3` accepts the result, only while the branch has not moved), or leave the branch as
+  Artifacts (`F4`) accepts the result, only while the branch has not moved), or leave the branch as
   it is.
 - Workbenches are recipes for agent sessions over several projects (e.g. a Linux tree and an
   ndctl tree, patched together): per project, a base and the series and local branches
   applied on it in order, one file each in `state/workbenches/` (synced). `w` in the
-  series list or a thread adds the series to one (or a new one); `F4` lists them with a
+  series list or a thread adds the series to one (or a new one); `F3` lists them with a
   preview of what a launch prepares: `n` new, `r` rename, `x` remove (a workbench or
   project after a confirmation), `b` a project's base, `B` add a local branch (the
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
@@ -138,9 +141,9 @@ Python 3.11 or newer.
   in `workspace.toml` names integration branches on top of upstream branches.
   `b4-maintainer bases` shows how far behind each is and which of its commits have landed
   upstream; `--rebase BRANCH` replays the rest onto the upstream (never in a checkout; a
-  conflict changes nothing). In the app, `F3` in a thread shows what its sessions
-  produced (their initial prompts, commits, results, reproducers) in place of the content, and in the series
-  list opens Branches (`F3` or Escape returns from either):
+  conflict changes nothing). In the app, `F4` in a thread shows what its sessions
+  produced (their initial prompts, commits, results, reproducers) in place of the content
+  (`F4` or Escape returns), and elsewhere opens the Artifacts tab:
   each project's bases, worktrees, session trees (commits by class, artifacts), b4 prep
   and review branches, and other local branches with work not on any remote; `r` rebases
   a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`

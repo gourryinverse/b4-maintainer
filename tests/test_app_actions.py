@@ -73,6 +73,11 @@ def footer_keys(app):
     return {key for key, active in app.screen.active_bindings.items() if active.binding.show}
 
 
+def available_keys(app):
+    """Keys that act here, shown in the footer or listed by ?."""
+    return {key for key, active in app.screen.active_bindings.items() if active.enabled}
+
+
 async def settle(pilot):
     await pilot.app.workers.wait_for_complete()
     await pilot.pause()
@@ -151,7 +156,7 @@ async def test_hide_removes_series_and_keeps_position(demo_root):
         position = series_list.cursor
         target = series_list.highlighted_item
         following = app.index.items('all')[position + 1]
-        assert 'x' in footer_keys(app)
+        assert 'x' in available_keys(app)
         await pilot.press('x')
         series_list = await settle(pilot)
         assert target.identity in live.hidden
@@ -186,7 +191,7 @@ async def test_shift_m_marks_series_read(demo_root):
         series_list = await settle(pilot)
         await pilot.press('down')
         target = series_list.highlighted_item
-        assert 'M' in footer_keys(app)
+        assert 'M' in available_keys(app)
         await pilot.press('M')
         series_list = await settle(pilot)
         assert live.read_calls == [target.identity]

@@ -1,4 +1,4 @@
-"""Contract: F4 opens the Workbench screen (workbenches | the selected one's projects | that
+"""Contract: F3 opens the Workbench screen (workbenches | the selected one's projects | that
 project's items, with a preview of what a launch prepares) and `w` adds a series to a
 workbench from the series list or a thread."""
 
@@ -43,14 +43,14 @@ async def settle(pilot):
 
 async def open_screen(pilot):
     await settle(pilot)
-    await pilot.press('f4')
+    await pilot.press('f3')
     await settle(pilot)
     screen = pilot.app.screen
     assert isinstance(screen, WorkbenchScreen)
     return screen
 
 
-async def test_f4_lists_workbenches_and_previews_the_selected_one(demo_root, tmp_path):
+async def test_f3_lists_workbenches_and_previews_the_selected_one(demo_root, tmp_path):
     app, _store = make(demo_root, tmp_path, [BENCH, Workbench('empty', 'Empty')])
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_screen(pilot)

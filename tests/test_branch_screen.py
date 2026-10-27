@@ -1,4 +1,4 @@
-"""Contract: F3 opens the Branches screen: items per project, their commits, what the
+"""Contract: F4 opens the Branches (Artifacts) screen: items per project, their commits, what the
 selected commit shows; `r` rebases a base after a confirmation; Escape returns."""
 
 from b4_maintainer.adapters.bases import BaseCommit, BaseStatus, RebaseResult
@@ -161,7 +161,7 @@ async def test_f3_opens_the_branches_screen_and_escape_returns(demo_root):
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         screen = app.screen
         assert isinstance(screen, BranchesScreen)
@@ -184,7 +184,7 @@ async def test_r_rebases_the_selected_base_after_a_confirmation(demo_root):
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('r')
         await settle(pilot)
@@ -211,7 +211,7 @@ async def test_a_failed_rebase_names_the_commit(demo_root):
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('r')
         await settle(pilot)
@@ -225,7 +225,7 @@ async def test_r_is_only_for_bases_and_f3_only_with_a_branch_service(demo_root):
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('down')
         await settle(pilot)
@@ -235,7 +235,7 @@ async def test_r_is_only_for_bases_and_f3_only_with_a_branch_service(demo_root):
     app = MaintainerApp(FixtureSource(demo_root).load)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         assert not isinstance(app.screen, BranchesScreen)
 
@@ -247,10 +247,10 @@ async def test_f3_toggles_back_and_b_does_not_open_it(demo_root):
         await pilot.press('b')
         await settle(pilot)
         assert not isinstance(app.screen, BranchesScreen)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         assert isinstance(app.screen, BranchesScreen)
-        await pilot.press('f3')
+        await pilot.press('f2')
         await settle(pilot)
         assert not isinstance(app.screen, BranchesScreen)
 
@@ -261,7 +261,7 @@ async def test_a_failed_rebase_offers_a_rebase_session_after_a_confirmation(demo
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('a')  # Nothing failed yet: not offered.
         await settle(pilot)
@@ -290,7 +290,7 @@ async def test_a_on_a_rebase_sessions_tree_accepts_its_result(demo_root):
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('A')  # A base, not a rebase session: nothing.
         await settle(pilot)
@@ -308,7 +308,7 @@ async def test_a_on_a_rebase_sessions_tree_accepts_its_result(demo_root):
 
 async def open_tree_rows(pilot):
     await settle(pilot)
-    await pilot.press('f3')
+    await pilot.press('f4')
     await settle(pilot)
     await pilot.press('down')  # The session tree.
     await settle(pilot)
@@ -395,7 +395,7 @@ async def test_t_and_c_run_b4_on_a_prep_branch_and_show_its_output(demo_root):
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('t')  # A base: not a prep branch.
         await settle(pilot)
@@ -429,7 +429,7 @@ async def test_e_edits_the_cover_with_b4_while_the_app_is_suspended(demo_root, m
     monkeypatch.setattr(type(app), 'suspend', lambda self: contextlib.nullcontext())
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('down', 'down', 'e')
         await settle(pilot)
@@ -446,7 +446,7 @@ async def test_e_edits_the_cover_with_b4_while_the_app_is_suspended(demo_root, m
 
 async def open_prep(pilot):
     await settle(pilot)
-    await pilot.press('f3')
+    await pilot.press('f4')
     await settle(pilot)
     await pilot.press('down', 'down')
     await settle(pilot)
@@ -541,7 +541,7 @@ async def test_a_rebase_says_which_prep_branches_moved_and_which_stayed(demo_roo
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('r')
         await settle(pilot)
@@ -557,7 +557,7 @@ async def test_x_removes_after_saying_what_goes_and_asks_twice_for_changes(demo_
     app = make_app(demo_root, service)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('x')  # A base: not removable here.
         await settle(pilot)
@@ -625,7 +625,7 @@ async def test_d_derives_a_session_starting_where_chosen(demo_root, tmp_path):
         runner.add(
             make_record('s1', series=item.identity, subject=item.series.subject), alive=False
         )
-        await pilot.press('f3')
+        await pilot.press('f4')
         await settle(pilot)
         await pilot.press('down', 'D')  # The session tree.
         await settle(pilot)

@@ -16,6 +16,11 @@ def footer_keys(app):
     return {key for key, active in app.screen.active_bindings.items() if active.binding.show}
 
 
+def available_keys(app):
+    """Keys that act here, shown in the footer or listed by ?."""
+    return {key for key, active in app.screen.active_bindings.items() if active.enabled}
+
+
 async def loaded(pilot):
     await pilot.app.workers.wait_for_complete()
     await pilot.pause()
@@ -215,8 +220,9 @@ async def test_reader_footer_shows_only_applicable_keys(demo_root):
         await loaded(pilot)
         await open_reader(pilot)
         keys = footer_keys(app)
-        assert {'escape', 'tab', 'right_square_bracket', 'n', 'minus', 'grave_accent', 'Q'} <= keys
-        assert not {'d', 'c', 'v', 'p', 'z'} & keys
+        assert {'escape', 'right_square_bracket', 'n', 'minus', 'Q'} <= keys
+        assert {'tab', 'grave_accent'} <= available_keys(app)  # Acting, listed by ?.
+        assert not {'d', 'c', 'v', 'p', 'z'} & available_keys(app)
         await select_row(pilot, 1)
         assert 'minus' not in footer_keys(app)  # Patch 1/5 has no replies.
 

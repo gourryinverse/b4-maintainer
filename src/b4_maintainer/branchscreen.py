@@ -38,6 +38,7 @@ from .launchdialog import Derived
 from .sessions.launch import Target
 from .sessions.policy import ContextItem
 from .sessions.records import SessionRecord
+from .widgets import TabBar
 from .workspace import Workspace
 
 if TYPE_CHECKING:
@@ -204,8 +205,8 @@ class BranchesScreen(Screen[None]):
     """
     BINDINGS = [
         Binding('escape', 'back', 'back'),
-        Binding('f3', 'back', 'series', key_display='F3'),
-        Binding('tab', 'cycle(1)', 'next pane', priority=True),
+        # Less common keys stay off the footer; ? lists them all.
+        Binding('tab', 'cycle(1)', 'next pane', priority=True, show=False),
         Binding('shift+tab', 'cycle(-1)', 'previous pane', priority=True, show=False),
         Binding('r', 'rebase', 'rebase base'),
         Binding('a', 'agent_rebase', 'rebase with an agent'),
@@ -213,16 +214,16 @@ class BranchesScreen(Screen[None]):
         Binding('space', 'mark', 'mark'),
         Binding('p', 'pluck', 'pluck'),
         Binding('n', 'new_prep', 'new prep branch'),
-        Binding('t', 'prep_run("auto-to-cc")', 'to/cc'),
-        Binding('c', 'prep_run("check")', 'check'),
+        Binding('t', 'prep_run("auto-to-cc")', 'to/cc', show=False),
+        Binding('c', 'prep_run("check")', 'check', show=False),
         Binding('e', 'edit_cover', 'edit cover'),
         Binding('s', 'sign_off', 'sign off'),
         Binding('o', 'preview', 'outgoing'),
         Binding('S', 'send', 'send'),
-        Binding('u', 'prep_run("trailers")', 'trailers'),
-        Binding('d', 'prep_run("compare")', 'compare'),
+        Binding('u', 'prep_run("trailers")', 'trailers', show=False),
+        Binding('d', 'prep_run("compare")', 'compare', show=False),
         Binding('x', 'reap', 'remove'),
-        Binding('D', 'derive', 'derive a session'),
+        Binding('D', 'derive', 'derive a session', show=False),
         Binding('f5', 'reload', 'reload', key_display='F5'),
     ]
 
@@ -238,9 +239,11 @@ class BranchesScreen(Screen[None]):
         self._failed: dict[str, RebaseResult] = {}  # Base key -> its last failed rebase.
         self._marks: set[int] = set()  # Marked commit rows of the selected item.
         self._pinned = ''  # Shown on the right after the next reload instead of the row.
+        self.stale = False  # Set when the app switches back to this tab.
 
     def compose(self) -> ComposeResult:
-        yield Static('Branches', id='branch-title')
+        yield TabBar('artifacts')
+        yield Static('Artifacts: bases, worktrees, session trees, prep branches', id='branch-title')
         with Horizontal(id='branch-panes'):
             yield OptionList(id='branch-items')
             yield OptionList(id='branch-rows')
@@ -252,6 +255,13 @@ class BranchesScreen(Screen[None]):
     def on_mount(self) -> None:
         self.query_one('#branch-items', OptionList).focus()
         self.action_reload()
+
+    def on_screen_resume(self) -> None:
+        # Switched back to (the app marks it stale), not just a prompt closing over it:
+        # reread, keeping the selection.
+        if self.stale:
+            self.stale = False
+            self.action_reload()
 
     # Loading
 

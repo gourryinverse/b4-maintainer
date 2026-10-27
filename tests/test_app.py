@@ -139,27 +139,36 @@ def footer_keys(app):
     return {key for key, active in app.screen.active_bindings.items() if active.binding.show}
 
 
+def available_keys(app):
+    """Keys that act here, shown in the footer or listed by ?."""
+    return {key for key, active in app.screen.active_bindings.items() if active.enabled}
+
+
 async def test_footer_shows_only_applicable_keys(demo_root):
     app = make_app(demo_root)
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
-        keys = footer_keys(app)
+        keys = available_keys(app)
         assert {'enter', 'grave_accent', 'tab', 'p', 'Q'} <= keys
         assert not {'v', 'escape'} & keys
+        # The less common ones act but stay off the footer (? lists them).
+        assert {'enter', 'Q', 'question_mark'} <= footer_keys(app)
+        assert not {'grave_accent', 'tab', 'p'} & footer_keys(app)
 
         await pilot.resize_terminal(130, 40)
         await pilot.pause()
-        assert {'v', 'tab', 'grave_accent'} <= footer_keys(app)
+        assert {'v', 'tab', 'grave_accent'} <= available_keys(app)
 
         await pilot.resize_terminal(90, 40)
         await pilot.pause()
-        keys = footer_keys(app)
+        keys = available_keys(app)
         assert {'enter', 'grave_accent', 'p'} <= keys
-        assert not {'v', 'tab', 'escape'} & keys
+        assert not {'v', 'escape'} & keys
+        assert not app.check_action('cycle_pane', (1,))  # Narrow: tab is Textual's own.
 
         await pilot.press('p')
         await pilot.pause()
-        keys = footer_keys(app)
+        keys = available_keys(app)
         assert {'escape', 'enter', 'grave_accent'} <= keys
 
 

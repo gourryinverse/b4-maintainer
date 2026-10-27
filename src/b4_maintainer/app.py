@@ -20,7 +20,7 @@ from textual.geometry import Size
 from textual.markup import escape
 from textual.message import Message
 from textual.reactive import Reactive
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widget import Widget
@@ -72,7 +72,7 @@ from .sessions.skills import Skill
 from .sessions.store import SessionView
 from .sessions.trees import TreeState
 from .views import ViewIndex
-from .widgets import Block, KeyBar, TextPane, printable
+from .widgets import Block, KeyBar, TabBar, TextPane, printable
 from .workbench import Workbench, WorkbenchError, add_series
 from .workbenchscreen import WorkbenchScreen
 from .workspace import Snapshot, Workspace
@@ -396,9 +396,10 @@ class MaintainerApp(App[None]):
     Screen.-narrow.-show-summary #summary { display: block; width: 1fr; border-left: none; }
     """
     BINDINGS = [
-        Binding('v', 'toggle_views', 'views'),
+        # Less common keys stay off the footer; ? lists every key of the current tab.
+        Binding('v', 'toggle_views', 'views', show=False),
         # Priority so the footer shows this hint instead of Screen's hidden tab binding.
-        Binding('tab', 'cycle_pane(1)', 'next pane', priority=True),
+        Binding('tab', 'cycle_pane(1)', 'next pane', priority=True, show=False),
         Binding('shift+tab', 'cycle_pane(-1)', 'previous pane', priority=True, show=False),
         Binding('ctrl+s', 'send_draft', 'send'),
         Binding('ctrl+g', 'discard_draft', 'discard'),
@@ -415,7 +416,7 @@ class MaintainerApp(App[None]):
         Binding('right', 'expand_node', 'expand', show=False),
         Binding('left', 'collapse_node', 'collapse', show=False),
         Binding('z', 'toggle_quotes', 'quotes'),
-        Binding('p', 'toggle_preview', 'preview'),
+        Binding('p', 'toggle_preview', 'preview', show=False),
         Binding('slash', 'search', 'search', key_display='/'),
         # $ tracks, or untracks (archives in b4) after confirmation; t also tracks.
         Binding('dollar_sign', 'track', 'track', key_display='$'),
@@ -425,20 +426,23 @@ class MaintainerApp(App[None]):
         Binding('dollar_sign', 'unwatch', 'unwatch', key_display='$'),
         Binding('t', 'track', 'track', show=False),
         # One key; the enabled action (and footer label) follows the item's state.
-        Binding('x', 'hide', 'hide'),
-        Binding('x', 'unhide', 'unhide'),
+        Binding('x', 'hide', 'hide', show=False),
+        Binding('x', 'unhide', 'unhide', show=False),
         Binding('f5', 'refresh', 'refresh', key_display='F5'),
         Binding('r', 'reply', 'reply'),
         Binding('R', 'reply_attach', 'reply + session output'),
-        Binding('a', 'apply_series', 'apply'),
-        Binding('d', 'drop_series', 'drop'),
-        Binding('M', 'mark_read', 'read all'),
-        Binding('f3', 'branches', 'branches', key_display='F3'),
-        Binding('f4', 'workbench', 'workbenches', key_display='F4'),
-        Binding('w', 'add_to_workbench', 'to workbench'),
+        Binding('a', 'apply_series', 'apply', show=False),
+        Binding('d', 'drop_series', 'drop', show=False),
+        Binding('M', 'mark_read', 'read all', show=False),
+        Binding('w', 'add_to_workbench', 'to workbench', show=False),
+        # The tabs (shown in the tab bar): F4 in a thread shows its sessions' output instead.
+        Binding('f2', "tab('lkml')", 'LKML', key_display='F2', show=False),
+        Binding('f3', "tab('workbench')", 'Workbench', key_display='F3', show=False),
+        Binding('f4', 'artifacts', 'Artifacts', key_display='F4', show=False),
+        Binding('question_mark', 'keys', 'keys', key_display='?'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
-        Binding('f12', 'focus_session', 'to session', key_display='F12'),
-        Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`'),
+        Binding('f12', 'focus_session', 'to session', key_display='F12', show=False),
+        Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`', show=False),
         Binding('Q', 'quit', 'quit'),
     ]
 
@@ -493,7 +497,8 @@ class MaintainerApp(App[None]):
         # Agent sessions: polled for the drawer; only the maintainer's keys act on them.
         self._sessions = sessions
         self._branches = branches  # The Branches screen's data and actions (live only).
-        self._workbenches = workbenches  # F4's workbenches (live only).
+        self._workbenches = workbenches  # F3's workbenches (live only).
+        self._installed: set[str] = set()  # Tabs made so far (kept, with their place).
         self._overview = Overview()
         self._polling = False
         self._drawer_tab = 'sessions'
@@ -532,6 +537,7 @@ class MaintainerApp(App[None]):
         self._artifacts: list[Attachment] = []  # The thread's session output (F3).
 
     def compose(self) -> ComposeResult:
+        yield TabBar('lkml', id='tabs')
         yield StatusLine(self._status, id='status')
         with Horizontal(id='main'):
             yield OptionList(id='views')
@@ -762,14 +768,19 @@ class MaintainerApp(App[None]):
             return action == 'cycle_pane'  # Tab moves between the dialog's sections.
         if isinstance(self.screen, ModalScreen):
             return False  # A prompt or dialog owns every key while it is open.
+        if action == 'keys':
+            return not isinstance(self.screen, ModalScreen)
+        if action in ('tab', 'artifacts') and not isinstance(self.screen, ModalScreen):
+            on_lkml = len(self.screen_stack) == 1
+            if action == 'artifacts' and self._reading is not None and on_lkml:
+                return self._sessions is not None  # The thread's session output.
+            if parameters == ('workbench',):
+                return self._workbenches is not None and self.snapshot is not None
+            if action == 'artifacts':
+                return self._branches is not None and self.snapshot is not None
+            return True
         if isinstance(self.screen, (BranchesScreen, WorkbenchScreen)):
             return action == 'quit'  # The screen has its own keys.
-        if action == 'branches':
-            if self._drawer_focused() or self.snapshot is None:
-                return False
-            if self._reading is not None:
-                return self._sessions is not None  # The thread's session output.
-            return self._branches is not None
         if action == 'focus_session':
             return bool(self._app_pane) and self._beside is not None
         if action == 'launch_session':
@@ -822,8 +833,6 @@ class MaintainerApp(App[None]):
             if self._saved_draft is not None and reading:
                 return True
             return self._reply_msgid() is not None if reading else self._item is not None
-        if action == 'workbench':
-            return self._workbenches is not None and not reading
         if action == 'add_to_workbench':
             item = self._reading or self._item
             return self._workbenches is not None and item is not None and not item.series.discussion
@@ -2252,17 +2261,64 @@ class MaintainerApp(App[None]):
             self._set_notice(notice)
         self.poll_sessions()
 
-    def action_branches(self) -> None:
-        """F3: in the thread, its sessions' output in place of the content (F3 or Escape
-        returns); in the series list, the Branches screen."""
-        if self._reading is not None:
+    def action_artifacts(self) -> None:
+        """F4: in a thread, its sessions' output in place of the content (F4 or Escape
+        returns); elsewhere, the Artifacts tab."""
+        if self._reading is not None and len(self.screen_stack) == 1:
             if self.artifacts_shown():
                 self._hide_artifacts()
             else:
                 self._show_artifacts()
             return
-        if self._branches is not None and self.snapshot is not None:
-            self.push_screen(BranchesScreen(self._branches, self.snapshot.workspace))
+        self.action_tab('artifacts')
+
+    def action_tab(self, tab: str) -> None:
+        """F2/F3/F4: switch to a tab. Workbench and Artifacts are made once and kept, so
+        each keeps its place (they reread their data on each return); LKML is the app's
+        own screen, kept as it was left."""
+        snapshot = self.snapshot
+        if tab == 'lkml':
+            if len(self.screen_stack) > 1:
+                self.pop_screen()
+            return
+        if snapshot is None:
+            return
+        if tab not in self._installed:
+            if tab == 'workbench' and self._workbenches is not None:
+                screen: Screen[Any] = WorkbenchScreen(self._workbenches, snapshot.workspace, {}, {})
+            elif tab == 'artifacts' and self._branches is not None:
+                screen = BranchesScreen(self._branches, snapshot.workspace)
+            else:
+                return
+            self.install_screen(screen, tab)
+            self._installed.add(tab)
+        target = self.get_screen(tab)
+        if isinstance(target, (WorkbenchScreen, BranchesScreen)) and self.screen is not target:
+            target.stale = target.is_mounted  # Shown again: it rereads.
+        if isinstance(target, WorkbenchScreen):
+            target.workspace = snapshot.workspace
+            target.series = {i.identity: i.series for i in snapshot.items}
+            target.latest = {i.identity: i.series.revision for i in snapshot.items}
+        elif isinstance(target, BranchesScreen):
+            target.workspace = snapshot.workspace
+        if self.screen is target:
+            return
+        if len(self.screen_stack) > 1:
+            self.switch_screen(tab)
+        else:
+            self.push_screen(tab)
+
+    def action_keys(self) -> None:
+        """?: every key of the current tab, the footer's and the rest."""
+        lines, seen = [], set()
+        for node, binding, enabled, _tooltip in self.screen.active_bindings.values():
+            label = (binding.action, binding.description)
+            ours = (binding.key, binding.action) in _own_bindings(node)  # Not Textual's own.
+            if not ours or not enabled or label in seen or not binding.description:
+                continue
+            seen.add(label)
+            lines.append(f'{self.get_key_display(binding)}  {binding.description}')
+        self.push_screen(Notice('Keys here (any key closes):\n\n' + '\n'.join(lines)))
 
     def action_apply_series(self) -> None:
         """a: the open or selected series onto a base or a prep branch, through b4: pick the
@@ -2486,15 +2542,6 @@ class MaintainerApp(App[None]):
 
         self._set_notice(f'Dropping from {branch}…')
         self.run_worker(work, thread=True, group='apply')
-
-    def action_workbench(self) -> None:
-        """F4: the workbenches, recipes for sessions over several projects."""
-        service, snapshot = self._workbenches, self.snapshot
-        if service is None or snapshot is None:
-            return
-        series = {i.identity: i.series for i in snapshot.items}
-        latest = {i.identity: i.series.revision for i in snapshot.items}
-        self.push_screen(WorkbenchScreen(service, snapshot.workspace, series, latest))
 
     def action_add_to_workbench(self) -> None:
         """w: the open or selected series onto a workbench (or a new one), under its
@@ -3307,3 +3354,14 @@ def _tree_line(plan: TreePlan) -> str:
     where = plan.base or 'the base b4 chooses'
     held = '; '.join(i.label for i in plan.items) or 'nothing applied'
     return f'{plan.project} on {where}: {held}'
+
+
+def _own_bindings(node: object) -> set[tuple[str, str]]:
+    """(key, action) of the bindings this app's own classes declare on *node*'s class."""
+    found: set[tuple[str, str]] = set()
+    for cls in type(node).__mro__:
+        if cls.__module__.startswith('b4_maintainer'):
+            for b in cls.__dict__.get('BINDINGS', ()):
+                if isinstance(b, Binding):
+                    found.update((key.strip(), b.action) for key in b.key.split(','))
+    return found

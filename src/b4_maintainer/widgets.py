@@ -148,6 +148,41 @@ KEY_STYLE = Style(bold=True, reverse=True)
 DISABLED_STYLE = Style(dim=True)
 
 
+# The major views and their keys, left to right.
+TABS = (('lkml', 'F2', 'LKML'), ('workbench', 'F3', 'Workbench'), ('artifacts', 'F4', 'Artifacts'))
+TAB_STYLE = Style(bold=True, reverse=True)
+
+
+class TabBar(Widget):
+    """The tabs across the top: each major view with its key, the current one marked.
+    A click on one switches to it."""
+
+    DEFAULT_CSS = 'TabBar { dock: top; height: 1; background: $panel; }'
+
+    def __init__(self, current: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.current = current
+        self._spans: list[tuple[int, int, str]] = []  # (start, end, tab) for clicks.
+
+    def text(self) -> str:
+        return self.render().plain
+
+    def render(self) -> Text:
+        text = Text(no_wrap=True, overflow='ellipsis')
+        self._spans = []
+        for tab, key, label in TABS:
+            start = len(text.plain)
+            style = TAB_STYLE if tab == self.current else Style()
+            text.append(f' {key} {label} ', style=style)
+            self._spans.append((start, len(text.plain), tab))
+        return text
+
+    async def on_click(self, event: events.Click) -> None:
+        tab = next((t for start, end, t in self._spans if start <= event.x < end), None)
+        if tab is not None and tab != self.current:
+            await self.app.run_action(f"tab('{tab}')")
+
+
 class KeyBar(Widget):
     """One line of key hints for the screen's active bindings.
 
