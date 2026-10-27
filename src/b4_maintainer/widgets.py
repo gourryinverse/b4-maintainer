@@ -149,7 +149,7 @@ DISABLED_STYLE = Style(dim=True)
 
 
 # The major views and their keys, left to right.
-TABS = (('lkml', 'F2', 'LKML'), ('workbench', 'F3', 'Workbench'), ('artifacts', 'F4', 'Artifacts'))
+TABS = (('lkml', 'F2', 'LKML'), ('workbench', 'F3', 'Workbench'), ('branches', 'F4', 'Branches'))
 TAB_STYLE = Style(bold=True, reverse=True)
 
 

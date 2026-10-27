@@ -439,7 +439,7 @@ class MaintainerApp(App[None]):
         # The tabs (shown in the tab bar): F4 in a thread shows its sessions' output instead.
         Binding('f2', "tab('lkml')", 'LKML', key_display='F2', show=False),
         Binding('f3', "tab('workbench')", 'Workbench', key_display='F3', show=False),
-        Binding('f4', 'artifacts', 'Artifacts', key_display='F4', show=False),
+        Binding('f4', 'artifacts', 'Branches', key_display='F4', show=False),
         Binding('question_mark', 'keys', 'keys', key_display='?'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
         Binding('f12', 'focus_session', 'to session', key_display='F12', show=False),
@@ -779,7 +779,7 @@ class MaintainerApp(App[None]):
                 return self._sessions is not None  # The thread's session output.
             if parameters == ('workbench',):
                 return self._workbenches is not None and self.snapshot is not None
-            if action == 'artifacts':
+            if action == 'artifacts' or parameters == ('branches',):
                 return self._branches is not None and self.snapshot is not None
             return True
         if isinstance(self.screen, WorkbenchScreen) and action == 'focus_session':
@@ -2338,14 +2338,14 @@ class MaintainerApp(App[None]):
 
     def action_artifacts(self) -> None:
         """F4: in a thread, its sessions' output in place of the content (F4 or Escape
-        returns); elsewhere, the Artifacts tab."""
+        returns); elsewhere, the Branches tab."""
         if self._reading is not None and len(self.screen_stack) == 1:
             if self.artifacts_shown():
                 self._hide_artifacts()
             else:
                 self._show_artifacts()
             return
-        self.action_tab('artifacts')
+        self.action_tab('branches')
 
     def action_tab(self, tab: str) -> None:
         """F2/F3/F4: switch to a tab. Workbench and Artifacts are made once and kept, so
@@ -2362,7 +2362,7 @@ class MaintainerApp(App[None]):
         if tab not in self._installed:
             if tab == 'workbench' and self._workbenches is not None:
                 screen: Screen[Any] = WorkbenchScreen(self._workbenches, snapshot.workspace, {}, {})
-            elif tab == 'artifacts' and self._branches is not None:
+            elif tab == 'branches' and self._branches is not None:
                 screen = BranchesScreen(self._branches, snapshot.workspace)
             else:
                 return

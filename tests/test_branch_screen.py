@@ -40,9 +40,11 @@ class FakeBranches:
         self.previews = []
         self.sent = ()  # Revisions b4 has sent.
         self.targets = {'tree:s1': ('base:linux:me/base',)}
+        self.trees_asked = []
 
-    def snapshot(self, workspace):
+    def snapshot(self, workspace, trees=True):
         self.loads += 1
+        self.trees_asked.append(trees)
         items = (
             BranchItem('base:linux:me/base', 'base', 'linux', 'me/base on up/stable · 2 behind'),
             BranchItem('tree:s1', 'tree', 'linux', 'linux: mm: foo v3 · s1 · clean'),

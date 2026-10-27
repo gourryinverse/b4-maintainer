@@ -473,3 +473,13 @@ def test_a_session_trees_initial_prompt_is_shown_first(ws, tmp_path):
     assert first.text == 'Initial prompt'
     assert '/goal Analyze this series for bugs.' in service.show(first)
     assert not is_commit(first)  # Not pluckable.
+
+
+def test_the_branches_tab_leaves_session_trees_to_the_workbench(ws):
+    service, workspace, _project = ws
+    full = service.snapshot(workspace)
+    assert any(i.key == 'tree:s1' for i in full.items)  # Everything, for the Workbench's use.
+    shown = service.snapshot(workspace, trees=False)
+    keys = [i.key for i in shown.items]
+    assert 'tree:s1' not in keys and 'base:linux:me/base' in keys
+    assert all(not k.startswith('tree:') for k in shown.targets.get('base:linux:me/base', ()))

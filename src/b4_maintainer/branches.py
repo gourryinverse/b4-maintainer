@@ -171,13 +171,15 @@ class BranchService:
         self.email_dryrun = email_dryrun  # b4 send -d: print instead of sending.
         self.no_sign = no_sign  # b4 send --no-sign.
 
-    def snapshot(self, workspace: Workspace) -> BranchesSnapshot:
+    def snapshot(self, workspace: Workspace, trees: bool = True) -> BranchesSnapshot:
+        """Everything Branches lists; without *trees*, session trees are left out (the
+        Workbench shows them) but rebase and apply sessions' stay (they serve bases)."""
         items: list[BranchItem] = []
         details: dict[str, tuple[DetailRow, ...]] = {}
         statuses: dict[str, BaseStatus] = {}
         problems: list[str] = []
         rebases: dict[str, str] = {}
-        views = self._tree_views()
+        views = [(k, v) for k, v in self._tree_views() if trees or v.scope in ('rebase', 'apply')]
         for project in workspace.projects:
             repo = self.root / project.path
             if not (repo / '.git').exists():

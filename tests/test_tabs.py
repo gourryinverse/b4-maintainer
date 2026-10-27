@@ -43,7 +43,7 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
     app = make(demo_root, tmp_path)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        assert tab_text(app) == ' F2 LKML  F3 Workbench  F4 Artifacts '
+        assert tab_text(app) == ' F2 LKML  F3 Workbench  F4 Branches '
         assert app.screen.query_one(TabBar).current == 'lkml'
         await pilot.press('f3')
         await settle(pilot)
@@ -52,7 +52,7 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
         await pilot.press('f4')
         await settle(pilot)
         assert isinstance(app.screen, BranchesScreen)
-        assert app.screen.query_one(TabBar).current == 'artifacts'
+        assert app.screen.query_one(TabBar).current == 'branches'
         await pilot.press('f2')
         await settle(pilot)
         assert not isinstance(app.screen, (WorkbenchScreen, BranchesScreen))
@@ -140,3 +140,13 @@ async def test_a_click_on_a_tab_switches_to_it(demo_root, tmp_path):
         await pilot.click(TabBar, offset=(start + 1, 0))
         await settle(pilot)
         assert isinstance(app.screen, WorkbenchScreen)
+
+
+async def test_f4_is_branches_without_session_trees(demo_root, tmp_path):
+    app = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        assert 'F4 Branches' in tab_text(app)
+        await pilot.press('f4')
+        await settle(pilot)
+        assert app.screen.service.trees_asked == [False]

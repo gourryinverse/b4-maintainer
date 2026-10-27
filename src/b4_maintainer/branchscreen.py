@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 
 class Branches(Protocol):
-    def snapshot(self, workspace: Workspace) -> BranchesSnapshot: ...
+    def snapshot(self, workspace: Workspace, trees: bool = True) -> BranchesSnapshot: ...
 
     def show(self, row: DetailRow) -> str: ...
 
@@ -246,8 +246,11 @@ class BranchesScreen(Screen[None]):
         self.stale = False  # Set when the app switches back to this tab.
 
     def compose(self) -> ComposeResult:
-        yield TabBar('artifacts')
-        yield Static('Artifacts: bases, worktrees, session trees, prep branches', id='branch-title')
+        yield TabBar('branches')
+        yield Static(
+            'Branches: bases, worktrees, prep branches, review and other local branches',
+            id='branch-title',
+        )
         with Horizontal(id='branch-panes'):
             yield OptionList(id='branch-items')
             yield OptionList(id='branch-rows')
@@ -272,7 +275,7 @@ class BranchesScreen(Screen[None]):
     def action_reload(self) -> None:
         def work() -> None:
             try:
-                data = self.service.snapshot(self.workspace)
+                data = self.service.snapshot(self.workspace, trees=False)  # The Workbench's.
             except Exception as exc:
                 self.app.call_from_thread(self._status, f'Cannot read branches: {exc}')
                 return
