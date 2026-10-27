@@ -6,7 +6,9 @@ starts from); that project's items in order (posted series, local branches). Bel
 launching it would prepare. F2/F3/F4 switch tabs, keeping each tab's place. `n` makes a workbench, `r` renames it, `x` removes what the
 focused pane shows (a workbench or project after a confirmation, an item at once); `b`
 picks a project's base; `B` adds a local branch; shift+up/down move an item; `v` takes a
-series' newer revision; F1 launches a session over its trees. `w` in the series list or
+series' newer revision; F1 launches a session over it. Below: the workbench's sessions,
+what the selected one produced, and its text (else the launch preview); Enter on a
+session puts it beside the app. `w` in the series list or
 a thread adds series (see the app).
 """
 
@@ -19,6 +21,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
+from .attachments import Attachment, preview
 from .branchscreen import Ask, Pick
 from .model import Series
 from .widgets import TabBar
@@ -49,7 +52,10 @@ class WorkbenchScreen(Screen[None]):
     WorkbenchScreen #bench-list { width: 2fr; border: none; }
     WorkbenchScreen #bench-entries { width: 2fr; border: none; border-left: solid $panel-lighten-2; }
     WorkbenchScreen #bench-items { width: 3fr; border: none; border-left: solid $panel-lighten-2; }
-    WorkbenchScreen #bench-preview-pane { height: 1fr; border-top: solid $panel-lighten-2; }
+    WorkbenchScreen #bench-bottom { height: 1fr; border-top: solid $panel-lighten-2; }
+    WorkbenchScreen #bench-sessions { width: 2fr; border: none; }
+    WorkbenchScreen #bench-outputs { width: 2fr; border: none; border-left: solid $panel-lighten-2; }
+    WorkbenchScreen #bench-preview-pane { width: 5fr; border-left: solid $panel-lighten-2; }
     WorkbenchScreen #bench-status { height: 1; padding: 0 1; }
     """
     BINDINGS = [
@@ -66,6 +72,8 @@ class WorkbenchScreen(Screen[None]):
         Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓', show=False),
         Binding('v', 'reroll', 'newer revision'),
         Binding('f1', 'launch', 'session', key_display='F1'),
+        # On a session: beside the app (before the list's own Enter).
+        Binding('enter', 'open_session', 'open beside', priority=True),
     ]
 
     def __init__(
@@ -85,6 +93,10 @@ class WorkbenchScreen(Screen[None]):
         self._preview = ''
         self._status_text = ''
         self.stale = False  # Set when the app switches back to this tab.
+        self._sessions: list[tuple[str, str]] = []  # The workbench's sessions: (id, label).
+        self._outputs: list[Attachment] = []  # What the selected session produced.
+        self._shown = ''  # The text below: the launch preview, or an output.
+        self._pending: tuple[str, str] = ('', '')  # (workbench, session) to select.
 
     def compose(self) -> ComposeResult:
         yield TabBar('workbench')
@@ -93,8 +105,11 @@ class WorkbenchScreen(Screen[None]):
             yield OptionList(id='bench-list')
             yield OptionList(id='bench-entries')
             yield OptionList(id='bench-items')
-        with VerticalScroll(id='bench-preview-pane'):
-            yield Static('', id='bench-preview', markup=False)
+        with Horizontal(id='bench-bottom'):
+            yield OptionList(id='bench-sessions')
+            yield OptionList(id='bench-outputs')
+            with VerticalScroll(id='bench-preview-pane'):
+                yield Static('', id='bench-preview', markup=False)
         yield Static('', id='bench-status', markup=False)
         yield Footer()
 
@@ -113,7 +128,7 @@ class WorkbenchScreen(Screen[None]):
 
     def _reload(self, select: str = '') -> None:
         self.benches, self._problems = self.service.store.list()
-        self._fill_benches(select or self._bench_id())
+        self._fill_benches(select or self._pending[0] or self._bench_id())
         self._status('; '.join(self._problems) or ('' if self.benches else 'n makes a workbench'))
 
     def _bench_id(self) -> str:
@@ -156,6 +171,7 @@ class WorkbenchScreen(Screen[None]):
                 entries.highlighted = projects.index(keep) if keep in projects else 0
         self._fill_items()
         self._show_preview()
+        self.refresh_sessions()
 
     def _fill_items(self, select: Optional[int] = None) -> None:
         items = self.query_one('#bench-items', OptionList)
@@ -190,7 +206,111 @@ class WorkbenchScreen(Screen[None]):
 
     def _set_preview(self, text: str) -> None:
         self._preview = text
+        if self._pane() not in ('bench-sessions', 'bench-outputs'):
+            self._show_text(text)
+
+    def _show_text(self, text: str) -> None:
+        self._shown = text
         self.query_one('#bench-preview', Static).update(text)
+
+    # The workbench's sessions.
+
+    def refresh_sessions(self) -> None:
+        """Reread the selected workbench's sessions (off the UI thread)."""
+        bench = self.bench()
+        rows = getattr(self.app, 'workbench_sessions', None)
+        if bench is None or rows is None:
+            self._fill_sessions('', [])
+            return
+        wid = bench.id
+
+        def work() -> None:
+            try:
+                found = rows(wid)
+            except Exception as exc:  # Shown; the rest of the tab still works.
+                self.app.call_from_thread(self._status, f'Cannot list its sessions: {exc}')
+                return
+            self.app.call_from_thread(self._fill_sessions, wid, found)
+
+        self.run_worker(work, thread=True, group='bench-sessions', exclusive=True)
+
+    def _fill_sessions(self, wid: str, rows: list[tuple[str, str]]) -> None:
+        bench = self.bench()
+        if wid != (bench.id if bench is not None else ''):
+            return  # Another workbench was selected meanwhile.
+        lists = self.query_one('#bench-sessions', OptionList)
+        keep = self._pending[1] if self._pending[0] == wid else self.selected_session()
+        self._sessions = rows
+        with self.prevent(OptionList.OptionHighlighted):
+            lists.clear_options()
+            for sid, label in rows:
+                lists.add_option(Option(label, id=sid))
+            ids = [sid for sid, _label in rows]
+            if ids:
+                lists.highlighted = ids.index(keep) if keep in ids else 0
+        if self._pending[0] == wid and self._pending[1] in [sid for sid, _l in rows]:
+            self._pending = ('', '')
+            lists.focus()
+        if self._pane() in ('bench-sessions', 'bench-outputs'):
+            self._load_outputs()
+        self.refresh_bindings()
+
+    def selected_session(self) -> str:
+        option = self.query_one('#bench-sessions', OptionList).highlighted_option
+        return option.id or '' if option is not None else ''
+
+    def _load_outputs(self) -> None:
+        sid = self.selected_session()
+        output = getattr(self.app, 'session_output', None)
+        if not sid or output is None:
+            self._fill_outputs('', [])
+            return
+
+        def work() -> None:
+            try:
+                found = output(sid)
+            except Exception as exc:
+                self.app.call_from_thread(self._show_text, f'Cannot read its output: {exc}')
+                return
+            self.app.call_from_thread(self._fill_outputs, sid, found)
+
+        self.run_worker(work, thread=True, group='bench-outputs', exclusive=True)
+
+    def _fill_outputs(self, sid: str, found: list[Attachment]) -> None:
+        if sid != self.selected_session():
+            return
+        self._outputs = found
+        lists = self.query_one('#bench-outputs', OptionList)
+        with self.prevent(OptionList.OptionHighlighted):
+            lists.clear_options()
+            for a in found:
+                lists.add_option(Option(a.label))
+            if found:
+                lists.highlighted = 0
+        self._show_output()
+
+    def _show_output(self) -> None:
+        index = self.query_one('#bench-outputs', OptionList).highlighted
+        if index is None or index >= len(self._outputs):
+            self._show_text('Nothing from this session yet.' if self.selected_session() else '')
+            return
+        self._show_text(preview(self._outputs[index]))
+
+    def select(self, wid: str, sid: str) -> None:
+        """Show workbench *wid* with its session *sid* selected (from the drawer)."""
+        self._pending = (wid, sid)
+        if self.is_mounted:
+            self._reload(wid)
+
+    async def focus_sessions(self) -> None:
+        self.query_one('#bench-sessions', OptionList).focus()
+        self._load_outputs()
+
+    def action_open_session(self) -> None:
+        sid = self.selected_session()
+        opened = getattr(self.app, 'open_bench_session', None)
+        if sid and opened is not None:
+            opened(sid)
 
     def _status(self, text: str) -> None:
         self._status_text = text
@@ -213,6 +333,15 @@ class WorkbenchScreen(Screen[None]):
     def preview_text(self) -> str:
         return self._preview
 
+    def shown_text(self) -> str:
+        return self._shown
+
+    def session_labels(self) -> list[str]:
+        return [label for _sid, label in self._sessions]
+
+    def output_labels(self) -> list[str]:
+        return [a.label for a in self._outputs]
+
     def status_text(self) -> str:
         return self._status_text
 
@@ -224,6 +353,10 @@ class WorkbenchScreen(Screen[None]):
             self._fill_entries()
         elif event.option_list.id == 'bench-entries':
             self._fill_items(0)
+        elif event.option_list.id == 'bench-sessions':
+            self._load_outputs()
+        elif event.option_list.id == 'bench-outputs':
+            self._show_output()
         else:
             self.refresh_bindings()
 
@@ -231,9 +364,16 @@ class WorkbenchScreen(Screen[None]):
         event.stop()
 
     def action_cycle(self, step: int) -> None:
-        panes = [self.query_one(f'#{p}') for p in ('bench-list', 'bench-entries', 'bench-items')]
+        names = ('bench-list', 'bench-entries', 'bench-items', 'bench-sessions', 'bench-outputs')
+        panes = [self.query_one(f'#{p}') for p in names]
         index = next((n for n, p in enumerate(panes) if p is self.focused), 0)
         panes[(index + step) % len(panes)].focus()
+        if self._pane() == 'bench-sessions':
+            self._load_outputs()
+        elif self._pane() == 'bench-outputs':
+            self._show_output()
+        else:
+            self._show_text(self._preview)  # The launch preview, for the top panes.
         self.refresh_bindings()
 
     def action_back(self) -> None:
@@ -260,6 +400,8 @@ class WorkbenchScreen(Screen[None]):
             return pane == 'bench-items' and bool(self.item_labels())
         if action == 'reroll':
             return pane == 'bench-items' and self._newer() is not None
+        if action == 'open_session':
+            return pane == 'bench-sessions' and bool(self.selected_session())
         if action == 'launch':
             return (
                 bench is not None and bool(bench.entries) and hasattr(self.app, 'launch_workbench')

@@ -2065,6 +2065,8 @@ class MaintainerApp(App[None]):
 
     def _show_overview(self, overview: Overview) -> None:
         self._overview = overview
+        if isinstance(self.screen, WorkbenchScreen):
+            self.screen.refresh_sessions()  # Its sessions' states.
         line = drawer_line(overview)
         if line != self._drawer:
             self._drawer = line
@@ -2701,10 +2703,62 @@ class MaintainerApp(App[None]):
                     raise
                 self.call_from_thread(self.push_screen, Notice(f'{exc}\n\n{exc.detail.strip()}'))
                 return None
-            self.call_from_thread(self._after_launch, record)
+            self.call_from_thread(self._bench_launched, record)
             return f'Launched session {record.id}: workbench {bench.label}'
 
         self._session_call(launch)
+
+    def _bench_launched(self, record: SessionRecord) -> None:
+        """A workbench session joins beside the app at once and shows in its tab."""
+        if self._app_pane:
+            self._workspace_beside = record.id
+            self._place_pane(record.id)
+        if isinstance(self.screen, WorkbenchScreen):
+            self.screen.refresh_sessions()
+
+    def workbench_sessions(self, bench_id: str) -> list[tuple[str, str]]:
+        """(id, label) of workbench *bench_id*'s sessions, newest first (blocking)."""
+        hub = self._sessions
+        if hub is None:
+            return []
+        states = {v.record.id: v.state for v in self._overview.sessions}
+        records = sorted(hub.records(), key=lambda r: r.created, reverse=True)
+        return [
+            (r.id, f'{r.id} · {r.mode} · {states.get(r.id, r.state or "ended")} · {r.created[:16]}')
+            for r in records
+            if r.workbench == bench_id
+        ]
+
+    def session_output(self, sid: str) -> list[Attachment]:
+        """What session *sid* produced: its prompt, commits, files (blocking)."""
+        hub = self._sessions
+        if hub is None:
+            return []
+        record = hub.store.record(sid)
+        return gather([record], record.series, hub.store.directory)
+
+    def open_bench_session(self, sid: str) -> None:
+        """Enter on a workbench session: beside the app, focused; outside tmux, its window."""
+        hub = self._sessions
+        if hub is None:
+            return
+        if not self._app_pane:
+            self._session_call(lambda: hub.open(sid))
+            return
+        self._workspace_beside = sid
+        self._place_pane(sid, focus=True)
+
+    def _open_bench_tab(self, record: SessionRecord) -> None:
+        """A workbench session from the drawer: its workbench's tab, the session selected
+        and beside the app."""
+        if self._workbenches is None or self.snapshot is None:
+            self.open_bench_session(record.id)
+            return
+        self.action_tab('workbench')
+        screen = self.get_screen('workbench')
+        if isinstance(screen, WorkbenchScreen):
+            screen.select(record.workbench, record.id)
+        self.open_bench_session(record.id)
 
     def _offer_bench_handoff(
         self,
@@ -2971,9 +3025,12 @@ class MaintainerApp(App[None]):
         if view is None or hub is None:
             return
         record, sid = view.record, view.record.id
+        if record.scope == 'workbench':
+            self._open_bench_tab(record)
+            return
         item = snapshot.item_by_identity(record.series) if snapshot and record.series else None
-        if not self._app_pane or (record.scope == 'series' and item is None):
-            self._session_call(lambda: hub.open(sid))
+        if not self._app_pane or (record.series and item is None and record.scope != 'workspace'):
+            self._session_call(lambda: hub.open(sid))  # Its series is gone: its window.
             return
         if record.scope == 'workspace' or not record.series:
             self._workspace_beside = sid

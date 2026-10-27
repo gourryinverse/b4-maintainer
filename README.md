@@ -98,7 +98,10 @@ Python 3.11 or newer.
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
   and `F1` launches a session over it: lightweight, no trees, each series' thread in its
   context to read and compare (series that conflict are fine); or worktree, one tree
-  per project, side by side in `var/worktrees/<id>/`, where the agent starts.
+  per project, side by side in `var/worktrees/<id>/`, where the agent starts. A workbench
+  session lives in its tab: below the panes, the workbench's sessions, what the selected
+  one produced, and its text; Enter (there, or on it in the drawer) puts it beside the
+  app, and one launched from the tab joins beside at once.
   A tree whose items do not apply offers to hand that tree to the agent (it starts at
   the base with every item as one mbox to `git am`), or to launch nothing.
 - `d` drops that series from a maintainer base again: its commits there (found by their
