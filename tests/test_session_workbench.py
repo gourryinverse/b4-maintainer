@@ -223,6 +223,11 @@ def test_branches_shows_each_tree_under_its_project_and_acts_on_it(tmp_path, hom
         git('log', '-1', '--format=%s', 'me/base', cwd=root / 'projects' / 'ndctl')
         == 'daxctl: fix x'
     )
+    targets, tips = service.tree_targets(workspace, 'tree:w1/ndctl')
+    assert [k for k, _label in targets] == ['base:ndctl:me/base']  # Its project's only.
+    assert tips['base:ndctl:me/base'] == git(
+        'rev-parse', 'me/base', cwd=root / 'projects' / 'ndctl'
+    )
     options = service.derive_options(workspace, 'tree:w1/ndctl', None)
     assert any(start_from == 'w1/ndctl' for _start, start_from, _label in options)
 
