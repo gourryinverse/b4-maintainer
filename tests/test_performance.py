@@ -10,11 +10,14 @@ import gc
 import statistics
 import time
 
+import pytest
 from textual.app import App
 from textual.widgets import Static
 
 from b4_maintainer.app import MaintainerApp, SeriesList
 from b4_maintainer.fixtures import synthetic_snapshot
+
+pytestmark = pytest.mark.serial  # Timing targets: run alone.
 
 SERIES = 10_000
 TARGET = 0.100

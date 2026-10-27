@@ -63,7 +63,8 @@ Python 3.11 or newer.
 ## Development
 
     ./setup.sh        # with DEV_TOOLS=yes in setup.conf
-    .venv/bin/python -m pytest
+    .venv/bin/python -m pytest -n auto        # in parallel; timing tests skipped
+    .venv/bin/python -m pytest -m serial      # the timing tests, alone
     ./b4-maintainer --demo .local/demo
 
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it

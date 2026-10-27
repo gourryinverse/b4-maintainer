@@ -116,7 +116,7 @@ def test_dev_tools_and_no_state_repository(clone):
     result = run(['./setup.sh'], repo, env)
     assert result.returncode == 0, result.stdout + result.stderr
     lines = log.read_text().splitlines()
-    assert lines[1].endswith('-e . pytest pytest-asyncio ruff')
+    assert lines[1].endswith('-e . pytest pytest-asyncio pytest-xdist ruff')
     assert len(lines) == 2  # No state, so no workspace to set up.
     assert 'STATE_REPO' in result.stdout
 

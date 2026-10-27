@@ -58,7 +58,7 @@ if ! .venv/bin/python -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/d
 fi
 packages=(-e deps/liblore -e 'deps/b4[tui]' -e .)
 if [[ $DEV_TOOLS == yes ]]; then
-    packages+=(pytest pytest-asyncio ruff)
+    packages+=(pytest pytest-asyncio pytest-xdist ruff)
 fi
 if declare -F site_install >/dev/null; then
     VENV=$PWD/.venv site_install "${packages[@]}"

@@ -4,6 +4,17 @@ import pytest
 from gitutil import make_checkout
 
 
+def pytest_collection_modifyitems(config, items):
+    """Timing tests cannot meet their targets beside other workers: under pytest -n they
+    are skipped, to be run alone with `pytest -m serial`."""
+    if not hasattr(config, 'workerinput'):
+        return
+    alone = pytest.mark.skip(reason='timing test: run alone with pytest -m serial')
+    for item in items:
+        if item.get_closest_marker('serial'):
+            item.add_marker(alone)
+
+
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
     """Fixture-backed tests must never reach a network service."""

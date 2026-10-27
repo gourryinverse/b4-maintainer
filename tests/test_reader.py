@@ -1,6 +1,7 @@
 import threading
 import time
 
+import pytest
 from textual.app import App
 
 from b4_maintainer.adapters.fixture import FixtureSource
@@ -235,6 +236,7 @@ async def test_drawer_line_stays_visible_and_pinned_while_reading(demo_root):
         assert app.query_one('#drawer').display
 
 
+@pytest.mark.serial
 async def test_reader_opens_within_target(demo_root):
     # The 500 ms target is the app's work (CPU, all threads), as in test_performance.py;
     # wall time on a loaded machine varies, so it only has to rule out blocking waits.
