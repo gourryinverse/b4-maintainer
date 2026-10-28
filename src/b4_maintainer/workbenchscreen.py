@@ -22,7 +22,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence, TypeVar
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
@@ -200,11 +200,13 @@ class WorkbenchScreen(Screen[None]):
         self.benches: list[Workbench] = []
         self._problems: list[str] = []
         self._rows: list[ContentRow] = []  # The selected workbench's contents.
+        self._row_texts: dict[ContentRow, str] = {}  # Rows' texts read (not trees').
         self._preview = ''  # What a launch of the selected workbench would prepare.
         self._shown = ''  # The text on the right.
         self._status_text = ''
         self.stale = False  # Set when the app switches back to this tab.
         self._sessions: list[tuple[str, str, bool]] = []  # Its sessions: (id, label, live).
+        self._sessions_of = UNFILED + '?'  # The workbench they are of (none yet).
         self._pending: tuple[str, str] = ('', '')  # (workbench, session) to select.
         self._unfiled = False  # Sessions without a workbench exist: list them apart.
         self._keep: tuple[str, str, int] = ('', '', -1)  # The row to keep after a reload.
@@ -222,8 +224,7 @@ class WorkbenchScreen(Screen[None]):
                 yield OptionList(id='bench-list')
                 yield OptionList(id='bench-sessions')
             yield OptionList(id='bench-contents')
-            with VerticalScroll(id='bench-show-pane'):
-                yield Static('', id='bench-show', markup=False)
+            yield TextPane(id='bench-show-pane')  # Only the lines in view are drawn.
             with Horizontal(id='bench-thread'):
                 yield OptionList(id='thread-tree')
                 yield TextPane(id='thread-content')
@@ -331,6 +332,7 @@ class WorkbenchScreen(Screen[None]):
         keep = self._keep if self._keep[0] else self._row_key(self.row())
         self._keep = ('', '', -1)
         self._rows = rows
+        self._row_texts = {}
         self._marks = []
         lists = self.query_one('#bench-contents', OptionList)
         with self.prevent(OptionList.OptionHighlighted):
@@ -362,6 +364,10 @@ class WorkbenchScreen(Screen[None]):
         if bench is None or row is None or row.kind in ITEMS:
             self._show_text(self._preview, 'Launch preview')
             return
+        known = self._row_texts.get(row)
+        if known is not None:
+            self._show_text(known, row.text.strip())
+            return
         workspace, series, latest = self.workspace, self.series, self.latest
 
         def work() -> None:
@@ -369,9 +375,17 @@ class WorkbenchScreen(Screen[None]):
                 text = self.service.show(workspace, bench, row, series, latest)
             except Exception as exc:
                 text = f'Cannot show it: {exc}'
-            self.app.call_from_thread(self._show_text, text, row.text.strip())
+            self.app.call_from_thread(self._row_shown, row, text)
 
         self.run_worker(work, thread=True, group='bench-show', exclusive=True)
+
+    def _row_shown(self, row: ContentRow, text: str) -> None:
+        """A row's text, once read: kept (a tree's state changes, so not a tree's), and
+        shown if the row is still the one selected."""
+        if row.kind != 'tree' and row in self._rows:
+            self._row_texts[row] = text
+        if self.row() == row and self._pane() == 'bench-contents':
+            self._show_text(text, row.text.strip())
 
     def _set_preview(self, text: str) -> None:
         """The launch preview: shown unless the right pane follows a session or a
@@ -383,9 +397,11 @@ class WorkbenchScreen(Screen[None]):
             self._show_text(text, 'Launch preview')
 
     def _show_text(self, text: str, title: str) -> None:
-        self._shown = text
-        self.query_one('#bench-show', Static).update(text)
-        self.query_one('#bench-show-pane').border_title = title[:60]
+        pane = self.query_one('#bench-show-pane', TextPane)
+        if text != self._shown:
+            self._shown = text
+            pane.set_text(text)
+        pane.border_title = title[:60]
 
     def _status(self, text: str) -> None:
         self._status_text = text
@@ -418,7 +434,9 @@ class WorkbenchScreen(Screen[None]):
             return
         lists = self.query_one('#bench-sessions', OptionList)
         keep = self._pending[1] if self._pending[0] == wid else self.selected_session()
-        self._sessions = rows
+        if rows == self._sessions and wid == self._sessions_of and self._pending[0] != wid:
+            return  # A poll that changed nothing.
+        self._sessions, self._sessions_of = rows, wid
         ids = [sid for sid, _label, _live in rows]
         with self.prevent(OptionList.OptionHighlighted):
             lists.clear_options()

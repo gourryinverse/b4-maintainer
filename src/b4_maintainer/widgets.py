@@ -114,9 +114,13 @@ class TextPane(ScrollView, can_focus=True):
                     lines.append((prefix + raw, style))
                     widest = max(widest, display_width(prefix + raw))
                     continue
+                room = max(1, width - block.indent)
+                if len(raw) <= room and raw.isascii() and '\t' not in raw:
+                    lines.append((prefix + raw, style))  # Fits: what textwrap returns.
+                    continue
                 wrapped = textwrap.wrap(
                     raw,
-                    max(1, width - block.indent),
+                    room,
                     replace_whitespace=False,
                     drop_whitespace=False,
                 )

@@ -329,6 +329,37 @@ async def test_diff_lines_scroll_sideways_while_prose_wraps():
         assert pane.virtual_size.height > 3
 
 
+async def test_lines_that_fit_wrap_as_textwrap_would():
+    """Short lines skip textwrap (most of a patch); the result is the same."""
+    import textwrap
+
+    class Host(App):
+        def compose(self):
+            yield TextPane(id='pane')
+
+    app = Host()
+    async with app.run_test(size=(60, 20)) as pilot:
+        pane = app.query_one(TextPane)
+        width = pane.scrollable_content_region.width
+        raws = [
+            '',
+            '   ',
+            '+\tindented with a tab',
+            'x' * width,
+            'x' * (width + 1),
+            'word ' * 30,
+            'naïve café ' * 3,
+            ' leading space',
+        ]
+        pane.set_blocks([Block('\n'.join(raws), indent=2)])
+        await pilot.pause()
+        expected = []
+        for raw in raws:
+            wrapped = textwrap.wrap(raw, width - 2, replace_whitespace=False, drop_whitespace=False)
+            expected += ['  ' + w for w in wrapped or ['']]
+        assert pane.lines == expected
+
+
 async def test_titles_and_labels_render_brackets_literally(tmp_path):
     from textual.content import Content
     from textual.widgets import OptionList
