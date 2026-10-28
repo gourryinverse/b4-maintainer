@@ -4,7 +4,7 @@
 <hash>.eml holds the text, edited in place by an external editor (the .eml name
 lets editors pick mail settings); <hash>.json records the answered message-id,
 the quote the draft started from (to tell an untouched draft), and the editor
-pane, if any. Drafts are local work in progress, not synced state.
+pane, if any. Drafts are local work in progress, never exported.
 """
 
 import datetime

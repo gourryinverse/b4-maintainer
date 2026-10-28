@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Register project checkouts in workspace.toml with workspace-local b4 state, and
-recreate a workspace on another machine from its state repository (setup).
+recreate a workspace on another machine from state/ (setup, e.g. after state import).
 
 Checks everything before changing anything: the checkout's b4 settings are
 set and b4 enrolls it before the project is appended to workspace.toml, so
@@ -30,7 +30,7 @@ class SetupError(Exception):
 
 
 def config_path(root: pathlib.Path) -> pathlib.Path:
-    """The workspace's configuration: a root workspace.toml, else the synced one in state/."""
+    """The workspace's configuration: a root workspace.toml, else state/'s."""
     local = root / CONFIG_NAME
     if local.is_file() or not (root / 'state').is_dir():
         return local
@@ -38,7 +38,7 @@ def config_path(root: pathlib.Path) -> pathlib.Path:
 
 
 def local_config_path(root: pathlib.Path) -> pathlib.Path:
-    """This machine's overrides of the configuration: var/workspace.toml, never synced."""
+    """This machine's overrides of the configuration: var/workspace.toml, never exported unless asked."""
     return root / 'var' / CONFIG_NAME
 
 
@@ -198,7 +198,7 @@ def _enroll(
         raise SetupError(f'b4 review enroll failed: {detail[0]}')
 
 
-# Recreating checkouts: what `checkout.json` in the state repository records.
+# Recreating checkouts: what `checkout.json` in state/ records.
 
 _LOCAL_B4 = ('b4.data-dir', 'b4.cache-dir')  # Workspace paths, set by setup itself.
 
@@ -295,7 +295,7 @@ def setup_workspace(
     root: pathlib.Path, b4_command: Optional[Sequence[str]] = None, verbose: bool = False
 ) -> list[str]:
     """Recreate the workspace from state/: clone missing checkouts, enroll them with
-    workspace b4 state, and import the synced b4 state. Returns a report, line by line."""
+    workspace b4 state, and import the tracked series and flags recorded there. Returns a report, line by line."""
     from .adapters import b4state, statesync
 
     root = root.resolve()

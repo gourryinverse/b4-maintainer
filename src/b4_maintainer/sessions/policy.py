@@ -2,7 +2,7 @@
 """What a session receives, and when a launch must wait.
 
 Sessions receive public data only (list mail, public trees, Sashiko): never unsent drafts,
-synced client state, or internal trees.
+client state, or internal trees.
 """
 
 from dataclasses import dataclass

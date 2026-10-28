@@ -55,7 +55,7 @@ def _entries(value: Any) -> bool:
 
 
 def merge_config(shared: Mapping[str, Any], local: Mapping[str, Any]) -> dict[str, Any]:
-    """*local* (a machine's var/workspace.toml) over *shared* (the synced one): tables
+    """*local* (a machine's var/workspace.toml) over *shared* (state/'s): tables
     merge key by key, lists of entries with ids ([[projects]], [[profiles]], [[models]])
     entry by entry (new ids added), anything else is replaced."""
     merged = dict(shared)
@@ -99,7 +99,6 @@ TABLE_KEYS = {
     'browse': frozenset({'window_days'}),
     'sashiko': frozenset({'senders', 'hide_clean'}),
     'drafts': frozenset({'editor', 'tmux_width'}),
-    'sync': frozenset({'auto', 'timeout'}),
     'refs': frozenset({'fetch'}),
     'sessions': frozenset(
         {
@@ -227,9 +226,6 @@ class Workspace:
     # Where replies are drafted: auto (tmux when inside it), tmux, or app.
     drafts_editor: str = 'auto'
     tmux_width: int = 100
-    # State sync with state/'s remote: at startup, around refresh, and on quit.
-    sync_auto: bool = True
-    sync_timeout: float = 10.0
     # Refresh fetches the remotes behind configured refs before scanning them.
     fetch_refs: bool = True
     # Agent sessions: limits, and hand-configured model presets (see sessions/models.py).
@@ -300,8 +296,6 @@ class Workspace:
             sashiko_hide_clean=bool(config.get('sashiko', {}).get('hide_clean', True)),
             drafts_editor=str(config.get('drafts', {}).get('editor', 'auto')),
             tmux_width=int(config.get('drafts', {}).get('tmux_width', 100)),
-            sync_auto=bool(config.get('sync', {}).get('auto', True)),
-            sync_timeout=float(config.get('sync', {}).get('timeout', 10.0)),
             fetch_refs=bool(config.get('refs', {}).get('fetch', True)),
             session_limits=SessionLimits.from_config(config.get('sessions', {})),
             models=tuple(m for m in config.get('models', []) if isinstance(m, dict)),

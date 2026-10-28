@@ -216,7 +216,7 @@ def lore_search(checkout: pathlib.Path) -> Search:
     return search
 
 
-# Sync: tracking rows and flags as plain records, through b4's own APIs.
+# State export/import: tracking rows and flags as plain records, through b4's own APIs.
 
 _SERIES_FIELDS = (
     'revision',
@@ -357,7 +357,7 @@ def all_flags(checkout: pathlib.Path) -> list[dict[str, Optional[str]]]:
 
 
 def add_flags(checkout: pathlib.Path, entries: Sequence[Mapping[str, Optional[str]]]) -> None:
-    """Add each entry's flags to b4's (flags are only ever added by a sync)."""
+    """Add each entry's flags to b4's (flags are only ever added by an import)."""
     by_flag: dict[str, list[dict[str, Optional[str]]]] = {}
     for e in entries:
         for flag in (e.get('flags') or '').split():

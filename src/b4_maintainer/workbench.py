@@ -4,7 +4,7 @@
 A workbench holds, per project, the base its tree starts from and the items applied on it
 in order: posted series (applied by b4) and local branches (their own commits replayed: a
 project branch, or `tree:<session>:<branch>` from another session's tree). Each is one
-TOML file in state/workbenches/ (synced; another machine's edit to a different workbench
+TOML file in state/workbenches/ (carried by state export/import; another machine's edit to a different workbench
 never collides). Edits are pure functions returning the new workbench; the store reads
 and writes the files. WorkbenchService gathers what the Workbench screen offers and
 previews (plain git; blocking: call from a worker). Preparing trees is the sessions'.
@@ -183,7 +183,7 @@ class WorkbenchStore:
 
     def save(self, bench: Workbench) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
-        tmp = self.directory / f'.{bench.id}.toml.tmp'  # Dotfiles never sync.
+        tmp = self.directory / f'.{bench.id}.toml.tmp'  # Dotfiles are never exported.
         tmp.write_text(workbench_toml(bench))
         os.replace(tmp, self._path(bench.id))
 

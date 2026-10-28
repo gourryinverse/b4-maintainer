@@ -152,7 +152,7 @@ def test_setup_leaves_an_existing_checkout_and_reports_remote_differences(ws, ho
     assert any('mainline' in line and 'missing' in line for line in report)
 
 
-def test_setup_and_sync_commands(ws, home, tmp_path, capsys):
+def test_setup_and_state_export_commands(ws, home, tmp_path, capsys):
     source = upstream(tmp_path)
     desc = describe_checkout(configured(ws / 'projects' / 'demo', source))
     root = tmp_path / 'machine-b'
@@ -162,10 +162,13 @@ def test_setup_and_sync_commands(ws, home, tmp_path, capsys):
     except SystemExit as e:
         assert e.code == 0
     assert (root / 'projects' / 'demo' / '.git').is_dir()
-    git('init', '-q', '-b', 'main', cwd=root / 'state')
+    bundle = tmp_path / 'state.tar.gz'
     try:
-        main(['sync', '-C', str(root)])
+        main(['state', 'export', '-C', str(root), str(bundle)])
     except SystemExit as e:
         assert e.code == 0
-    assert 'projects/demo/checkout.json' in git('ls-files', cwd=root / 'state')
-    assert 'State committed' in capsys.readouterr().out
+    import tarfile
+
+    with tarfile.open(bundle) as tar:
+        assert 'projects/demo/checkout.json' in tar.getnames()
+    assert 'Exported' in capsys.readouterr().out

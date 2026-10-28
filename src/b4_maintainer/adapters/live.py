@@ -12,7 +12,7 @@ import json
 import pathlib
 import re
 import subprocess
-import threading
+import tomllib
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
@@ -23,6 +23,7 @@ from ..projectsetup import (
     config_path,
     default_b4_command,
     describe_checkout,
+    local_config_path,
     read_config,
 )
 from ..workspace import Project, Snapshot, Workspace, build_items
@@ -104,37 +105,116 @@ class LiveSource:
         self._import_series = import_series
         self._all_flags = all_flags
         self._add_flags = add_flags
-        self.state = statesync.StateRepo(self.root / 'state')
-        self._sync_lock = threading.Lock()
 
     def workspace(self) -> Workspace:
         return Workspace.from_config(read_config(self.root))
 
-    def can_sync(self) -> bool:
-        """Whether state/ syncs on its own: a state repository with a remote, and auto on."""
-        try:
-            auto = self.workspace().sync_auto
-        except (OSError, ValueError):
-            return False
-        return auto and self.state.exists() and self.state.has_remote()
+    def export_state(self, path: pathlib.Path, private: bool = False) -> str:
+        """Write this machine's state to *path* (a tar.gz, by hand to another machine):
+        configuration, workbenches, client state, tracked series, flags, how each
+        checkout was cloned; without *private*, the private parts are left out."""
+        from .statebundle import (
+            PRIVATE_CONFIG,
+            private_bench,
+            private_parts,
+            public_checkout,
+            write_bundle,
+        )
 
-    def sync(self, timeout: Optional[float] = None) -> str:
-        """Sync state/ with the state repository: export, merge, import, commit, push."""
-        if not self.state.exists():
-            return 'No state repository in state/'
-        with self._sync_lock:
-            notes = self.state.sync(self._export_state, self._import_state, self._now(), timeout)
-        pushed = 'synced' if self.state.has_remote() else 'committed (no remote)'
-        return '; '.join([f'State {pushed}', *notes])
+        shared_path = config_path(self.root)
+        files: statesync.Tree = {'workspace.toml': shared_path.read_bytes()}
+        state = shared_path.parent
+        for sub, pattern in (('workbenches', '*.toml'), ('client', '*.json')):
+            for file in sorted((state / sub).glob(pattern)):
+                files[f'{sub}/{file.name}'] = file.read_bytes()
+        files.update(self._export_state({}))
+        left: list[str] = []
+        local = local_config_path(self.root)
+        if private:
+            if local.is_file():
+                files[PRIVATE_CONFIG] = local.read_bytes()
+        else:
+            shared = Workspace.from_config(tomllib.loads(shared_path.read_text()))
+            hidden = private_parts(shared, self.workspace())
+            for name in list(files):
+                parts = name.split('/')
+                if name.startswith('workbenches/') and private_bench(files[name].decode(), hidden):
+                    del files[name]
+                    left.append(name)
+                elif parts[0] == 'projects' and parts[1] in hidden.projects:
+                    del files[name]
+                    left.append(name)
+                elif name.endswith('/checkout.json'):
+                    desc = json.loads(files[name])
+                    public = public_checkout(parts[1], desc, hidden)
+                    if public != desc:
+                        left.append(f'{name} (private remotes or branch)')
+                    files[name] = (json.dumps(public, indent=1, sort_keys=True) + '\n').encode()
+            if local.is_file():
+                left.append(f'var/{CONFIG_NAME}')
+        write_bundle(path, files, private)
+        report = f'Exported {len(files)} file(s) to {path}'
+        if left:
+            report += '; left out as private (--private includes them): ' + ', '.join(left)
+        return report
 
-    def _synced_projects(self) -> list[Project]:
+    def import_state(self, path: pathlib.Path) -> str:
+        """Bring in a state export: tracked series and flags merge with this machine's
+        (into b4 for checkouts already set up; setup takes them for new ones); other
+        files are added where missing and kept where they differ."""
+        from .statebundle import PRIVATE_CONFIG, read_bundle
+
+        files = read_bundle(path)
+        state = config_path(self.root).parent
+        if not (self.root / 'state').is_dir() and not config_path(self.root).is_file():
+            state = self.root
+        # Configuration first: importing the series reads it.
+        added, kept = [], []
+        for name, data in files.items():
+            if statesync.is_exported(name):
+                continue
+            if name == PRIVATE_CONFIG:
+                target, shown = local_config_path(self.root), f'var/{CONFIG_NAME}'
+            else:
+                target, shown = state / name, name
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                added.append(shown)
+            elif target.read_bytes() != data:
+                kept.append(shown)
+        exported = {p: d for p, d in files.items() if statesync.is_exported(p)}
+        current = {
+            str(f.relative_to(state)): f.read_bytes()
+            for f in state.rglob('*')
+            if f.is_file() and statesync.is_exported(str(f.relative_to(state)))
+        }
+        merged, _notes = statesync.merge_states({}, current, exported, self._now())
+        changes: statesync.Changes = {}
+        for name, data in merged.items():
+            if current.get(name) != data:
+                target = state / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                changes[name] = data
+        if changes:
+            self._import_state(changes)
+        report = [f'Imported from {path}: {len(changes)} series and flag file(s) merged']
+        if added:
+            report.append('added ' + ', '.join(added))
+        if kept:
+            report.append('kept yours (the export differs): ' + ', '.join(kept))
+        report.append('b4-maintainer setup clones any checkout still missing')
+        return '; '.join(report)
+
+    def _enrolled_projects(self) -> list[Project]:
         return [p for p in self.workspace().projects if self._enrolled(p)]
 
     def _export_state(self, current: statesync.Tree) -> statesync.Tree:
         now = self._now()
         files: statesync.Tree = {}
         anchors = set(self.watched.msgids())
-        projects = self._synced_projects()
+        projects = self._enrolled_projects()
         for project in projects:
             checkout = self.checkout(project)
             desc = describe_checkout(checkout)
@@ -160,7 +240,7 @@ class LiveSource:
         return files
 
     def _import_state(self, changes: statesync.Changes) -> None:
-        projects = self._synced_projects()
+        projects = self._enrolled_projects()
         for project in projects:
             prefix = f'projects/{project.id}/series/'
             records = {}
@@ -629,21 +709,7 @@ class LiveSource:
         return list(wanted.items())
 
     def refresh(self, progress: Callable[[str], None] = lambda _: None) -> str:
-        # Others' state first (it may change workspace.toml), then this refresh's.
-        synced = self._auto_sync(progress)
-        result = self._refresh(progress)
-        return result + ((self._auto_sync(progress) or '') if synced is not None else '')
-
-    def _auto_sync(self, progress: Callable[[str], None]) -> Optional[str]:
-        """Sync when automatic; a failure is reported, never raised: local work goes on."""
-        if not self.can_sync():
-            return None
-        progress('Syncing state…')
-        try:
-            self.sync()
-            return ''
-        except statesync.SyncError as ex:
-            return f' · state sync failed: {ex}'
+        return self._refresh(progress)
 
     def _refresh(self, progress: Callable[[str], None]) -> str:
         ws = self.workspace()

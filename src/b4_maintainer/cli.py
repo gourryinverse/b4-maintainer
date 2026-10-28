@@ -36,7 +36,7 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
     parser = argparse.ArgumentParser(
         prog='b4-maintainer',
         description=f'Open a workspace: {CONFIG_NAME} (live) or a fixture directory '
-        '(workspace.json, mail/*.mbx, state.json). Subcommands: project add, setup, sync.',
+        '(workspace.json, mail/*.mbx, state.json). Subcommands: project add, setup, state export|import.',
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -93,16 +93,13 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
     source.no_sign = args.no_sign
     try:
         workspace: Optional['Workspace'] = source.workspace()
-        timeout = workspace.sync_timeout if workspace else 10.0
     except (OSError, ValueError):
-        workspace, timeout = None, 10.0
+        workspace = None
     return MaintainerApp(
         source.load,
         actions=source,
         drafts=source.drafts,
         editor=_draft_editor(source),
-        sync=source.sync if source.can_sync() else None,
-        sync_timeout=timeout,
         sessions=(hub := _sessions(source.root, workspace, private=True)),
         branches=BranchService(
             source.root,
@@ -118,8 +115,8 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
 
 
 def _workbenches(root: pathlib.Path, hub: 'SessionHub') -> 'WorkbenchService':
-    """Workbenches beside the configuration: state/workbenches/ (synced) when the
-    workspace has a state repository, else workbenches/ in the workspace."""
+    """Workbenches beside the configuration: state/workbenches/ when the
+    workspace has a state/ directory, else workbenches/ in the workspace."""
     from .projectsetup import config_path
     from .workbench import WorkbenchService, WorkbenchStore
 
@@ -264,9 +261,9 @@ def setup_main(argv: Sequence[str]) -> int:
 
     parser = argparse.ArgumentParser(
         prog='b4-maintainer setup',
-        description='Recreate this workspace from state/ (a clone of the state repository): '
-        'clone missing project checkouts as recorded, enroll them with workspace b4 state, '
-        'and import synced b4 state. Existing checkouts are left as they are.',
+        description='Recreate this workspace from state/ (e.g. after state import): clone '
+        'missing project checkouts as recorded, enroll them with workspace b4 state, and '
+        'import the tracked series and flags. Existing checkouts are left as they are.',
     )
     parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
     args = parser.parse_args(argv)
@@ -280,19 +277,46 @@ def setup_main(argv: Sequence[str]) -> int:
 
 
 def sync_main(argv: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(
-        prog='b4-maintainer sync',
-        description='Sync state/ with the state repository once: export, merge, import, push.',
+    """The old automatic state sync: gone; state moves by hand (state export/import)."""
+    print(
+        'b4-maintainer: state sync was removed; carry state by hand with '
+        '`b4-maintainer state export FILE` and `b4-maintainer state import FILE`',
+        file=sys.stderr,
     )
-    parser.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
+    return 1
+
+
+def state_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog='b4-maintainer state',
+        description='Carry workspace state between machines by hand: export writes a '
+        'tar.gz (configuration, workbenches, client state, tracked series, flags, how each '
+        'checkout was cloned; private parts left out unless --private); import adds what '
+        'is missing here and keeps what is here.',
+    )
+    sub = parser.add_subparsers(dest='action', required=True)
+    export = sub.add_parser('export', help="write this machine's state to FILE")
+    export.add_argument('file', type=pathlib.Path)
+    export.add_argument(
+        '--private',
+        action='store_true',
+        help='also var/workspace.toml and what uses its private remotes and bases',
+    )
+    imported = sub.add_parser('import', help='bring in a state export')
+    imported.add_argument('file', type=pathlib.Path)
+    for p in (export, imported):
+        p.add_argument('-C', dest='root', type=pathlib.Path, default=pathlib.Path('.'))
     args = parser.parse_args(argv)
     from .adapters.live import LiveSource
-    from .adapters.statesync import SyncError
 
+    source = LiveSource(args.root)
     try:
-        print(LiveSource(args.root).sync())
-    except (SyncError, OSError, ValueError) as e:
-        print(f'b4-maintainer: sync failed: {e}', file=sys.stderr)
+        if args.action == 'export':
+            print(source.export_state(args.file, private=args.private))
+        else:
+            print(source.import_state(args.file))
+    except (OSError, ValueError) as e:
+        print(f'b4-maintainer: state {args.action} failed: {e}', file=sys.stderr)
         return 1
     return 0
 
@@ -418,6 +442,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         sys.exit(setup_main(args[1:]))
     if args[:1] == ['sync']:
         sys.exit(sync_main(args[1:]))
+    if args[:1] == ['state']:
+        sys.exit(state_main(args[1:]))
     if args[:1] == ['bases']:
         sys.exit(bases_main(args[1:]))
     if args[:1] == ['hook']:

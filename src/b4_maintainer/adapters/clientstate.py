@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Client-owned state kept as text under state/client/, synced with the state repository.
+"""Client-owned state kept as text under state/client/ (carried by state export/import).
 
 Hidden series: one sorted, indented JSON entry per hide, so concurrent edits
 from several machines merge as ordinary text. An entry matches by series

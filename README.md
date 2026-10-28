@@ -39,11 +39,11 @@ Mail configuration and delivery use b4's existing integrations.
 Python 3.11 or newer.
 
     git clone <b4-maintainer repository> b4-maintainer && cd b4-maintainer
-    ./setup.sh        # first run creates setup.conf: set STATE_REPO, run again (if no state/)
+    ./setup.sh        # first run creates setup.conf (optional STATE_REPO, PYTHON)
     ./b4-maintainer
 
-- `setup.conf` (ignored by Git; from `setup.conf.example`): `STATE_REPO`, the private state
-  repository; `PYTHON`, the interpreter (default: newest `python3.1x`); `DEV_TOOLS=yes` for
+- `setup.conf` (ignored by Git; from `setup.conf.example`): `STATE_REPO`, a repository
+  cloned once as `state/` (optional; never pushed or pulled by the app); `PYTHON`, the interpreter (default: newest `python3.1x`); `DEV_TOOLS=yes` for
   pytest and ruff.
 - An optional site file adapts setup to its environment without changes here:
   `setup.site.conf` (ignored), or the file `SITE_CONF` names (e.g. one distributed inside an
@@ -51,13 +51,13 @@ Python 3.11 or newer.
   (proxies), set a default `PYTHON`, add `PIP_ARGS`, or define `site_install` to replace pip.
   Without one, setup uses plain pip.
 - `./setup.sh` initializes submodules, creates `.venv` and installs the pinned packages,
-  clones `STATE_REPO` as `state/`, and runs `b4-maintainer setup`: missing project
+  clones `STATE_REPO` as `state/` when set, and runs `b4-maintainer setup`: missing project
   checkouts are cloned blobless as recorded (Linux takes a while), enrolled with workspace
-  b4 state, and synced b4 state is imported. Existing checkouts and `state/` are left as
-  they are; safe to run again.
+  b4 state, and the tracked series and flags recorded in `state/` are imported. Existing
+  checkouts and `state/` are left as they are; safe to run again.
 - `./b4-maintainer` runs `.venv`'s b4-maintainer on this workspace from any directory,
   active virtual environment or not; relative paths in its arguments are from the workspace.
-- Per machine, not synced: Git identity and b4's `sendemail.*` settings (SMTP
+- Per machine, never exported: Git identity and b4's `sendemail.*` settings (SMTP
   credentials), drafts, caches, and review branches.
 
 ## Development
@@ -95,7 +95,7 @@ Python 3.11 or newer.
   it is.
 - Workbenches are recipes for agent sessions over several projects (e.g. a Linux tree and an
   ndctl tree, patched together): per project, a base and the series and local branches
-  applied on it in order, one file each in `state/workbenches/` (synced). `w` in the
+  applied on it in order, one file each in `state/workbenches/`. `w` in the
   series list or a thread adds the series (or a discussion, which sessions read but never
   apply) to one (or a new one); `a` on the Workbench tab adds a thread by lore link or
   Message-ID (fetched into the cache, kept there while a workbench names it) or a file
@@ -157,11 +157,14 @@ Python 3.11 or newer.
   after a confirmation; if one does not replay without them, nothing changes. Your own
   branches named in `refs` (e.g. a base with a view) are rescanned on every reload, so
   `a` and `d` show in their views at once; fetched refs wait for `F5`.
-- Workspace state syncs through a private state repository cloned as `state/` (see
-  [setup](#setup));
-  `state/workspace.toml` is the synced configuration. `b4-maintainer sync` syncs once by
-  hand; the app syncs at startup, around `F5`, and on quit.
-- `var/workspace.toml` (optional, per machine, never synced) overrides it on this machine,
+- `state/workspace.toml` is the workspace configuration. State moves between machines only
+  by hand: `b4-maintainer state export FILE` writes a tar.gz (configuration, workbenches,
+  client state, tracked series, flags, how each checkout was cloned), leaving private data
+  out unless `--private` (`var/workspace.toml`, projects only it defines, the remotes its
+  `base_refs` and `track_branches` name, workbenches and checkouts on private bases or
+  tracked branches); `state import FILE` on the other machine adds what is missing and
+  keeps what is there, then `b4-maintainer setup` clones any checkout still missing.
+- `var/workspace.toml` (optional, per machine, never exported by default) overrides it,
   e.g. `[sessions] max_builds` or a checkout's `path`: tables merge key by key,
   `[[projects]]`, `[[profiles]]`, and `[[models]]` entries by `id` (a new `id` is added);
   any other value it sets replaces the shared one. `project add` writes the shared file.

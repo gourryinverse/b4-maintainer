@@ -1,7 +1,7 @@
 # b4-maintainer setup: ./setup.sh copies this to setup.conf (ignored by Git); edit that.
 
-# Private state repository, cloned as state/: the synced workspace (projects, tracked
-# series, flags). Empty: start without synced state.
+# A repository to clone as state/ once (your configuration and workbenches, versioned by
+# hand; the app never pushes or pulls it). Empty: none (state export/import moves state).
 STATE_REPO=''
 
 # Python 3.11+ interpreter for .venv. Empty: the newest python3.1x found on PATH.

@@ -27,7 +27,6 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
-from textual.worker import Worker, WorkerState
 
 from .adapters.b4mbox import load_thread
 from .adapters.bases import PluckResult
@@ -478,17 +477,11 @@ class MaintainerApp(App[None]):
         actions: Optional[SourceActions] = None,
         drafts: Optional[DraftStore] = None,
         editor: Optional[ExternalEditor] = None,
-        sync: Optional[Callable[..., str]] = None,
-        sync_timeout: float = 10.0,
         app_pane: str = '',
     ) -> None:
         super().__init__()
         self._loader = loader
         self._actions = actions
-        # State sync with the state repository: at startup (background) and on quit (bounded).
-        self._sync = sync
-        self._sync_timeout = sync_timeout
-        self._synced_at_start = False
         # Without a store, drafts live only while the reader is open.
         self._drafts = drafts
         # Drafts go to the maintainer's editor when there is one and a store for its file.
@@ -612,22 +605,6 @@ class MaintainerApp(App[None]):
                     hub.hide(pane)  # A session left beside a previous run goes back.
 
                 self.run_worker(settle_pane, thread=True, group='session-pane')
-
-    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        # After the first load has finished, so the sync's reload cannot cancel it.
-        done = event.worker.name == 'load' and event.state == WorkerState.SUCCESS
-        if done and self._sync is not None and not self._synced_at_start:
-            self._synced_at_start = True
-            self.run_worker(self._startup_sync, thread=True, group='sync')
-
-    def _startup_sync(self) -> None:
-        """Others' changes arrive after the local view is up; a failure leaves it as is."""
-        assert self._sync is not None
-        try:
-            result, reload = self._sync(), True
-        except Exception as exc:  # Offline or refused: reported, local work goes on.
-            result, reload = f'State sync failed: {exc}', False
-        self.call_from_thread(self._action_done, result, reload)
 
     # Loading stays off the UI thread; results are applied on the event loop.
     def _load(self) -> None:
@@ -2106,22 +2083,7 @@ class MaintainerApp(App[None]):
             return
         self._save_draft()
         self._close_editor()
-        sync = self._sync
-        if sync is None:
-            self.exit()
-            return
-
-        def work() -> None:
-            try:
-                sync(self._sync_timeout)
-            except Exception:  # Unpushed work stays committed in state/ for the next sync.
-                pass
-            self.call_from_thread(self.exit)
-
-        self._set_notice('Syncing state…')
-        # Bounded: the app exits at the timeout whether or not the sync has finished.
-        self.set_timer(self._sync_timeout, self.exit)
-        self.run_worker(work, thread=True, group='sync')
+        self.exit()
 
     def on_unmount(self) -> None:
         # However the app ends, an open draft is kept and its editor pane closed.

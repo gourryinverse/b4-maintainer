@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Prepare this checkout: submodules, .venv, the private state repository (state/), and the
-# workspace recorded there. Settings: setup.conf. Safe to run again.
+# Prepare this checkout: submodules, .venv, state/ (cloned once from STATE_REPO when set),
+# and the workspace recorded there. Settings: setup.conf. Safe to run again.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
 if [[ ! -f setup.conf ]]; then
     cp setup.conf.example setup.conf
-    if [[ ! -e state/.git ]]; then
-        echo 'Created setup.conf: set STATE_REPO (and PYTHON if needed), then run ./setup.sh again.'
-        exit 1
-    fi
-    echo 'Created setup.conf with defaults (state/ is already cloned).'
+    echo 'Created setup.conf with defaults (edit it to set STATE_REPO or PYTHON, then run again).'
 fi
 STATE_REPO='' PYTHON='' DEV_TOOLS=no SITE_CONF=''
 PIP_ARGS=()
@@ -68,12 +64,12 @@ fi
 
 echo '== State repository (state/)'
 if [[ -e state/.git ]]; then
-    echo 'state/ is already a repository; left as is (the app syncs it).'
+    echo 'state/ is already a repository; left as is (the app never pushes or pulls it).'
 elif [[ -n $STATE_REPO ]]; then
     git clone "$STATE_REPO" state
 else
-    echo 'No STATE_REPO in setup.conf: no synced state. Register projects with'
-    echo './b4-maintainer project add, or set STATE_REPO and run ./setup.sh again.'
+    echo 'No STATE_REPO in setup.conf. Register projects with ./b4-maintainer project add,'
+    echo 'or bring a state export: ./b4-maintainer state import FILE, then ./setup.sh again.'
 fi
 
 if [[ -f state/workspace.toml || -f workspace.toml ]]; then
