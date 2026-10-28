@@ -1,0 +1,144 @@
+"""Contract: Branches lists each project in headed sections (Bases, Rebase and apply
+sessions, Prep, Session work, Review, Other, Checkouts) that fold: left folds (from an
+item, its section), right unfolds, Enter toggles, and folds survive a reload. The panes
+are titled; the footer shows the keys for the selected kind. b makes a plain branch at a
+chosen start to pluck onto."""
+
+from test_branch_screen import FakeBranches, make_app, settle
+
+from b4_maintainer.branches import BranchItem, CutResult, DetailRow
+from b4_maintainer.branchscreen import Ask, BranchesScreen, Pick
+
+
+class SectionBranches(FakeBranches):
+    def __init__(self):
+        super().__init__()
+        self.made = []
+
+    def snapshot(self, workspace, trees=True):
+        data = super().snapshot(workspace, trees)
+        work = BranchItem('work:s2:b4m/fixup/lock', 'work', 'linux', 's2 fixup/lock · 1 commit')
+        other = BranchItem('branch:linux:try', 'branch', 'linux', 'try · 0 commits not upstream')
+        items = (*data.items, work, other)
+        details = {
+            **data.details,
+            work.key: (DetailRow('fixup b4m/fixup/lock'), DetailRow('  f1  mm: lock', 'f1', '/t')),
+        }
+        return type(data)(
+            items,
+            details,
+            data.statuses,
+            rebases=data.rebases,
+            targets={**data.targets, work.key: ('base:linux:me/base', 'branch:linux:try')},
+            tips=data.tips,
+            identities=data.identities,
+            preps=data.preps,
+        )
+
+    def branch_starts(self, workspace, project):
+        return ['me/base', 'up/stable']
+
+    def new_branch(self, workspace, project, name, start):
+        self.made.append((project, name, start))
+        return CutResult(True, name)
+
+
+async def open_branches(pilot):
+    await settle(pilot)
+    await pilot.press('f4')
+    await settle(pilot)
+    screen = pilot.app.screen
+    assert isinstance(screen, BranchesScreen)
+    return screen
+
+
+def footer_keys(screen):
+    return {k for k, a in screen.active_bindings.items() if a.binding.show and a.enabled}
+
+
+async def test_projects_are_listed_in_titled_sections(demo_root):
+    app = make_app(demo_root, SectionBranches())
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        labels = [label.strip() for label in screen.item_labels()]
+        assert labels[0] == '▾ linux'
+        for heading in (
+            '▾ Bases (1)',
+            '▾ Rebase and apply sessions (1)',
+            '▾ Prep (1)',
+            '▾ Session work (1)',
+            '▾ Other (1)',
+        ):
+            assert heading in labels, heading
+        assert labels.index('▾ Prep (1)') < labels.index('▾ Session work (1)')
+        assert screen.selected_item() == 'base:linux:me/base'  # The first branch.
+        titles = [str(screen.query_one(f'#{p}').border_title) for p in ('branch-items',)]
+        assert titles == ['Branches']
+        assert 'me/base' in str(screen.query_one('#branch-rows').border_title)
+
+
+async def test_sections_fold_and_stay_folded_across_a_reload(demo_root):
+    service = SectionBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        screen.select_item('prep:linux:b4/pa')
+        await settle(pilot)
+        await pilot.press('left')  # From a branch: its section folds; the cursor on it.
+        await settle(pilot)
+        assert '▸ Prep (1)' in [label.strip() for label in screen.item_labels()]
+        assert 'prep:linux:b4/pa' not in screen.item_keys()
+        assert screen.selected_item() is None and screen.selected_heading() == 'linux:prep'
+        await pilot.press('f5')
+        await settle(pilot)
+        assert 'prep:linux:b4/pa' not in screen.item_keys()  # Still folded.
+        await pilot.press('right')
+        await settle(pilot)
+        assert 'prep:linux:b4/pa' in screen.item_keys()
+        await pilot.press('enter')  # Enter toggles.
+        await settle(pilot)
+        assert 'prep:linux:b4/pa' not in screen.item_keys()
+        screen.select_heading('linux')
+        await pilot.press('left')  # A project folds whole.
+        await settle(pilot)
+        assert screen.item_keys() == []
+
+
+async def test_the_footer_shows_the_selected_kinds_keys(demo_root):
+    app = make_app(demo_root, SectionBranches())
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        keys = footer_keys(screen)
+        assert 'r' in keys and 'S' not in keys  # A base: rebase, not send.
+        screen.select_item('prep:linux:b4/pa')
+        await settle(pilot)
+        keys = footer_keys(screen)
+        assert {'S', 'e', 's'} <= keys and 'r' not in keys
+        screen.select_heading('linux:prep')
+        await settle(pilot)
+        assert not {'r', 'S', 'p'} & footer_keys(screen)
+
+
+async def test_b_makes_a_branch_to_pluck_onto(demo_root):
+    service = SectionBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        screen.select_item('work:s2:b4m/fixup/lock')
+        await settle(pilot)
+        assert 'b' in footer_keys(screen)
+        await pilot.press('b')
+        await settle(pilot)
+        assert isinstance(app.screen, Ask)
+        app.screen.query_one('Input').value = 'try-lock'
+        await pilot.press('enter')
+        await settle(pilot)
+        pick = app.screen
+        assert isinstance(pick, Pick) and [k for k, _ in pick.choices][:2] == [
+            'me/base',
+            'up/stable',
+        ]
+        await pilot.press('down', 'enter')
+        await settle(pilot)
+        assert service.made == [('linux', 'try-lock', 'up/stable')]
+        assert 'Made try-lock' in screen.status_text()

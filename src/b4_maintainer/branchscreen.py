@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Mapping, Optional, Protocol, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -39,7 +39,7 @@ from .launchdialog import Derived
 from .sessions.launch import Target
 from .sessions.policy import ContextItem
 from .sessions.records import SessionRecord
-from .widgets import TabBar
+from .widgets import TabBar, TextPane
 from .workspace import Workspace
 
 if TYPE_CHECKING:
@@ -81,6 +81,12 @@ class Branches(Protocol):
 
     def fold_to_prep(
         self, workspace: Workspace, plan: FoldPlan, extras: Sequence[str], name: str
+    ) -> CutResult: ...
+
+    def branch_starts(self, workspace: Workspace, project_id: str) -> list[str]: ...
+
+    def new_branch(
+        self, workspace: Workspace, project_id: str, name: str, start: str
     ) -> CutResult: ...
 
     def cut_prep(
@@ -208,25 +214,48 @@ class Pick(ModalScreen[Optional[str]]):
         self.dismiss(None)
 
 
+# The sections of a project, in order: (item kind, heading).
+SECTIONS = (
+    ('base', 'Bases'),
+    ('tree', 'Rebase and apply sessions'),
+    ('prep', 'Prep'),
+    ('work', 'Session work'),
+    ('review', 'Review'),
+    ('branch', 'Other'),
+    ('worktree', 'Checkouts'),
+)
+
+
 class BranchesScreen(Screen[None]):
     DEFAULT_CSS = """
-    BranchesScreen #branch-title { height: 1; padding: 0 1; text-style: bold; }
     BranchesScreen #branch-panes { height: 1fr; }
-    BranchesScreen #branch-items { width: 2fr; border: none; }
-    BranchesScreen #branch-rows { width: 3fr; border: none; border-left: solid $panel-lighten-2; }
-    BranchesScreen #branch-show-pane { width: 4fr; border-left: solid $panel-lighten-2; }
+    BranchesScreen #branch-items { width: 3fr; }
+    BranchesScreen #branch-rows { width: 3fr; }
+    BranchesScreen #branch-show-pane { width: 4fr; }
+    /* Each pane titled on its top edge, as on the Workbench. */
+    BranchesScreen #branch-items, BranchesScreen #branch-rows, BranchesScreen #branch-show-pane {
+        border: none; border-top: solid $panel-lighten-2; border-title-color: $text-muted;
+    }
+    BranchesScreen #branch-rows, BranchesScreen #branch-show-pane {
+        border-left: solid $panel-lighten-2;
+    }
+    BranchesScreen OptionList:focus, BranchesScreen TextPane:focus { border-title-color: $accent; }
     BranchesScreen #branch-status { height: 1; padding: 0 1; }
     """
     BINDINGS = [
         Binding('escape', 'back', 'back'),
-        # Less common keys stay off the footer; ? lists them all.
+        # The footer shows the keys of the selected kind; less common ones stay off it
+        # (? lists them all).
         Binding('tab', 'cycle(1)', 'next pane', priority=True, show=False),
         Binding('shift+tab', 'cycle(-1)', 'previous pane', priority=True, show=False),
+        Binding('left', 'fold', 'fold', show=False),
+        Binding('right', 'unfold', 'unfold', show=False),
         Binding('r', 'rebase', 'rebase base'),
         Binding('a', 'agent_rebase', 'rebase with an agent'),
         Binding('A', 'accept', 'accept result'),
         Binding('space', 'mark', 'mark'),
         Binding('p', 'pluck', 'pluck'),
+        Binding('b', 'new_branch', 'new branch'),
         Binding('n', 'new_prep', 'new prep branch'),
         Binding('t', 'prep_run("auto-to-cc")', 'to/cc', show=False),
         Binding('c', 'prep_run("check")', 'check', show=False),
@@ -254,23 +283,24 @@ class BranchesScreen(Screen[None]):
         self._marks: set[int] = set()  # Marked commit rows of the selected item.
         self._pinned = ''  # Shown on the right after the next reload instead of the row.
         self.stale = False  # Set when the app switches back to this tab.
+        # Folded headings: a project (its id) or a section (<project>:<kind>).
+        self._folded: set[str] = set()
+        self._select = ''  # The item (or h:<heading>) to select after the next reload.
 
     def compose(self) -> ComposeResult:
         yield TabBar('branches')
-        yield Static(
-            'Branches: bases, worktrees, prep branches, review and other local branches',
-            id='branch-title',
-        )
         with Horizontal(id='branch-panes'):
             yield OptionList(id='branch-items')
             yield OptionList(id='branch-rows')
-            with VerticalScroll(id='branch-show-pane'):
-                yield Static('', id='branch-show', markup=False)
+            yield TextPane(id='branch-show-pane')
         yield Static('Loading…', id='branch-status', markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one('#branch-items', OptionList).focus()
+        items = self.query_one('#branch-items', OptionList)
+        items.border_title = 'Branches'
+        self.query_one('#branch-rows', OptionList).border_title = 'Commits'
+        items.focus()
         self.action_reload()
 
     def on_screen_resume(self) -> None:
@@ -294,29 +324,64 @@ class BranchesScreen(Screen[None]):
         self.run_worker(work, thread=True, group='branches-load', exclusive=True)
 
     def _loaded(self, data: BranchesSnapshot) -> None:
-        items = self.query_one('#branch-items', OptionList)
-        selected = self.selected_item()
+        current = self._select or self._current_id()
+        self._select = ''
         self.data = data
-        items.clear_options()
-        project = None
-        for item in data.items:
-            if item.project != project:
-                project = item.project
-                items.add_option(Option(project, disabled=True))
-            items.add_option(Option(f'  {item.label}', id=item.key))
-        keys = [i.key for i in data.items]
-        if keys:
-            target = selected if selected in keys else keys[0]
-            with self.prevent(OptionList.OptionHighlighted):  # Shown below, once.
-                items.highlighted = next(
-                    n
-                    for n in range(items.option_count)
-                    if items.get_option_at_index(n).id == target
-                )
-        self._show_rows()
-        empty = '' if keys else 'No projects with a checkout.'
+        self._fill(current)
+        empty = '' if data.items else 'No projects with a checkout.'
         self._status('; '.join(p for p in (self._note, *data.problems, empty) if p))
         self._note = ''
+
+    def _current_id(self) -> str:
+        option = self.query_one('#branch-items', OptionList).highlighted_option
+        return option.id or '' if option is not None else ''
+
+    def _fill(self, select: str) -> None:
+        """The list: each project, its sections (folded ones closed), their branches;
+        *select* (an item key, or h:<heading>) highlighted, else the heading folding it
+        away, else the first branch."""
+        items = self.query_one('#branch-items', OptionList)
+        ids: list[str] = []
+        options: list[Option] = []
+        projects = list(dict.fromkeys(i.project for i in self.data.items))
+        for project in projects:
+            mine = [i for i in self.data.items if i.project == project]
+            closed = project in self._folded
+            options.append(Option(f'{"▸" if closed else "▾"} {project}', id=f'h:{project}'))
+            ids.append(f'h:{project}')
+            if closed:
+                continue
+            for kind, title in SECTIONS:
+                group = [i for i in mine if i.kind == kind]
+                if not group:
+                    continue
+                heading = f'{project}:{kind}'
+                shut = heading in self._folded
+                mark = '▸' if shut else '▾'
+                options.append(Option(f'  {mark} {title} ({len(group)})', id=f'h:{heading}'))
+                ids.append(f'h:{heading}')
+                if shut:
+                    continue
+                for item in group:
+                    options.append(Option(f'      {item.label}', id=item.key))
+                    ids.append(item.key)
+        with self.prevent(OptionList.OptionHighlighted):  # Shown below, once.
+            items.clear_options()
+            items.add_options(options)
+            target = select if select in ids else self._folding(select)
+            if target not in ids:
+                target = next((i for i in ids if not i.startswith('h:')), ids[0] if ids else '')
+            items.highlighted = ids.index(target) if target in ids else None
+        self._show_rows()
+
+    def _folding(self, key: str) -> str:
+        """The heading that folds *key* away (its section, else its project)."""
+        item = next((i for i in self.data.items if i.key == key), None)
+        if item is None:
+            return ''
+        if item.project in self._folded:
+            return f'h:{item.project}'
+        return f'h:{item.project}:{item.kind}'
 
     def _status(self, text: str) -> None:
         self._status_text = text
@@ -328,8 +393,77 @@ class BranchesScreen(Screen[None]):
     # Panes
 
     def selected_item(self) -> Optional[str]:
-        option = self.query_one('#branch-items', OptionList).highlighted_option
-        return option.id if option is not None else None
+        """The selected branch's key (None on a heading)."""
+        current = self._current_id()
+        return current if current and not current.startswith('h:') else None
+
+    def selected_heading(self) -> Optional[str]:
+        """The selected heading: a project, or <project>:<kind>."""
+        current = self._current_id()
+        return current[2:] if current.startswith('h:') else None
+
+    def select_item(self, key: str) -> None:
+        self._highlight(key)
+
+    def select_heading(self, heading: str) -> None:
+        self._highlight(f'h:{heading}')
+
+    def _highlight(self, option_id: str) -> None:
+        items = self.query_one('#branch-items', OptionList)
+        for n in range(items.option_count):
+            if items.get_option_at_index(n).id == option_id:
+                items.highlighted = n
+                return
+
+    def item_labels(self) -> list[str]:
+        items = self.query_one('#branch-items', OptionList)
+        return [str(items.get_option_at_index(n).prompt) for n in range(items.option_count)]
+
+    def item_keys(self) -> list[str]:
+        """The branches listed (open sections only)."""
+        items = self.query_one('#branch-items', OptionList)
+        found = (items.get_option_at_index(n).id or '' for n in range(items.option_count))
+        return [i for i in found if not i.startswith('h:')]
+
+    def _project(self) -> str:
+        """The selected branch's or heading's project."""
+        key = self.selected_item()
+        if key is not None:
+            return next((i.project for i in self.data.items if i.key == key), '')
+        return (self.selected_heading() or '').split(':', 1)[0]
+
+    def action_fold(self) -> None:
+        """Left: fold the heading under the cursor, or a branch's section (moving onto
+        it); on a folded section, its project."""
+        if self.focused is not self.query_one('#branch-items'):
+            return
+        key, heading = self.selected_item(), self.selected_heading()
+        if key is not None:
+            item = next(i for i in self.data.items if i.key == key)
+            heading = f'{item.project}:{item.kind}'
+        elif heading is not None and heading in self._folded and ':' in heading:
+            heading = heading.split(':', 1)[0]
+        if heading is None:
+            return
+        self._folded.add(heading)
+        self._fill(f'h:{heading}')
+
+    def action_unfold(self) -> None:
+        heading = self.selected_heading()
+        if self.focused is not self.query_one('#branch-items') or heading is None:
+            return
+        self._folded.discard(heading)
+        self._fill(f'h:{heading}')
+
+    def _toggle(self) -> None:
+        heading = self.selected_heading()
+        if heading is None:
+            return
+        if heading in self._folded:
+            self._folded.discard(heading)
+        else:
+            self._folded.add(heading)
+        self._fill(f'h:{heading}')
 
     def selected_row(self) -> Optional[DetailRow]:
         rows = self.query_one('#branch-rows', OptionList)
@@ -341,6 +475,10 @@ class BranchesScreen(Screen[None]):
     def _show_rows(self) -> None:
         key = self.selected_item()
         self._rows = tuple(self.data.details.get(key, ())) if key else ()
+        label = next((i.label for i in self.data.items if i.key == key), '')
+        rows_pane = self.query_one('#branch-rows', OptionList)
+        rows_pane.border_title = label.split(' · ', 1)[0] if label else 'Commits'
+        self.refresh_bindings()  # The footer shows the selected kind's keys.
         self._marks = set()
         self._render_rows(next((n for n, r in enumerate(self._rows) if r.key), None))
         if self._pinned:  # A b4 run's output, kept across the reload it caused.
@@ -383,7 +521,10 @@ class BranchesScreen(Screen[None]):
 
     def _set_shown(self, text: str) -> None:
         self._shown = text
-        self.query_one('#branch-show', Static).update(text)
+        pane = self.query_one('#branch-show-pane', TextPane)
+        pane.set_text(text)
+        row = self.selected_row()
+        pane.border_title = row.text.strip()[:60] if row is not None and row.key else ''
 
     def shown_text(self) -> str:
         return self._shown
@@ -394,6 +535,7 @@ class BranchesScreen(Screen[None]):
             self._show_rows()
         elif event.option_list.id == 'branch-rows':
             self._show(self.selected_row())
+            self.refresh_bindings()
 
     def action_cycle(self, step: int) -> None:
         panes = [self.query_one('#branch-items'), self.query_one('#branch-rows')]
@@ -404,6 +546,8 @@ class BranchesScreen(Screen[None]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
+        if event.option_list.id == 'branch-items':
+            self._toggle()  # Enter on a heading folds or unfolds it.
 
     def action_back(self) -> None:
         tab = getattr(self.app, 'action_tab', None)  # Back to LKML, the column with it.
@@ -429,6 +573,10 @@ class BranchesScreen(Screen[None]):
             return bool(self._chosen() and self.data.targets.get(key))
         if action == 'new_prep':
             return bool(self._chosen())
+        if action == 'new_branch':
+            return bool(self._project())
+        if action in ('fold', 'unfold'):
+            return self.focused is self.query_one('#branch-items')
         if action == 'reap':
             return self.service.reapable(self.data, key)
         if action == 'derive':
@@ -643,6 +791,54 @@ class BranchesScreen(Screen[None]):
             self.app.call_from_thread(self._acted, note)
 
         self.run_worker(work, thread=True, group='branches-act')
+
+    def action_new_branch(self) -> None:
+        """b: a plain branch of the selected project, at a base, an upstream, a prep
+        branch, or a ref typed, to pluck onto."""
+        project = self._project()
+        if not project:
+            return
+
+        def make(name: str, start: str) -> None:
+            def work() -> None:
+                result = self.service.new_branch(self.workspace, project, name, start)
+                self.app.call_from_thread(made, result)
+
+            self._status(f'Making {name}…')
+            self.run_worker(work, thread=True, group='branches-act')
+
+        def made(result: CutResult) -> None:
+            if not result.ok:
+                self._status(f'No branch: {result.error}')
+                return
+            self._folded -= {project, f'{project}:branch'}
+            self._select = f'branch:{project}:{result.branch}'
+            self._note = f'Made {result.branch}: p plucks marked commits onto it'
+            self.action_reload()
+
+        def named(name: Optional[str]) -> None:
+            if not name:
+                return
+
+            def started(start: Optional[str]) -> None:
+                if start == '\0typed':
+                    self.app.push_screen(
+                        Ask(f'Start {name} at (any ref)'), lambda ref: ref and make(name, ref)
+                    )
+                elif start:
+                    make(name, start)
+
+            def offered(starts: list[str]) -> None:
+                options = [(s, s) for s in starts] + [('\0typed', 'Another ref…')]
+                self.app.push_screen(Pick(f'Start {name} at', options), started)
+
+            def work() -> None:
+                starts = self.service.branch_starts(self.workspace, project)
+                self.app.call_from_thread(offered, starts)
+
+            self.run_worker(work, thread=True, group='branches-act')
+
+        self.app.push_screen(Ask(f'Name the new {project} branch'), named)
 
     def action_new_prep(self) -> None:
         """n: a prep branch from the marked commits: its name, its fork point, then a

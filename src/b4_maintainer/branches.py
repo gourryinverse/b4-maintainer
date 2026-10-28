@@ -219,7 +219,7 @@ class BranchService:
             for path, branch in _worktrees(repo):
                 key = f'worktree:{project.id}:{path}'
                 checked_out.add(branch)
-                label, rows = _worktree(pathlib.Path(path), branch)
+                label, rows = _worktree(pathlib.Path(path), branch, self.root)
                 items.append(BranchItem(key, 'worktree', project.id, label))
                 details[key] = rows
             for key, record in ((k, r) for k, r in views if r.project == project.id):
@@ -269,10 +269,9 @@ class BranchService:
                     commits = sum(1 for r in rows if r.key and not r.show_text)
                     if kind == 'branch' and not commits and name not in made_here:
                         continue  # Nothing of ours on it (and not made to pluck onto).
+                    # Under their own section, review and other branches need no more words.
                     note = (
-                        f'{_count(commits, "commit")} not upstream'
-                        if kind != 'prep'
-                        else _count(commits, 'commit')
+                        f'{commits} not upstream' if kind == 'branch' else _count(commits, 'commit')
                     )
                     items.append(BranchItem(key, kind, project.id, f'{name} · {note}'))
                     details[key] = rows
@@ -354,7 +353,7 @@ class BranchService:
             if branch.problem:
                 rows.append(DetailRow(f'  ! {branch.problem}'))
             rows += [
-                dataclasses.replace(_commit_row(c.sha, c.subject, str(tree)), branch=branch.name)
+                dataclasses.replace(_commit_row(c.sha, c.subject, tree), branch=branch.name)
                 for c in branch.commits
             ]
             found.append((item, tuple(rows)))
@@ -1384,13 +1383,17 @@ def _worktrees(repo: pathlib.Path) -> list[tuple[str, str]]:
     return found
 
 
-def _worktree(path: pathlib.Path, branch: str) -> tuple[str, tuple[DetailRow, ...]]:
+def _worktree(
+    path: pathlib.Path, branch: str, root: Optional[pathlib.Path] = None
+) -> tuple[str, tuple[DetailRow, ...]]:
+    """A checkout: its branch and state first, then where it is (under *root* or ~)."""
+    where = _short_path(path, root)
     try:
         changed = [line for line in _git(path, 'status', '--porcelain').splitlines() if line]
     except OSError as ex:
-        return f'{path} · {ex}', ()
+        return f'{where} · {ex}', ()
     state = f'{len(changed)} changed' if changed else 'clean'
-    label = f'{path} · {branch or "detached"} · {state}'
+    label = f'{branch or "detached"} · {state} · {where}'
     rows = [DetailRow('Changes'), *(DetailRow(f'  {line}') for line in changed)] if changed else []
     rows += _unpushed_rows(path, 'HEAD')
     return label, tuple(rows)
@@ -1514,3 +1517,12 @@ def _pluck_branches(repo: pathlib.Path) -> set[str]:
         key = line.split(' ', 1)[0]
         names.add(key.removeprefix('branch.').removesuffix('.b4m-pluck'))
     return names
+
+
+def _short_path(path: pathlib.Path, root: Optional[pathlib.Path]) -> str:
+    """*path* relative to *root* when under it, else with ~ for the home directory."""
+    resolved = path.resolve()
+    if root is not None and resolved.is_relative_to(root.resolve()):
+        return str(resolved.relative_to(root.resolve()))
+    home = pathlib.Path.home()
+    return f'~/{resolved.relative_to(home)}' if resolved.is_relative_to(home) else str(path)

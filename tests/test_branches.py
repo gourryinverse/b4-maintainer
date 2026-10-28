@@ -126,7 +126,7 @@ def test_worktrees_review_branches_and_other_local_work_are_listed(ws, tmp_path)
     # (main and topic are checked out; merged has nothing beyond the remotes).
     others = [i.key for i in found.items if i.kind == 'branch']
     assert others == ['branch:linux:experiment']
-    assert '1 commit not upstream' in by_key['branch:linux:experiment'].label
+    assert '1 not upstream' in by_key['branch:linux:experiment'].label
     assert (project / '.git' / 'index').read_bytes() == before  # Looking never writes.
 
 

@@ -199,11 +199,16 @@ Python 3.11 or newer.
   conflict changes nothing). In the app, `F4` in a thread shows what its sessions
   produced (their initial prompts, commits, results, reproducers) in place of the content
   (`F4` or Escape returns), and elsewhere opens the Branches tab:
-  each project's bases, worktrees, rebase and apply sessions' trees (series and
-  workbench session trees are on the Workbench tab), b4 prep and review branches, and other local branches with work not on any remote; `r` rebases
+  each project in folding sections (← folds, → unfolds, Enter toggles; folds stay
+  across reloads): Bases, Rebase and apply sessions, Prep, Session work (every session
+  tree's agent branches: pull-ahead, fixup, folded, tests), Review, Other (local
+  branches with work not on any remote, and those made with `b`), and Checkouts; the
+  middle pane lists the selected branch's commits, the right one the selected commit,
+  and the footer the keys for the selected kind. `b` makes a plain branch at a base, an
+  upstream, a prep branch, or any ref, to pluck onto; `r` rebases
   a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`
   on its tree (or an apply session's) moves the base to its result. Space marks commits and `p` plucks them onto
-  a base or a prep branch: an agent's become yours with `Assisted-by:` (`[sessions]
+  a base, a prep branch, or a branch made with `b`: an agent's become yours with `Assisted-by:` (`[sessions]
   assisted_by`, default the session's model); others keep their authors. `n` makes a b4
   prep branch from the marked commits (name, fork point, cover drafted from the agents'
   summaries) in a sparse worktree under `var/branches/`; on it, `t` adds recipients,

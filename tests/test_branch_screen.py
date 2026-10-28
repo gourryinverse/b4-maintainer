@@ -173,7 +173,8 @@ async def test_f3_opens_the_branches_screen_and_escape_returns(demo_root):
         await pilot.press('tab', 'down')  # The commits pane: the next commit.
         await settle(pilot)
         assert screen.shown_text() == 'shown c2'
-        await pilot.press('shift+tab', 'down')  # The items pane: the session tree.
+        await pilot.press('shift+tab')  # The items pane: the session tree.
+        screen.select_item('tree:s1')
         await settle(pilot)
         assert screen.selected_item() == 'tree:s1' and screen.shown_text() == 'shown s1c'
         await pilot.press('escape')
@@ -297,7 +298,7 @@ async def test_a_on_a_rebase_sessions_tree_accepts_its_result(demo_root):
         await pilot.press('A')  # A base, not a rebase session: nothing.
         await settle(pilot)
         assert not isinstance(app.screen, Confirm)
-        await pilot.press('down')  # The session tree.
+        app.screen.select_item('tree:s1')
         await settle(pilot)
         await pilot.press('A')
         await settle(pilot)
@@ -312,7 +313,7 @@ async def open_tree_rows(pilot):
     await settle(pilot)
     await pilot.press('f4')
     await settle(pilot)
-    await pilot.press('down')  # The session tree.
+    pilot.app.screen.select_item('tree:s1')
     await settle(pilot)
     await pilot.press('tab')  # Its commits.
     await settle(pilot)
@@ -402,7 +403,7 @@ async def test_t_and_c_run_b4_on_a_prep_branch_and_show_its_output(demo_root):
         await pilot.press('t')  # A base: not a prep branch.
         await settle(pilot)
         assert service.runs == []
-        await pilot.press('down', 'down')
+        app.screen.select_item('prep:linux:b4/pa')
         await settle(pilot)
         screen = app.screen
         assert screen.shown_text() == 'EDITME: x'  # The cover letter, first.
@@ -433,7 +434,9 @@ async def test_e_edits_the_cover_with_b4_while_the_app_is_suspended(demo_root, m
         await settle(pilot)
         await pilot.press('f4')
         await settle(pilot)
-        await pilot.press('down', 'down', 'e')
+        app.screen.select_item('prep:linux:b4/pa')
+        await settle(pilot)
+        await pilot.press('e')
         await settle(pilot)
         assert service.worktrees == ['prep:linux:b4/pa']
         [(wt, branch, args, interactive)] = calls
@@ -450,7 +453,7 @@ async def open_prep(pilot):
     await settle(pilot)
     await pilot.press('f4')
     await settle(pilot)
-    await pilot.press('down', 'down')
+    pilot.app.screen.select_item('prep:linux:b4/pa')
     await settle(pilot)
 
 
@@ -564,13 +567,17 @@ async def test_x_removes_after_saying_what_goes_and_asks_twice_for_changes(demo_
         await pilot.press('x')  # A base: not removable here.
         await settle(pilot)
         assert not isinstance(app.screen, Confirm)
-        await pilot.press('down', 'down', 'x')  # The prep branch.
+        app.screen.select_item('prep:linux:b4/pa')
+        await settle(pilot)
+        await pilot.press('x')  # The prep branch.
         await settle(pilot)
         assert isinstance(app.screen, Confirm) and 'prep:linux:b4/pa: clean' in app.screen.prompt
         await pilot.press('y')
         await settle(pilot)
         assert service.reaped == ['prep:linux:b4/pa']
-        await pilot.press('up', 'x')  # The session tree, with changes.
+        app.screen.select_item('tree:s1')
+        await settle(pilot)
+        await pilot.press('x')  # The session tree, with changes.
         await settle(pilot)
         await pilot.press('y')
         await settle(pilot)
@@ -629,7 +636,9 @@ async def test_d_derives_a_session_starting_where_chosen(demo_root, tmp_path):
         )
         await pilot.press('f4')
         await settle(pilot)
-        await pilot.press('down', 'D')  # The session tree.
+        app.screen.select_item('tree:s1')
+        await settle(pilot)
+        await pilot.press('D')  # The session tree.
         await settle(pilot)
         assert isinstance(app.screen, Pick)
         await pilot.press('enter')  # The series base.
