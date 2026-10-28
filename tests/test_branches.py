@@ -716,3 +716,55 @@ def test_tracked_branches_are_listed_with_their_own_commits(ws):
     assert [r.text.split('  ')[-1] for r in data.details[key] if is_commit(r)] == [
         'mm: scratch work'
     ]
+
+
+def test_x_removes_session_work_after_saying_what_goes(ws, tmp_path):
+    service, workspace, _project = ws
+    data = service.snapshot(workspace, trees=False)
+    key = 'work:s1:b4m/pull-ahead/leak'
+    assert service.reapable(data, key)
+    losses = service.losses(workspace, key)
+    assert 'b4m/pull-ahead/leak' in losses and 'mm: fix the leak' in losses
+    ok, note = service.reap(workspace, key)
+    assert ok and 'b4m/pull-ahead/leak' in note
+    tree = tmp_path / 'ws' / 'var' / 'worktrees' / 's1'
+    assert 'b4m/pull-ahead/leak' not in git('branch', '--format=%(refname:short)', cwd=tree)
+    assert key not in {i.key for i in service.snapshot(workspace, trees=False).items}
+
+
+def test_a_removed_tracked_branch_stays_gone_until_its_remote_moves(ws):
+    from b4_maintainer.adapters.scratch import track_branches
+
+    service, _workspace, project = ws
+    git('remote', 'add', 'up', str(project), cwd=project)
+    git('switch', '-q', '--detach', 'up/stable', cwd=project)
+    first = commit(project, 's.c', 's\n', 'mm: scratch work')
+    git('switch', '-q', 'main', cwd=project)
+    git('update-ref', 'refs/remotes/up/scratch/me/try', first, cwd=project)
+    track_branches(project, ['up/scratch/me/*'])
+    workspace = private_ws(project)
+    key = 'branch:linux:scratch/me/try'
+    assert 'comes back' in service.losses(workspace, key)
+    assert service.reap(workspace, key)[0]
+    assert track_branches(project, ['up/scratch/me/*']) == ([], [])  # Still gone.
+    names = git('branch', '--format=%(refname:short)', cwd=project).split()
+    assert 'scratch/me/try' not in names
+    git('switch', '-q', '--detach', first, cwd=project)
+    later = commit(project, 't.c', 't\n', 'mm: more scratch work')
+    git('switch', '-q', 'main', cwd=project)
+    git('update-ref', 'refs/remotes/up/scratch/me/try', later, cwd=project)
+    assert track_branches(project, ['up/scratch/me/*']) == (['scratch/me/try'], [])
+
+
+def test_session_work_stays_while_its_session_is_live(ws, tmp_path):
+    service, workspace, _project = ws
+
+    class Live:
+        def is_live(self, sid):
+            return sid == 's1'
+
+    service._sessions = Live()
+    ok, note = service.reap(workspace, 'work:s1:b4m/pull-ahead/leak')
+    assert not ok and 'live' in note
+    tree = tmp_path / 'ws' / 'var' / 'worktrees' / 's1'
+    assert 'b4m/pull-ahead/leak' in git('branch', '--format=%(refname:short)', cwd=tree)

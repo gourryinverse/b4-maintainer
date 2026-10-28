@@ -491,6 +491,10 @@ class SessionHub:
     def blocker(self) -> Optional[str]:
         return self.runner.blocker()
 
+    def is_live(self, sid: str) -> bool:
+        """Whether session *sid* is running or still being prepared."""
+        return any(v.record.id == sid and v.state in COUNTED_LIVE for v in self._poll())
+
     def records(self) -> list[SessionRecord]:
         """Every session's record, ended ones included."""
         return [v.record for v in self._poll()]

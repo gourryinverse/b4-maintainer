@@ -53,7 +53,7 @@ from .adapters.prep import (
     sign_off,
 )
 from .adapters.scratch import base_refs as match_refs
-from .adapters.scratch import tracked_branches
+from .adapters.scratch import forget_tracked, tracked_branches
 from .attachments import Attachment, preview
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
@@ -1149,14 +1149,28 @@ class BranchService:
     # Reaping: removing what is no longer needed, after the maintainer saw what goes.
 
     def reapable(self, data: BranchesSnapshot, item: str) -> bool:
-        """Prep branches, other local branches, and session trees may be removed here;
-        bases, b4's review branches, and the project's worktrees may not."""
+        """Prep branches, other local branches, session trees, and session work (an agent
+        branch) may be removed here; bases, b4's review branches, and the project's
+        worktrees may not."""
         kind = item.split(':', 1)[0]
-        return kind in ('prep', 'branch', 'tree') and any(i.key == item for i in data.items)
+        removable = ('prep', 'branch', 'tree', 'work')
+        return kind in removable and any(i.key == item for i in data.items)
 
     def losses(self, workspace: Workspace, item: str) -> str:
         """What removing *item* would lose, for the confirmation."""
         kind, _, rest = item.partition(':')
+        if kind == 'work':
+            where, _, branch = rest.partition(':')
+            record = self._record(where)
+            if record is None or record.worktree is None:
+                return f'{branch} of session {where}'
+            tree = pathlib.Path(record.worktree.path)
+            subjects = _only_on(tree, branch)
+            listed = '\n'.join(f'  {s}' for s in subjects[:20])
+            return (
+                f"{branch} in session {record.id}'s tree: "
+                f'{_count(len(subjects), "commit")} on no other branch:\n{listed}'
+            )
         if kind == 'tree':
             record = self._record(rest)
             if self._sessions is None or record is None or record.worktree is None:
@@ -1178,6 +1192,12 @@ class BranchService:
                 'in its data directory, then deletes the branch and its sent/ tags; its '
                 'worktree goes too'
             )
+        if branch in tracked_branches(repo):
+            upstream = _upstream(repo, branch) or 'its remote branch'
+            return (
+                f'{branch}: the local copy of {upstream}; it comes back on refresh only when '
+                f'{upstream} gets new commits'
+            )
         rows = _unpushed_rows(repo, branch)
         subjects = [r.text.strip().split('  ', 1)[-1] for r in rows if is_commit(r)]
         listed = '\n'.join(f'  {s}' for s in subjects[:20])
@@ -1187,6 +1207,8 @@ class BranchService:
     def reap(self, workspace: Workspace, item: str) -> tuple[bool, str]:
         """Remove *item* (the maintainer confirmed its losses)."""
         kind, _, rest = item.partition(':')
+        if kind == 'work':
+            return self._reap_work(rest)
         if kind == 'tree':
             record = self._record(rest)
             if self._sessions is None or record is None or record.worktree is None:
@@ -1206,6 +1228,8 @@ class BranchService:
             last = next((line for line in reversed(out.splitlines()) if line.strip()), '')
             return code == 0, f'Removed {branch}' if code == 0 else f'{branch} stays: {last}'
         if kind == 'branch':
+            if branch in tracked_branches(repo):
+                forget_tracked(repo, branch)  # Back on refresh only once the remote moves.
             run = subprocess.run(
                 ['git', 'branch', '-D', branch], cwd=repo, capture_output=True, text=True
             )
@@ -1213,6 +1237,24 @@ class BranchService:
                 return False, f'{branch} stays: {run.stderr.strip()}'
             return True, f'Removed {branch}'
         return False, f'{item} is not removed from here'
+
+    def _reap_work(self, rest: str) -> tuple[bool, str]:
+        """Delete an agent branch in its session tree (not while the session is live)."""
+        where, _, branch = rest.partition(':')
+        record = self._record(where)
+        if record is None or record.worktree is None:
+            return False, f'no session tree {where}'
+        if self._sessions is not None and self._sessions.is_live(record.id):
+            return False, f'session {record.id} is live: {branch} stays (stop it first)'
+        run = subprocess.run(
+            ['git', 'branch', '-D', branch],
+            cwd=record.worktree.path,
+            capture_output=True,
+            text=True,
+        )
+        if run.returncode != 0:
+            return False, f'{branch} stays: {run.stderr.strip()}'
+        return True, f"Removed {branch} from session {record.id}'s tree"
 
     # Deriving a session from another's output.
 
@@ -1646,3 +1688,17 @@ def _upstream(repo: pathlib.Path, branch: str) -> str:
         return _git(repo, 'rev-parse', '--abbrev-ref', f'{branch}@{{upstream}}').strip()
     except OSError:
         return ''
+
+
+def _only_on(tree: pathlib.Path, branch: str) -> list[str]:
+    """Subjects of the commits on *branch* and on no other branch of *tree*."""
+    try:
+        others = [
+            n
+            for n in _git(tree, 'for-each-ref', '--format=%(refname)', 'refs/heads/').split()
+            if n != f'refs/heads/{branch}'
+        ]
+        log = _git(tree, 'log', '--format=%s', branch, '--not', *others, '--remotes')
+    except OSError:
+        return []
+    return log.splitlines()

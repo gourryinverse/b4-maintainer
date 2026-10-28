@@ -12,6 +12,8 @@ import subprocess
 from typing import Sequence
 
 MARK = 'b4m-track'  # branch.<name>.b4m-track = true: made and moved here.
+# b4m-untracked.<name>.at = <remote commit>: removed here; back once the remote moves.
+FORGOTTEN = 'b4m-untracked'
 
 
 def _git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -49,6 +51,11 @@ def track_branches(repo: pathlib.Path, patterns: Sequence[str]) -> tuple[list[st
         local = _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{name}').stdout.strip()
         if local == sha:
             continue
+        removed_at = _git(repo, 'config', '--get', f'{FORGOTTEN}.{name}.at').stdout.strip()
+        if not local and removed_at == sha:
+            continue  # Removed here, and the remote has not moved since.
+        if removed_at:
+            _git(repo, 'config', '--remove-section', f'{FORGOTTEN}.{name}')
         if not local:
             made = _git(repo, 'branch', '--track', name, ref)
             if made.returncode != 0:
@@ -79,3 +86,12 @@ def base_refs(repo: pathlib.Path, globs: Sequence[str]) -> list[str]:
     if run.returncode != 0:
         return []
     return sorted(n for n in run.stdout.split() if any(fnmatch.fnmatchcase(n, g) for g in globs))
+
+
+def forget_tracked(repo: pathlib.Path, name: str) -> None:
+    """Remember that *name* was removed here at its remote's current commit, so tracking
+    brings it back only when the remote branch moves (call before deleting it)."""
+    upstream = _git(repo, 'rev-parse', '--verify', '--quiet', f'{name}@{{upstream}}')
+    sha = upstream.stdout.strip()
+    if sha:
+        _git(repo, 'config', f'{FORGOTTEN}.{name}.at', sha)
