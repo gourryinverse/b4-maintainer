@@ -72,8 +72,8 @@ LIST_LIMIT = 200  # Commits listed per branch or worktree.
 
 @dataclass(frozen=True)
 class BranchItem:
-    key: str  # <kind>:<project>:<branch or path>, or tree:<session>
-    kind: str  # base, worktree, tree, prep, review, or branch
+    key: str  # <kind>:<project>:<branch or path>, tree:<session>, or work:<tree>:<branch>
+    kind: str  # base, worktree, tree, work (a session's agent branch), prep, review, branch
     project: str
     label: str
 
@@ -238,11 +238,21 @@ class BranchService:
                 problems += found
                 items.append(BranchItem(key, 'tree', project.id, label))
                 details[key] = rows
+            work_views = [
+                (k, r)
+                for k, r in self._tree_views()
+                if r.project == project.id and r.scope not in ('rebase', 'apply')
+            ]
+            for key, record in work_views:
+                for item, rows in self._work(key.removeprefix('tree:'), record):
+                    items.append(item)
+                    details[item.key] = rows
             try:
                 names = _git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/')
             except OSError as ex:
                 problems.append(f'{project.id}: {ex}')
                 continue
+            made_here = _pluck_branches(repo)
             names_list = names.split()
             prep = [n for n in names_list if n.startswith('b4/') and not n.startswith('b4/review/')]
             review = [n for n in names_list if n.startswith('b4/review/')]
@@ -257,8 +267,8 @@ class BranchService:
                     key = f'{kind}:{project.id}:{name}'
                     rows = _prep_rows(repo, name) if kind == 'prep' else _unpushed_rows(repo, name)
                     commits = sum(1 for r in rows if r.key and not r.show_text)
-                    if kind == 'branch' and not commits:
-                        continue  # Nothing of ours on it: not worth a row.
+                    if kind == 'branch' and not commits and name not in made_here:
+                        continue  # Nothing of ours on it (and not made to pluck onto).
                     note = (
                         f'{_count(commits, "commit")} not upstream'
                         if kind != 'prep'
@@ -289,7 +299,9 @@ class BranchService:
         for item in items:
             project = workspace.project(item.project)
             bases = [f'base:{item.project}:{b.branch}' for b in project.bases] if project else []
-            prep_keys = [i.key for i in items if i.kind == 'prep' and i.project == item.project]
+            prep_keys = [
+                i.key for i in items if i.kind in ('prep', 'branch') and i.project == item.project
+            ]
             tree_keys = [
                 i.key
                 for i in items
@@ -321,6 +333,66 @@ class BranchService:
             identities,
             preps,
         )
+
+    def _work(
+        self, where: str, record: SessionRecord
+    ) -> list[tuple[BranchItem, tuple[DetailRow, ...]]]:
+        """A session tree's agent branches with commits, one item each (Session work)."""
+        assert record.worktree is not None
+        tree = pathlib.Path(record.worktree.path)
+        if not tree.is_dir():
+            return []
+        found = []
+        for branch in classify_tree(tree, record.worktree).branches:
+            if not branch.commits:
+                continue
+            name = branch.name.removeprefix('b4m/')
+            mark = ' !' if branch.problem else ''
+            label = f'{record.id} {name} · {_count(len(branch.commits), "commit")}{mark}'
+            item = BranchItem(f'work:{where}:{branch.name}', 'work', record.project, label)
+            rows = [DetailRow(f'{branch.kind} {branch.name} (session {record.id})')]
+            if branch.problem:
+                rows.append(DetailRow(f'  ! {branch.problem}'))
+            rows += [
+                dataclasses.replace(_commit_row(c.sha, c.subject, str(tree)), branch=branch.name)
+                for c in branch.commits
+            ]
+            found.append((item, tuple(rows)))
+        return found
+
+    def branch_starts(self, workspace: Workspace, project_id: str) -> list[str]:
+        """Where a new branch may start: the project's bases, their upstreams, then its
+        prep branches (any other ref may be typed)."""
+        project = workspace.project(project_id)
+        if project is None:
+            return []
+        starts = [b.branch for b in project.bases] + [b.upstream for b in project.bases]
+        starts += _prep_branches(self.root / project.path)
+        return list(dict.fromkeys(s for s in starts if s))
+
+    def new_branch(self, workspace: Workspace, project_id: str, name: str, start: str) -> CutResult:
+        """A plain local branch *name* at *start*, to pluck onto (blocking)."""
+        project = workspace.project(project_id)
+        if project is None:
+            return CutResult(False, error=f'no project {project_id}')
+        repo = self.root / project.path
+        check = subprocess.run(
+            ['git', 'check-ref-format', '--branch', name], cwd=repo, capture_output=True
+        )
+        if check.returncode != 0 or name.startswith(('b4/', 'b4m/')):
+            return CutResult(False, error=f'{name!r} is not a branch name to use here')
+        try:
+            _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{name}')
+            return CutResult(False, error=f'{name} exists')
+        except OSError:
+            pass
+        try:
+            sha = _git(repo, 'rev-parse', '--verify', '--quiet', f'{start}^{{commit}}').strip()
+            _git(repo, 'branch', name, sha)
+            _git(repo, 'config', f'branch.{name}.b4m-pluck', 'true')
+        except OSError:
+            return CutResult(False, error=f'{start} is not a commit in {project_id}')
+        return CutResult(True, name)
 
     def _tree(
         self, record: SessionRecord, tree: pathlib.Path
@@ -538,17 +610,18 @@ class BranchService:
         return workspace.project(parts[1]) if len(parts) == 3 else None
 
     def _model(self, item: str) -> str:
-        if item.startswith('tree:'):
-            record = self._record(item.removeprefix('tree:'))
+        if item.startswith(('tree:', 'work:')):
+            where = item.split(':', 2)[1] if item.startswith('work:') else item[5:]
+            record = self._record(where)
             if record is not None:
                 return record.model or record.preset or 'LLM'
         return 'LLM'
 
     def _target(self, workspace: Workspace, target: str) -> tuple[Project, str]:
-        """(project, branch) of a pluck target: a base or a prep branch."""
+        """(project, branch) of a pluck target: a base, a prep branch, or a branch."""
         kind, pid, branch = target.split(':', 2)
         project = workspace.project(pid)
-        if project is None or kind not in ('base', 'prep'):
+        if project is None or kind not in ('base', 'prep', 'branch'):
             raise SessionError(f'cannot pluck onto {target}')
         if kind == 'base' and not any(b.branch == branch for b in project.bases):
             raise SessionError(f'no maintainer base {branch} in {pid}')
@@ -1426,3 +1499,18 @@ def _branch_name(subject: str) -> str:
     """A prep branch name from a series subject: its words after the subsystem prefix."""
     words = re.findall(r'[a-z0-9]+', subject.rsplit(': ', 1)[-1].lower())
     return '-'.join(words)[:40].strip('-') or 'series'
+
+
+def _pluck_branches(repo: pathlib.Path) -> set[str]:
+    """Branches made here to pluck onto (b, marked in their git configuration)."""
+    run = subprocess.run(
+        ['git', 'config', '--get-regexp', r'^branch\..*\.b4m-pluck$'],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    names = set()
+    for line in run.stdout.splitlines():
+        key = line.split(' ', 1)[0]
+        names.add(key.removeprefix('branch.').removesuffix('.b4m-pluck'))
+    return names

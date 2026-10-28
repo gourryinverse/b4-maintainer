@@ -112,7 +112,7 @@ def test_worktrees_review_branches_and_other_local_work_are_listed(ws, tmp_path)
     before = (project / '.git' / 'index').read_bytes()
     found = service.snapshot(workspace)
     order = [i.kind for i in found.items]
-    assert order == ['base', 'worktree', 'worktree', 'tree', 'prep', 'review', 'branch']
+    assert order == ['base', 'worktree', 'worktree', 'tree', 'work', 'prep', 'review', 'branch']
     by_key = {i.key: i for i in found.items}
     main = by_key[f'worktree:linux:{project}']
     assert 'main' in main.label and '1 changed' in main.label
@@ -613,3 +613,39 @@ def test_folding_another_authors_series_makes_a_prep_branch_from_its_thread(
         'mm: a fix the series needs',
         'mm/foo: their change',
     ]
+
+
+def test_session_work_is_listed_by_branch_and_plucks_like_any_commits(ws):
+    """F4 lists each session tree's agent branches (Session work), not whole trees."""
+    service, workspace, project = ws
+    data = service.snapshot(workspace, trees=False)
+    work = [i for i in data.items if i.kind == 'work']
+    assert [i.key for i in work] == ['work:s1:b4m/pull-ahead/leak']
+    assert 's1' in work[0].label and 'pull-ahead/leak' in work[0].label
+    rows = [r for r in data.details[work[0].key] if is_commit(r)]
+    assert [r.text.split('  ')[-1] for r in rows] == ['mm: fix the leak']
+    assert 'base:linux:me/base' in data.targets[work[0].key]
+    tip = git('rev-parse', 'me/base', cwd=project)
+    result = service.pluck(workspace, work[0].key, rows, 'base:linux:me/base', tip)
+    assert result.ok
+    assert git('log', '-1', '--format=%s', 'me/base', cwd=project) == 'mm: fix the leak'
+
+
+def test_b_makes_a_plain_branch_to_pluck_onto(ws):
+    service, workspace, project = ws
+    assert service.branch_starts(workspace, 'linux')[:2] == ['me/base', 'up/stable']
+    result = service.new_branch(workspace, 'linux', 'try-leak', 'up/stable')
+    assert result.ok and result.branch == 'try-leak'
+    assert git('rev-parse', 'try-leak', cwd=project) == git('rev-parse', 'up/stable', cwd=project)
+    data = service.snapshot(workspace, trees=False)
+    key = 'branch:linux:try-leak'
+    assert key in {i.key for i in data.items}  # Listed before it has commits.
+    work = 'work:s1:b4m/pull-ahead/leak'
+    assert key in data.targets[work]  # A pluck target.
+    rows = [r for r in data.details[work] if is_commit(r)]
+    tip = git('rev-parse', 'try-leak', cwd=project)
+    assert service.pluck(workspace, work, rows, key, tip).ok
+    assert git('log', '-1', '--format=%s', 'try-leak', cwd=project) == 'mm: fix the leak'
+    assert not service.new_branch(workspace, 'linux', 'try-leak', 'up/stable').ok  # Exists.
+    assert not service.new_branch(workspace, 'linux', 'bad name', 'up/stable').ok
+    assert not service.new_branch(workspace, 'linux', 'x', 'no-such-ref').ok
