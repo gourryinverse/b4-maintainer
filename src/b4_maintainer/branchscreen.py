@@ -196,8 +196,11 @@ class Pick(ModalScreen[Optional[str]]):
 
     DEFAULT_CSS = """
     Pick { align: center middle; }
-    Pick > Vertical { width: auto; height: auto; border: solid $accent; background: $panel; }
-    Pick OptionList { width: auto; height: auto; border: none; }
+    Pick > Vertical {
+        width: auto; min-width: 48; max-width: 90%; height: auto;
+        border: solid $accent; background: $panel;
+    }
+    Pick OptionList { width: auto; min-width: 44; height: auto; border: none; }
     """
     BINDINGS = [Binding('escape', 'cancel', 'cancel')]
 
@@ -1005,12 +1008,21 @@ class BranchesScreen(Screen[None]):
             if not name:
                 return
             points = self.service.fork_points(self.workspace, key)
-            choices = [(p, p) for p in points]
+
+            def typed(ref: Optional[str]) -> None:
+                if ref:
+                    self._confirm_cut(key, rows, name, ref)
 
             def forked(fork: Optional[str]) -> None:
-                if fork:
+                if fork == '\0typed':
+                    self.app.push_screen(Ask(f'Fork b4/{name} from (any ref):'), typed)
+                elif fork:
                     self._confirm_cut(key, rows, name, fork)
 
+            if not points:  # None known for it: any ref, typed.
+                self.app.push_screen(Ask(f'Fork b4/{name} from (any ref):'), typed)
+                return
+            choices = [(p, p) for p in points] + [('\0typed', 'Another ref…')]
             self.app.push_screen(Pick(f'Fork b4/{name} from?', choices), forked)
 
         self.app.push_screen(Ask('Prep branch name (b4/<name>):', suggested), named)

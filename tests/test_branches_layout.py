@@ -312,3 +312,36 @@ async def test_a_fixup_replies_to_its_patch_with_its_recipients(demo_root):
         assert all(a[1] != 'c1@example.org' for a in reply.cc)
         cover = app.branch_mail_reply(item.identity, None)  # No patch named: the cover.
         assert cover.msgid == f'<{item.series.msgids[0]}>'
+
+
+async def test_n_offers_its_fork_points_and_any_ref_in_a_readable_picker(demo_root):
+    service = SectionBranches()
+    service.fork_points = lambda workspace, item: []  # None known: a ref is typed.
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        screen.select_item('work:s2:b4m/fixup/lock')
+        await settle(pilot)
+        await pilot.press('tab', 'n')  # The commits pane: the selected commit.
+        await settle(pilot)
+        app.screen.query_one('Input').value = 'lock-fix'
+        await pilot.press('enter')
+        await settle(pilot)
+        assert isinstance(app.screen, Ask) and 'lock-fix' in app.screen.title_text  # Typed.
+
+    service = SectionBranches()
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        screen.select_item('work:s2:b4m/fixup/lock')
+        await settle(pilot)
+        await pilot.press('tab', 'n')
+        await settle(pilot)
+        app.screen.query_one('Input').value = 'lock-fix'
+        await pilot.press('enter')
+        await settle(pilot)
+        pick = app.screen
+        assert isinstance(pick, Pick)
+        keys = [k for k, _label in pick.choices]
+        assert keys[:3] == ['up/stable', 'me/base', 'mm/mm-new'] and keys[-1] == '\0typed'
+        assert pick.query_one('Vertical').size.width >= 40  # Not squeezed.

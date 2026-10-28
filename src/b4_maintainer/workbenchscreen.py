@@ -804,12 +804,20 @@ class WorkbenchScreen(Screen[None]):
                 return
 
             def pick(found: list[str]) -> None:
-                forks = [(f, f) for f in found]
-
-                def forked(fork: Optional[str]) -> None:
+                def cut_at(fork: Optional[str]) -> None:
                     if fork:
                         self._act(lambda: cut(item, rows, name, fork), self._cut, 'Cutting…')
 
+                def forked(fork: Optional[str]) -> None:
+                    if fork == '\0typed':
+                        self.app.push_screen(Ask(f'Fork b4/{name} from (any ref):'), cut_at)
+                    else:
+                        cut_at(fork)
+
+                if not found:  # None known for it: any ref, typed.
+                    self.app.push_screen(Ask(f'Fork b4/{name} from (any ref):'), cut_at)
+                    return
+                forks = [(f, f) for f in found] + [('\0typed', 'Another ref…')]
                 self.app.push_screen(Pick(f'Fork point for b4/{name}', forks), forked)
 
             self._act(lambda: forks_of(item), pick, 'Listing fork points…')

@@ -792,3 +792,9 @@ def test_a_fixups_target_and_message_come_from_its_session(ws, tmp_path):
     leak = next(r for r in data.details['work:s1:b4m/pull-ahead/leak'] if is_commit(r))
     alone = service.patch_message(workspace, 'work:s1:b4m/pull-ahead/leak', leak, None)
     assert 'In-Reply-To' not in alone and 'Subject: [PATCH] mm: fix the leak' in alone
+
+
+def test_session_work_forks_where_its_project_does(ws):
+    service, workspace, _project = ws
+    points = service.fork_points(workspace, 'work:s1:b4m/pull-ahead/leak')
+    assert points[:2] == ['up/stable', 'me/base']
