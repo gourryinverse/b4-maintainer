@@ -10,7 +10,7 @@ import json
 import mailbox
 import pathlib
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Optional, Sequence
 
 from .model import (
@@ -547,4 +547,12 @@ def synthetic_snapshot(n: int, seed: int = 0) -> Snapshot:
         )
         if rng.random() < 0.3:
             responsible.add(s.identity)
-    return Snapshot(ws, build_items(series, states, ws, responsible=responsible))
+    items = build_items(series, states, ws, responsible=responsible)
+    # About half have replies, some weeks after the posting: activity reorders the list.
+    items = tuple(
+        replace(i, last_activity=i.series.sent + datetime.timedelta(minutes=rng.randint(0, 40_000)))
+        if i.series.sent and rng.random() < 0.5
+        else replace(i, last_activity=i.series.sent)
+        for i in items
+    )
+    return Snapshot(ws, items)

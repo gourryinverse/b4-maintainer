@@ -106,6 +106,32 @@ async def test_ten_thousand_series_meet_interface_targets():
         assert p95(cpu) <= TARGET, f'search keystroke cpu p95 {p95(cpu):.3f}s'
         assert p95(wall) - press_floor <= TARGET, f'search keystroke wall p95 {p95(wall):.3f}s'
 
+        await pilot.press('escape')
+        await pilot.pause()
+        app.screen.set_focus(series_list)
+
+        # l: latest activity first, and back; each view's first sort is the costly one.
+        async def toggle():
+            await pilot.press('l')
+
+        app.select_view('all')
+        await pilot.pause()
+        wall, cpu = await sample([toggle] * 30)
+        assert p95(cpu) <= TARGET, f'sort toggle cpu p95 {p95(cpu):.3f}s'
+        assert p95(wall) - press_floor <= TARGET, f'sort toggle wall p95 {p95(wall):.3f}s'
+        if not app._by_latest:
+            await toggle()
+        app._by_activity = {}  # Every view sorted afresh.
+        wall, cpu = await sample([lambda v=v: switch(v) for v in views])
+        assert p95(cpu) <= TARGET, f'sorted view switch cpu p95 {p95(cpu):.3f}s'
+        assert p95(wall) - pause_floor <= TARGET, f'sorted view switch wall p95 {p95(wall):.3f}s'
+        app.select_view('all')
+        await pilot.press('slash')
+        await pilot.pause()
+        wall, cpu = await sample(typed)
+        assert p95(cpu) <= TARGET, f'sorted search keystroke cpu p95 {p95(cpu):.3f}s'
+        assert p95(wall) - press_floor <= TARGET, f'sorted search wall p95 {p95(wall):.3f}s'
+
 
 def deep_thread(item, replies=160, depth=21):
     """One posting with a long, deep conversation, like a busy mailing-list discussion."""

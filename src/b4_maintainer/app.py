@@ -2,6 +2,7 @@
 """Browse screen (Views | Series | Summary) and pre-apply reader, with a session drawer."""
 
 import dataclasses
+import datetime
 import pathlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Protocol, Sequence
@@ -181,6 +182,7 @@ class SeriesList(ScrollView, can_focus=True):
         self._items: tuple[WorkItem, ...] = ()
         self._rows: dict[int, Segments] = {}
         self._heading = heading()
+        self._now: Optional[datetime.datetime] = None  # Set: rows show the Last column.
 
     @property
     def row_count(self) -> int:
@@ -190,11 +192,15 @@ class SeriesList(ScrollView, can_focus=True):
     def highlighted_item(self) -> Optional[WorkItem]:
         return self._items[self.cursor] if self._items else None
 
-    def set_items(self, items: tuple[WorkItem, ...], project_width: int = 0) -> None:
+    def set_items(
+        self, items: tuple[WorkItem, ...], project_width: int = 0, ages: bool = False
+    ) -> None:
+        """Show *items* (*ages*: with how long ago each one's last message came)."""
         self._items = items
         self._rows = {}
         self.project_width = project_width
-        self._heading = heading(project_width)
+        self._heading = heading(project_width, ages)
+        self._now = datetime.datetime.now(datetime.timezone.utc) if ages else None
         self.cursor = 0
         self.virtual_size = Size(0, len(items) + 1)
         self.scroll_to(0, 0, animate=False, immediate=True)
@@ -209,7 +215,7 @@ class SeriesList(ScrollView, can_focus=True):
     def _row(self, index: int) -> Segments:
         row = self._rows.get(index)
         if row is None:
-            row = row_segments(self._items[index], self.symbols, self.project_width)
+            row = row_segments(self._items[index], self.symbols, self.project_width, self._now)
             self._rows[index] = row
         return row
 
@@ -445,6 +451,9 @@ class MaintainerApp(App[None]):
         Binding('d', 'drop_series', 'drop', show=False),
         Binding('M', 'mark_read', 'read all', show=False),
         Binding('w', 'add_to_workbench', 'to workbench'),
+        # One key: newest posting first (the default), or latest activity first.
+        Binding('l', 'sort_latest', 'by latest'),
+        Binding('l', 'sort_posted', 'by posting'),
         # The tabs (shown in the tab bar): F4 in a thread shows its sessions' output instead.
         Binding('f2', "tab('lkml')", 'LKML', key_display='F2', show=False),
         Binding('f3', "tab('workbench')", 'Workbench', key_display='F3', show=False),
@@ -492,6 +501,8 @@ class MaintainerApp(App[None]):
         # Rebuilt per snapshot so each keystroke only runs the regex and set intersections.
         self._texts: list[tuple[str, str]] = []
         self._view_members: dict[str, frozenset[str]] = {}
+        self._by_latest = False  # The list: latest activity first, not newest posting.
+        self._by_activity: dict[str, tuple[WorkItem, ...]] = {}  # Per view, per snapshot.
         self._binding_state: Optional[tuple[Optional[bool], ...]] = None
         self._facts: Optional[tuple[SeriesThread, tuple[bool, bool]]] = None
         # Replies marked seen while reading; counts refresh when the reader closes.
@@ -651,6 +662,7 @@ class MaintainerApp(App[None]):
         self._view_members = {
             v.id: frozenset(i.identity for i in index.items(v.id)) for v in index.views
         }
+        self._by_activity = {}
         self._matches = self._compute_matches()
         views.add_options(Option(self._view_prompt(v.id, v.label), id=v.id) for v in index.views)
         self.select_view(view, force=True)
@@ -669,6 +681,10 @@ class MaintainerApp(App[None]):
     def _view_items(self, view_id: str) -> tuple[WorkItem, ...]:
         assert self.index is not None
         items = self.index.items(view_id)
+        if self._by_latest:
+            items = self._by_activity.get(view_id) or self._by_activity.setdefault(
+                view_id, _latest_first(items)
+            )
         if self._matches is None:
             return items
         return tuple(i for i in items if i.identity in self._matches)
@@ -691,7 +707,7 @@ class MaintainerApp(App[None]):
         self.current_view = view_id
         multi = len(self.index.workspace.projects) > 1
         project_width = 5 if multi and not view_id.startswith('project:') else 0
-        self._series_list.set_items(self._view_items(view_id), project_width)
+        self._series_list.set_items(self._view_items(view_id), project_width, self._by_latest)
         views = self._views
         position = views.get_option_index(view_id)
         if views.highlighted != position:
@@ -859,6 +875,8 @@ class MaintainerApp(App[None]):
         if action in ('apply_series', 'drop_series'):
             item = self._reading or self._item
             return self._branches is not None and item is not None and not item.series.discussion
+        if action in ('sort_latest', 'sort_posted'):
+            return not reading and self._by_latest == (action == 'sort_posted')
         if action == 'mark_read':
             return self._actions is not None and (self._reading or self._item) is not None
         if action in ('hide', 'unhide'):
@@ -3439,6 +3457,23 @@ class MaintainerApp(App[None]):
 
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
+    def action_sort_latest(self) -> None:
+        self._sort(True)
+
+    def action_sort_posted(self) -> None:
+        self._sort(False)
+
+    def _sort(self, by_latest: bool) -> None:
+        """Reorder the list, keeping the selected series."""
+        if self.index is None:
+            return
+        self._by_latest = by_latest
+        item = self._series_list.highlighted_item
+        self.select_view(self.current_view, force=True)
+        if item is not None:
+            self._series_list.select_identity(item.identity)
+        self._sync_bindings()
+
     def action_hide(self) -> None:
         self._toggle_hidden()
 
@@ -3475,6 +3510,8 @@ class MaintainerApp(App[None]):
         status = f' b4-maintainer — {view.label} ({self.index.count(view.id)})'
         if self._actions is None:
             status += ' · fixture data'
+        if self._by_latest:
+            status += ' · by latest activity'
         if self._query.pattern is not None:
             literal = ' (literal)' if self._query.literal else ''
             status += f' · /{self._query.text}{literal}'
@@ -3667,6 +3704,16 @@ def _bench_situation(
     situation = hub.situation(workspace, overview, skills, plans[0].project, bases=False)
     reason = next((r for r in (hub.worktree_reason(p.project) for p in plans) if r), '')
     return dataclasses.replace(situation, worktree_reason=reason)
+
+
+def _latest_first(items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
+    """Latest activity (a reply, else the posting) first; undated last."""
+
+    def key(item: WorkItem) -> float:
+        when = item.last_activity or item.series.sent
+        return -when.timestamp() if when is not None else float('inf')
+
+    return tuple(sorted(items, key=key))
 
 
 def _tree_line(plan: TreePlan) -> str:

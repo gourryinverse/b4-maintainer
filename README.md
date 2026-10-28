@@ -80,6 +80,9 @@ Python 3.11 or newer.
   patches for `git am --scissors`, their results and reproducers as text), and `ctrl+s`
   sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
+- The series list is newest posting first; `l` orders it by latest activity (its newest
+  message, a reply or a posting, from the cached mail) and back, keeping the selected
+  series, in every view and search; a Last column then says how long ago (5m, 3h, 12d).
 - `a` in the series list or a thread applies that series to a maintainer base or a b4 prep
   branch of any project (for a series routed to the wrong project, or none): pick the
   project and branch (when there are several), then the patches (all ticked to start). b4 applies them as `b4 am` would: authors kept, trailers given on the list

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Compact series-row rendering."""
 
+import datetime
 from dataclasses import dataclass
 from typing import Optional
 
@@ -36,6 +37,7 @@ AUTHOR_WIDTH = 16
 SASHIKO_WIDTH = 3
 FLAGS_WIDTH = 4
 PATCHES_WIDTH = 6
+AGE_WIDTH = 4  # The Last column, when the list is ordered by latest activity.
 SASHIKO_PENDING = frozenset({'Pending', 'Fetching', 'Applying', 'In Review', 'Incomplete'})
 SASHIKO_FAILED = frozenset({'Failed', 'Failed To Apply'})
 
@@ -108,8 +110,20 @@ def author_label(item: WorkItem) -> str:
 Segments = list[tuple[str, Optional[str]]]
 
 
-def heading(project_width: int = 0) -> str:
-    """Field names over the columns row_segments() lays out."""
+def age(when: Optional[datetime.datetime], now: datetime.datetime) -> str:
+    """How long ago, in four columns or fewer: 5m, 3h, 12d, 9w, 2y."""
+    if when is None:
+        return ''
+    minutes = max(0, int((now - when).total_seconds() // 60))
+    for unit, size in (('y', 525_600), ('w', 10_080), ('d', 1_440), ('h', 60)):
+        limit = {'w': 9, 'd': 14, 'h': 48}.get(unit, 1)
+        if minutes >= size * limit:
+            return f'{minutes // size}{unit}'
+    return f'{minutes}m'
+
+
+def heading(project_width: int = 0, ages: bool = False) -> str:
+    """Field names over the columns row_segments() lays out (*ages*: the Last column)."""
     head = ' '.join(
         (
             ' ' * FLAGS_WIDTH,
@@ -118,6 +132,8 @@ def heading(project_width: int = 0) -> str:
         )
     )
     tail = [pad_display('Ver', VERSION_WIDTH), pad_display('Patch', PATCHES_WIDTH)]
+    if ages:
+        tail.append(pad_display('Last', AGE_WIDTH))
     if project_width:
         tail.append(fit('Project', project_width))
     tail.append('Subject')
@@ -125,8 +141,12 @@ def heading(project_width: int = 0) -> str:
 
 
 def row_segments(
-    item: WorkItem, sym: Symbols = DEFAULT_SYMBOLS, project_width: int = 0
+    item: WorkItem,
+    sym: Symbols = DEFAULT_SYMBOLS,
+    project_width: int = 0,
+    now: Optional[datetime.datetime] = None,
 ) -> Segments:
+    """The row's fields; with *now*, the Last column: how long ago its last message came."""
     state = item.state
     unread = pad_display(sym.unread if state.unread else '', 1)
     stable = pad_display(sym.stable if state.stable_pending else '', 1)
@@ -142,6 +162,8 @@ def row_segments(
     version = '' if item.series.discussion else f'v{item.series.revision}'
     patches, completeness = patches_field(item.series, sym)
     tail = []
+    if now is not None:
+        tail.append(pad_display(age(item.last_activity or item.series.sent, now), AGE_WIDTH))
     if project_width:
         label = item.project_short or (sym.unassigned if item.candidates else '')
         tail.append(pad_display(label, project_width))

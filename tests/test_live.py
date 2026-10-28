@@ -442,6 +442,32 @@ def test_a_patch_posted_inside_a_thread_takes_only_its_own_replies(tmp_path):
     assert store.flags == {'rfc@example.org', 'on-rfc@example.org'}
 
 
+def test_each_item_knows_its_latest_message(tmp_path):
+    """An item's latest activity: its newest message, a reply or a posting (a patch
+    posted inside its thread keeps its own replies)."""
+    source, fakes, _store = responses_source(tmp_path)
+    _, old = mail(tmp_path, 'old', 'mm: old series', days_ago=9)
+    for m in old:
+        m.replace_header('Subject', str(m['Subject']).replace('[PATCH', '[PATCH v3'))
+    reply = reply_to(old[0], 'Reviewer <reviewer@example.org>', 'late@example.org', days_ago=1)
+    rfc = reply_to(old[0], 'Bystander <by@example.org>', 'rfc@example.org', days_ago=3)
+    rfc.replace_header('Subject', '[RFC] x86: remove a vector')
+    rfc.set_content(
+        'Like this.\n\n---\ndiff --git a/x.c b/x.c\n--- a/x.c\n+++ b/x.c\n@@ -1 +1 @@\n-a\n+b\n'
+    )
+    on_rfc = reply_to(rfc, 'Other <other@example.org>', 'on-rfc@example.org', days_ago=0)
+    _, quiet = mail(tmp_path, 'quiet', 'mm: quiet series', days_ago=4)
+    fakes.answers[MM] = old + [reply, rfc, on_rfc] + quiet
+    source.refresh()
+
+    items = {i.series.subject: i for i in source.load().items}
+    day = datetime.timedelta(days=1)
+    assert items['mm: old series'].last_activity == NOW - day  # Its reply, not the RFC's.
+    assert items['x86: remove a vector'].last_activity == NOW  # The reply to the RFC.
+    quiet = items['mm: quiet series']  # No replies: its last patch.
+    assert quiet.series.sent <= quiet.last_activity < quiet.series.sent + day
+
+
 STAGED_CONFIG = """\
 [[projects]]
 id = "demo"

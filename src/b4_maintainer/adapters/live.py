@@ -224,6 +224,7 @@ class LiveSource:
             dataclasses.replace(i, watched=True) if i.identity in watched else i for i in items
         )
         items = self._responses(ws, items)
+        items = self._activity(items)
         items = self._tree_evidence(ws, items)
         items = _stable_pending(items)
         items = self._sashiko_reviews(items)
@@ -463,6 +464,43 @@ class LiveSource:
                 item = dataclasses.replace(item, unread_msgids=found, state=state)
             result.append(item)
         return tuple(result)
+
+    def _activity(self, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
+        """Each item's newest message: a thread held by one item is all its own; in a
+        thread several items share, each message counts for the item it was written under."""
+        info = self.cache.messages()
+        holders: dict[str, list[WorkItem]] = {}
+        for item in items:
+            for src in item.sources:
+                holders.setdefault(pathlib.Path(src).name, []).append(item)
+        newest: dict[str, str] = {}  # Thread name, or (shared) msgid -> its owners: ISO date.
+        latest: dict[str, datetime.datetime] = {}
+        owners: Optional[Callable[[str], set[str]]] = None
+        for msgid, entry in info.items():
+            if not entry.date:
+                continue
+            name = self.cache.thread_name(entry.key)
+            held = holders.get(name, ())
+            if len(held) == 1:
+                if entry.date > newest.get(name, ''):
+                    newest[name] = entry.date
+                continue
+            if not held:
+                continue
+            owners = owners or self._owners(items, info)
+            when = _when(entry.date)
+            for identity in owners(msgid):
+                if when is not None and (identity not in latest or when > latest[identity]):
+                    latest[identity] = when
+        for name, date in newest.items():
+            when = _when(date)
+            identity = holders[name][0].identity
+            if when is not None and (identity not in latest or when > latest[identity]):
+                latest[identity] = when
+        return tuple(
+            dataclasses.replace(i, last_activity=latest.get(i.identity) or i.series.sent)
+            for i in items
+        )
 
     def _owners(
         self, items: Sequence[WorkItem], info: Mapping[str, MessageInfo]
@@ -759,3 +797,10 @@ def message_id_of(text: str) -> str:
         text = next((p for p in parts if '@' in p), '')
     text = text.removeprefix('id:').strip().strip('<>')
     return text if re.fullmatch(r'[^@\s<>/]+@[^@\s<>/]+', text) else ''
+
+
+def _when(date: str) -> Optional[datetime.datetime]:
+    try:
+        return datetime.datetime.fromisoformat(date)
+    except ValueError:
+        return None

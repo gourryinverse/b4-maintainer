@@ -265,6 +265,8 @@ class WorkItem:
     sashiko: Optional[SashikoReview] = None
     # A discussion the maintainer follows ($); b4 tracks series only.
     watched: bool = False
+    # Its newest message (a posting or a reply), from the mail cache; None if unknown.
+    last_activity: Optional[datetime.datetime] = None
 
     @property
     def identity(self) -> str:
