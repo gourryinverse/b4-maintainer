@@ -411,6 +411,37 @@ def test_mark_read_covers_every_message_in_the_series(tmp_path):
     assert ViewIndex(*_snap(source)).count('responses') == 0
 
 
+def test_a_patch_posted_inside_a_thread_takes_only_its_own_replies(tmp_path):
+    """A patch posted as a reply in someone's thread is an item of its own, sharing the
+    thread's mbox: responses to me elsewhere in that thread belong to the thread's
+    series, where they can be read, and M on the patch marks only the patch's messages."""
+    source, fakes, store = responses_source(tmp_path)
+    _, theirs = mail(tmp_path, 'theirs', 'mm: their series')
+    for m in theirs:  # A later revision: the patch below is not one of its parts.
+        m.replace_header('Subject', str(m['Subject']).replace('[PATCH', '[PATCH v8'))
+    cover = theirs[0]
+    my_review = reply_to(cover, 'Me <me@example.org>', 'my-review@example.org')
+    answer = reply_to(my_review, 'Contributor <contributor1@example.org>', 'answer@example.org')
+    aside = reply_to(cover, 'Bystander <by@example.org>', 'rfc@example.org')
+    aside.replace_header('Subject', '[RFC] x86: remove a vector')  # No Re:, as posted.
+    aside.set_content(
+        'I think we can do the below.\n\n---\n'
+        'diff --git a/arch/x86/x.c b/arch/x86/x.c\n'
+        '--- a/arch/x86/x.c\n+++ b/arch/x86/x.c\n@@ -1,2 +1 @@\n a\n-b\n'
+    )
+    on_rfc = reply_to(aside, 'Other <other@example.org>', 'on-rfc@example.org')
+    fakes.answers[MM] = theirs + [my_review, answer, aside, on_rfc]
+    source.refresh()
+
+    items = {i.series.subject: i for i in source.load().items}
+    rfc, series = items['x86: remove a vector'], items['mm: their series']
+    assert set(rfc.sources) & set(series.sources)  # One thread, two items.
+    assert series.unread_msgids == {'answer@example.org'}
+    assert not rfc.unread_msgids  # Not a party to the patch's own thread.
+    assert 'Marked 2' in source.mark_read(rfc)
+    assert store.flags == {'rfc@example.org', 'on-rfc@example.org'}
+
+
 STAGED_CONFIG = """\
 [[projects]]
 id = "demo"

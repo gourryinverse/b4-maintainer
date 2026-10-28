@@ -93,6 +93,7 @@ class LiveSource:
         self._identity = identity
         self._seen = seen
         self._mark_seen = mark_seen
+        self._items: tuple[WorkItem, ...] = ()  # The last load's.
         self._sashiko_url = sashiko_url
         self._sashiko_get = sashiko_get
         self._sashiko_patchset = sashiko_patchset
@@ -231,6 +232,7 @@ class LiveSource:
         items = tuple(
             dataclasses.replace(i, hidden=True) if hidden.matches(i) else i for i in items
         )
+        self._items = items  # For marking an item read: the items sharing its threads.
         return Snapshot(ws, items)
 
     def _ownership(self, ws: Workspace, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
@@ -448,19 +450,49 @@ class LiveSource:
         if not replies:
             return items
         unread = set(replies) - self._seen(checkout, list(replies))
-        by_thread: dict[str, set[str]] = {}
+        owners = self._owners(items, info)
+        by_item: dict[str, set[str]] = {}
         for msgid in unread:
-            by_thread.setdefault(self.cache.thread_name(replies[msgid].key), set()).add(msgid)
+            for identity in owners(msgid):
+                by_item.setdefault(identity, set()).add(msgid)
         result = []
         for item in items:
-            found = frozenset().union(
-                *(by_thread.get(pathlib.Path(src).name, set()) for src in item.sources)
-            )
+            found = frozenset(by_item.get(item.identity, ()))
             if found:
                 state = dataclasses.replace(item.state, unread=len(found))
                 item = dataclasses.replace(item, unread_msgids=found, state=state)
             result.append(item)
         return tuple(result)
+
+    def _owners(
+        self, items: Sequence[WorkItem], info: Mapping[str, MessageInfo]
+    ) -> Callable[[str], set[str]]:
+        """Which items a cached message belongs to (by identity): the item of the nearest
+        series message it descends from, whose threads hold it; failing that, every item
+        whose threads hold it. A patch posted inside another series' thread shares that
+        thread's mbox, but only the messages below it are its own."""
+        names = {i.identity: {pathlib.Path(src).name for src in i.sources} for i in items}
+        posted = {m: i.identity for i in items for m in i.series.msgids}
+        holders: dict[str, set[str]] = {}
+        for identity, held in names.items():
+            for name in held:
+                holders.setdefault(name, set()).add(identity)
+
+        def owners(msgid: str) -> set[str]:
+            entry = info.get(msgid)
+            if entry is None:
+                return set()
+            name = self.cache.thread_name(entry.key)
+            seen, current = set(), msgid
+            while current and current not in seen:
+                identity = posted.get(current)
+                if identity is not None and name in names[identity]:
+                    return {identity}
+                seen.add(current)
+                current = info[current].parent if current in info else None
+            return set(holders.get(name, ()))
+
+        return owners
 
     def mark_seen(self, msgids: Iterable[str]) -> None:
         ws = self.workspace()
@@ -489,11 +521,14 @@ class LiveSource:
         return f'Replied: {item.series.subject}'
 
     def mark_read(self, item: WorkItem) -> str:
-        """Mark every cached message in the item's threads (all revisions) as seen."""
+        """Mark every cached message of the item's (all revisions) as seen: its threads',
+        less those of other items posted inside them."""
         names = {pathlib.Path(src).name for src in item.sources}
-        msgids = [
-            m for m, e in self.cache.messages().items() if self.cache.thread_name(e.key) in names
-        ]
+        info = self.cache.messages()
+        held = [m for m, e in info.items() if self.cache.thread_name(e.key) in names]
+        sharing = [i for i in self._items if names & {pathlib.Path(s).name for s in i.sources}]
+        owners = self._owners([item, *(i for i in sharing if i.identity != item.identity)], info)
+        msgids = [m for m in held if item.identity in owners(m)]
         self.mark_seen(msgids)
         return f'Marked {len(msgids)} message(s) read: {item.series.subject}'
 
