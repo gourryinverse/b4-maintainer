@@ -43,7 +43,7 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
     app = make(demo_root, tmp_path)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        assert tab_text(app) == ' F2 LKML  F3 Workbench  F4 Branches '
+        assert tab_text(app) == ' F2 LKML  F3 Workbench  F4 Branches  F6 Settings '
         assert app.screen.query_one(TabBar).current == 'lkml'
         await pilot.press('f3')
         await settle(pilot)

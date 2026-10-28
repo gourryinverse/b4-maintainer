@@ -68,7 +68,13 @@ Python 3.11 or newer.
     ./b4-maintainer --demo .local/demo
 
 - Tabs across the top: `F2` LKML (the series list and threads), `F3` Workbench, `F4`
-  Branches; each keeps its place when you switch away and back. The footer shows each
+  Branches, `F6` Settings; each keeps its place when you switch away and back.
+- Settings shows which key patatt signs mail with for every project (and any checkout's
+  own), and sets one up in your global git configuration after a confirmation: an
+  existing PGP key from gpg (`patatt.signingkey = openpgp:<fingerprint>`), a new patatt
+  ed25519 key (`patatt genkey`; publish its public key), or no signing. Without a key,
+  mail goes unsigned instead of failing; sending a patch from F4 ends with a choice of
+  signed (first when a key is set up) or unsigned. The footer shows each
   tab's common keys; `?` lists all of them.
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
   live: `F5` fetches profile lists and your own mail from lore (in a thread, the thread reloads
@@ -236,7 +242,7 @@ Python 3.11 or newer.
   list) and tagged with the project's first subject tag (`[ndctl PATCH]`); any other
   commit asks which. A message with no recipients is not sent. An agent's commit goes as yours, with
   `Assisted-by:` and your `Signed-off-by:`. The whole `.eml` opens in your editor first,
-  and it goes after a last look at Subject, To, and Cc. `x` removes a prep
+  and it goes after a last look at Subject, To, and Cc, signed or unsigned as you pick. `x` removes a prep
   branch (`b4 prep --cleanup`, which archives it), another local branch, session work
   (an agent branch, not while its session is live), a tracked branch (back on refresh
   only once its remote moves), or a session tree,

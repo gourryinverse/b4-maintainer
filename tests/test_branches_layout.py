@@ -222,7 +222,7 @@ class MailBranches(SectionBranches):
         return f'From: Me <me@example.org>\nTo: {to}\nSubject: [PATCH] mm: x\n{where}\nbody\n'
 
 
-def mail_app(demo_root, service, edited=None):
+def mail_app(demo_root, service, edited=None, signing_key='openpgp:ABCD'):
     from b4_maintainer.patchmail import ReplyTo
 
     app = make_app(demo_root, service)
@@ -231,13 +231,12 @@ def mail_app(demo_root, service, edited=None):
         '<p3@example.org>', '<p3@example.org>', (('C', 'c@example.org'),), ()
     )
     app.edit_message = lambda text: edited if edited is not None else text
-    app.send_message = lambda project, text: sent.append((project, text)) or 'Sent'
+    app.mail_signing = lambda project: signing_key
+    app.send_message = lambda project, text, sign: sent.append((project, text, sign)) or 'Sent'
     return app, sent
 
 
 async def test_m_sends_a_fixup_as_a_reply_after_editing_and_a_confirmation(demo_root):
-    from b4_maintainer.app import Confirm
-
     service = MailBranches()
     app, sent = mail_app(demo_root, service, edited=None)
     async with app.run_test(size=(180, 40)) as pilot:
@@ -248,13 +247,16 @@ async def test_m_sends_a_fixup_as_a_reply_after_editing_and_a_confirmation(demo_
         await pilot.press('m')
         await settle(pilot)
         confirm = app.screen
-        assert isinstance(confirm, Confirm)
-        assert 'In reply to <p3@example.org>' in confirm.prompt
-        assert 'To: Contributor <c@example.org>' in confirm.prompt
-        assert 'Signed-off-by' in confirm.prompt  # The DCO: said before it goes.
-        await pilot.press('y')
+        assert isinstance(confirm, Pick)
+        assert 'In reply to <p3@example.org>' in confirm.title_text
+        assert 'To: Contributor <c@example.org>' in confirm.title_text
+        assert 'Signed-off-by' in confirm.title_text  # The DCO: said before it goes.
+        assert [k for k, _label in confirm.choices] == ['signed', 'unsigned']  # A key: signed.
+        await pilot.press('enter')
         await settle(pilot)
-        assert [(p, 'In-Reply-To: <p3@example.org>' in t) for p, t in sent] == [('linux', True)]
+        assert [(p, 'In-Reply-To: <p3@example.org>' in t, sign) for p, t, sign in sent] == [
+            ('linux', True, True)
+        ]
         assert service.built[0][0] == 'f1' and service.built[0][1].msgid == '<p3@example.org>'
         assert 'Sent' in screen.status_text()
 
@@ -269,10 +271,10 @@ async def test_m_sends_a_pull_ahead_as_its_own_thread(demo_root):
         await settle(pilot)
         await pilot.press('m')
         await settle(pilot)
-        assert 'new thread' in app.screen.prompt and '[PATCH] mm: y' in app.screen.prompt
-        await pilot.press('y')
+        assert 'new thread' in app.screen.title_text and '[PATCH] mm: y' in app.screen.title_text
+        await pilot.press('down', 'enter')  # Unsigned, by choice.
         await settle(pilot)
-        assert sent == [('linux', edited)]  # What was saved in the editor goes.
+        assert sent == [('linux', edited, False)]  # What was saved in the editor goes.
         assert service.built == [('o1', None)]
 
 
@@ -359,3 +361,20 @@ async def test_a_message_without_recipients_is_not_sent(demo_root):
         await settle(pilot)
         assert isinstance(app.screen, BranchesScreen) and sent == []
         assert 'no recipients' in screen.status_text()
+
+
+async def test_without_a_key_a_patch_can_only_go_unsigned(demo_root):
+    service = MailBranches()
+    app, sent = mail_app(demo_root, service, signing_key='')
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        screen.select_item('work:s2:b4m/pull-ahead/old')
+        await settle(pilot)
+        await pilot.press('m')
+        await settle(pilot)
+        pick = app.screen
+        assert [k for k, _label in pick.choices] == ['unsigned']
+        assert 'F6' in pick.title_text  # Where to set one up.
+        await pilot.press('enter')
+        await settle(pilot)
+        assert [sign for _p, _t, sign in sent] == [False]

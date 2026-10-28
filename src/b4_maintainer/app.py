@@ -73,6 +73,7 @@ from .sessions.records import SessionRecord
 from .sessions.skills import Skill
 from .sessions.store import SessionView
 from .sessions.trees import TreeState
+from .settingsscreen import SettingsScreen
 from .views import ViewIndex
 from .widgets import Block, KeyBar, TabBar, TextPane, printable
 from .workbench import (
@@ -151,9 +152,9 @@ class SourceActions(Protocol):
 
     def answered(self, item: WorkItem, msgid: str) -> str: ...
 
-    def send_message(self, project_id: str, text: str) -> str: ...
+    def send_message(self, project_id: str, text: str, sign: Optional[bool] = None) -> str: ...
 
-    def will_sign(self, project_id: str) -> bool: ...
+    def signing_key(self, project_id: str) -> str: ...
 
 
 class SeriesList(ScrollView, can_focus=True):
@@ -464,6 +465,7 @@ class MaintainerApp(App[None]):
         Binding('f2', "tab('lkml')", 'LKML', key_display='F2', show=False),
         Binding('f3', "tab('workbench')", 'Workbench', key_display='F3', show=False),
         Binding('f4', 'artifacts', 'Branches', key_display='F4', show=False),
+        Binding('f6', "tab('settings')", 'Settings', key_display='F6', show=False),
         Binding('question_mark', 'keys', 'keys', key_display='?'),
         Binding('f1', 'launch_session', 'session', key_display='F1'),
         Binding('f12', 'focus_session', 'to session', key_display='F12', show=False),
@@ -2399,6 +2401,8 @@ class MaintainerApp(App[None]):
                 screen: Screen[Any] = WorkbenchScreen(self._workbenches, snapshot.workspace, {}, {})
             elif tab == 'branches' and self._branches is not None:
                 screen = BranchesScreen(self._branches, snapshot.workspace)
+            elif tab == 'settings':
+                screen = SettingsScreen(self._project_checkouts)
             else:
                 return
             self.install_screen(screen, tab)
@@ -2419,6 +2423,13 @@ class MaintainerApp(App[None]):
         else:
             self.push_screen(tab)
         self.call_after_refresh(self._place_pane)  # The column follows the tab.
+
+    def _project_checkouts(self) -> list[tuple[str, pathlib.Path]]:
+        """(project, checkout) of each project of a live workspace (blocking-safe)."""
+        checkout = getattr(self._actions, 'checkout', None)
+        if checkout is None or self.snapshot is None:
+            return []
+        return [(p.id, checkout(p)) for p in self.snapshot.workspace.projects]
 
     def action_keys(self) -> None:
         """?: every key of the current tab, the footer's and the rest."""
@@ -2953,22 +2964,18 @@ class MaintainerApp(App[None]):
         return saved.decode(errors='replace') if saved is not None else None
 
     def mail_signing(self, project: str) -> str:
-        """How a patch sent for *project* is signed, for the confirmation (blocking)."""
-        actions = self._actions
-        will_sign = getattr(actions, 'will_sign', None)
-        if will_sign is None:
-            return ''
-        if will_sign(project):
-            return 'Signed with patatt.'
-        return 'Unsigned: no patatt key (patatt.signingkey or user.signingkey), or signing is off.'
+        """The key a patch for *project* would be signed with ('' if none, or signing is
+        off), for the send step's choice (blocking)."""
+        signing_key = getattr(self._actions, 'signing_key', None)
+        return signing_key(project) if signing_key is not None else ''
 
-    def send_message(self, project: str, text: str) -> str:
-        """Send *text* through b4, the terminal handed over while it runs."""
+    def send_message(self, project: str, text: str, sign: bool) -> str:
+        """Send *text* through b4 (*sign*: patatt-signed), the terminal handed over."""
         actions = self._actions
         if actions is None:
             raise RuntimeError('sending needs a live workspace')
         with self.suspend():
-            return actions.send_message(project, text)
+            return actions.send_message(project, text, sign)
 
     def bench_fold_plan(self, item: str, folded: str) -> FoldPlan:
         branches, workspace = self._bench_branches()

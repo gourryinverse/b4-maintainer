@@ -57,13 +57,18 @@ def patatt_sign_default() -> bool:
 def patatt_key(checkout: pathlib.Path) -> bool:
     """Whether patatt has a key to sign with in this checkout: patatt.signingkey or
     user.signingkey (without either, patatt refuses: "no key configured")."""
-    for key in ('patatt.signingkey', 'user.signingkey'):
+    return bool(patatt_key_name(checkout))
+
+
+def patatt_key_name(checkout: pathlib.Path) -> str:
+    """The key patatt signs with in this checkout ('' if none), as patatt finds it."""
+    for key, shown in (('patatt.signingkey', '{}'), ('user.signingkey', 'openpgp:{}')):
         run = subprocess.run(
             ['git', 'config', '--get', key], cwd=checkout, capture_output=True, text=True
         )
         if run.returncode == 0 and run.stdout.strip():
-            return True
-    return False
+            return shown.format(run.stdout.strip())
+    return ''
 
 
 def patatt_send_default() -> bool:

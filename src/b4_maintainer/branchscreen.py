@@ -903,8 +903,6 @@ class BranchesScreen(Screen[None]):
             confirm(edited)
 
         def confirm(text: str) -> None:
-            from .app import Confirm
-
             msg = email.message_from_string(text, policy=email.policy.default)
             if not msg['To'] and not msg['Cc']:
                 self._status('Not mailed: no recipients (add To: in the .eml next time)')
@@ -918,22 +916,26 @@ class BranchesScreen(Screen[None]):
                 'It goes as you, with your Signed-off-by (you certify the DCO).',
             ]
             signing: Any = getattr(self.app, 'mail_signing', None)
-            note = signing(project) if signing is not None else ''
-            lines += [note, '[y|N]'] if note else ['[y|N]']
+            key = signing(project) if signing is not None else ''
+            choices = [('unsigned', 'Send unsigned')]
+            if key:  # A key configured: signed is the default.
+                choices.insert(0, ('signed', f'Send signed with patatt ({key})'))
+            else:
+                lines.append('No signing key: F6 Settings sets one up for every project.')
 
-            def answered(yes: Optional[bool]) -> None:
-                if yes:
-                    send(text)
+            def answered(way: Optional[str]) -> None:
+                if way in ('signed', 'unsigned'):
+                    send(text, way == 'signed')
 
-            self.app.push_screen(Confirm('\n'.join(lines)), answered)
+            self.app.push_screen(Pick('\n'.join(lines), choices), answered)
 
-        def send(text: str) -> None:
+        def send(text: str, sign: bool) -> None:
             sender: Any = getattr(self.app, 'send_message', None)
             if sender is None:
                 self._status('Not mailed: sending is not available here')
                 return
             try:
-                self._status(sender(project, text))
+                self._status(sender(project, text, sign))
             except Exception as exc:
                 self._status(f'Not sent: {exc}')
 
