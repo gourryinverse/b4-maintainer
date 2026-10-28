@@ -1,0 +1,55 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# virtiofsd for vng in a session sandbox: a workaround.
+#
+# The sandbox's user namespace maps only the maintainer's uid (to root), so the files
+# root owns appear as the kernel's overflow uid and gid (65534). Exported as is, vng's
+# guest runs the setuid-root mount and su as that id and cannot set itself up
+# ("mount: must be superuser", "su: cannot set groups"). This has virtiofsd show them
+# as root's in the guest. Remove it when the installed virtme-ng does so itself (the
+# virtme-ng fork's virtiofs-userns-root branch, proposed upstream).
+here=$(cd "$(dirname "$0")" && pwd)
+real=
+saved=$IFS
+IFS=:
+for dir in $PATH; do
+    if [ "$dir" != "$here" ] && [ -f "$dir/virtiofsd" ] && [ -x "$dir/virtiofsd" ]; then
+        real=$dir/virtiofsd
+        break
+    fi
+done
+IFS=$saved
+if [ -z "$real" ]; then  # Where virtme-ng looks.
+    for path in /usr/libexec/virtiofsd /usr/lib/virtiofsd/virtiofsd /usr/lib/virtiofsd \
+        /usr/lib/qemu/virtiofsd; do
+        if [ -f "$path" ] && [ -x "$path" ]; then
+            real=$path
+            break
+        fi
+    done
+fi
+if [ -z "$real" ]; then
+    echo 'virtiofsd: not installed' >&2
+    exit 127
+fi
+
+case " $* " in
+*" --translate-uid"* | *" --translate-gid"*) exec "$real" "$@" ;;  # Already translated.
+*" --shared-dir"*) ;;  # A daemon run.
+*) exec "$real" "$@" ;;
+esac
+"$real" --help 2>/dev/null | grep -q -- --translate-uid || exec "$real" "$@"
+
+unmapped() {  # The overflow uid or gid ($1), if this namespace does not map it.
+    id=$(cat "/proc/sys/kernel/overflow$1" 2>/dev/null) || return 1
+    awk -v id="$id" '$1 <= id+0 && id+0 < $1 + $3 { found = 1 } END { exit found }' \
+        "/proc/self/$1_map" 2>/dev/null || return 1
+    echo "$id"
+}
+if uid=$(unmapped uid); then
+    set -- --translate-uid "host:$uid:0:1" "$@"
+fi
+if gid=$(unmapped gid); then
+    set -- --translate-gid "host:$gid:0:1" "$@"
+fi
+exec "$real" "$@"

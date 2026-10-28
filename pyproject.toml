@@ -32,7 +32,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-b4_maintainer = ["sessions/profiles/*.toml", "sessions/skills/**/*", "sessions/extension/*.ts"]
+b4_maintainer = ["sessions/profiles/*.toml", "sessions/skills/**/*", "sessions/extension/*.ts", "sessions/shims/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

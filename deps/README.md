@@ -64,3 +64,8 @@ Configure remotes after initialization:
 - b4 `get_series()` runs `git patch-id` once per patch; parsing a list window is slow.
 - liblore has no linear-time thread splitter; the client keys threads by References root.
   Remove the client grouping when liblore provides one.
+- virtme-ng exports host files root owns as the overflow ids (65534) when run in a user
+  namespace that does not map root (the session sandbox), so its guest cannot use the
+  setuid-root mount and su. Fix on the fork's `virtiofs-userns-root` branch (pending
+  upstream); until the installed virtme-ng has it, the sandbox's `virtiofsd` shim
+  (`sessions/shims/`) adds the translation. Remove the shim then.

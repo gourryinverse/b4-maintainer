@@ -78,7 +78,8 @@ echo "=== captured to $LOG ==="
 ```
 
 `script -q -c` is there because vng buffers heavily; without a pty you may see nothing
-until exit. The `--exec` argument is single-quoted *inside* the double-quoted
+until exit. If `script` is missing (Fedora: util-linux-script), run vng directly with
+`> "$LOG" 2>&1`: the guest falls back to the serial console and the output still arrives. The `--exec` argument is single-quoted *inside* the double-quoted
 `script -c` string; getting this wrong gives a VM that boots and exits with no output.
 After editing that line, `bash -n` the launcher: a mismatched quote is easy and silent.
 

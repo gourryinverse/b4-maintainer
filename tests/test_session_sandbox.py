@@ -154,3 +154,46 @@ def test_a_missing_session_runs_nothing(tmp_path, home):
         timeout=30,
     )
     assert result.returncode != 0 and 'ran' not in result.stdout
+
+
+def test_vngs_virtiofsd_is_the_sandboxs_shim_first(tmp_path):
+    from b4_maintainer.sessions.sandbox import SHIMS
+
+    argv = bwrap_argv(Policy((), (), str(tmp_path), kvm=True), 'vng')
+    joined = ' '.join(argv)
+    assert f'--ro-bind {SHIMS} {SHIMS}' in joined
+    path = argv[argv.index('PATH', argv.index('--setenv')) + 1]
+    assert path.split(':')[0] == str(SHIMS) and (SHIMS / 'virtiofsd').is_file()
+
+
+FAKE_VIRTIOFSD = """#!/bin/sh
+[ "$1" = --help ] && { echo '      --translate-uid <TRANSLATE_UID>'; exit 0; }
+echo "args: $*"
+"""
+
+
+@real
+def test_the_shim_shows_root_owned_files_as_roots_in_the_guest(tmp_path):
+    """In a namespace that maps one uid to root (as the sandbox's), the files root owns
+    appear as the overflow ids: the shim has virtiofsd show them as root's."""
+    from b4_maintainer.sessions.sandbox import SHIMS
+
+    fake = tmp_path / 'bin'
+    fake.mkdir()
+    (fake / 'virtiofsd').write_text(FAKE_VIRTIOFSD)
+    (fake / 'virtiofsd').chmod(0o755)
+    path = f'{SHIMS}:{fake}:/usr/bin:/bin'
+
+    def shim(*args):
+        command = ['unshare', '-r', 'env', f'PATH={path}', 'virtiofsd', *args]
+        return subprocess.run(command, capture_output=True, text=True, timeout=20).stdout
+
+    overflow = pathlib.Path('/proc/sys/kernel/overflowuid').read_text().strip()
+    out = shim('--shared-dir', '/', '--sandbox', 'none')
+    assert out.strip() == (
+        f'args: --translate-gid host:{overflow}:0:1 --translate-uid host:{overflow}:0:1 '
+        '--shared-dir / --sandbox none'
+    )
+    assert shim('--version').strip() == 'args: --version'  # Only a daemon run.
+    given = shim('--translate-uid', 'host:1:0:1', '--shared-dir', '/')
+    assert given.strip() == 'args: --translate-uid host:1:0:1 --shared-dir /'

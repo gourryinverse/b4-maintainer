@@ -17,6 +17,7 @@ every shell command.
 
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -29,6 +30,9 @@ SYSTEM = ('/usr', '/etc', '/bin', '/sbin', '/lib', '/lib64')
 MOUNT_POINTS = ('/run', '/var', '/sys', '/home', '/root', '/opt', '/srv', '/mnt')
 PATH = '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin'
 KVM = '/dev/kvm'
+# Commands ahead of the system's: a virtiofsd that shows root's files as root's in a vng
+# guest (a workaround until virtme-ng does so itself; see the shim).
+SHIMS = pathlib.Path(__file__).parent / 'shims'
 
 
 class SandboxError(Exception):
@@ -111,7 +115,8 @@ def bwrap_argv(policy: Policy, command: str) -> list[str]:
     for path in policy.writable:  # Later binds win: out/ is writable inside work/.
         if os.path.exists(path):
             argv += ['--bind', path, path]
-    env = {'PATH': PATH, 'HOME': '/tmp', 'LANG': os.environ.get('LANG', 'C.UTF-8')}
+    argv += ['--ro-bind', str(SHIMS), str(SHIMS)]
+    env = {'PATH': f'{SHIMS}:{PATH}', 'HOME': '/tmp', 'LANG': os.environ.get('LANG', 'C.UTF-8')}
     env |= {'TERM': os.environ.get('TERM', 'dumb'), **policy.env}
     for key, value in env.items():
         argv += ['--setenv', key, value]
