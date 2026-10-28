@@ -92,22 +92,38 @@ def _sparse_worktree(repo: pathlib.Path, worktree: pathlib.Path, ref: str) -> No
 
 
 def cut_prep(
-    repo: pathlib.Path, worktree: pathlib.Path, name: str, fork: str, cover: Optional[str]
+    repo: pathlib.Path,
+    worktree: pathlib.Path,
+    name: str,
+    fork: str,
+    cover: Optional[str],
+    tag: str = '',
 ) -> str:
     """A new prep branch `b4/<name>` from *fork*, made by `b4 prep -n` in a sparse worktree
-    at *worktree*, its cover letter set from *cover* (subject line, blank line, body).
-    On failure nothing is left: no worktree, branch, or branch configuration."""
-    return _new_prep(repo, worktree, name, fork, (), cover)
+    at *worktree*, its cover letter set from *cover* (subject line, blank line, body);
+    *tag* goes before PATCH in its subjects ([ndctl PATCH v2 1/3]). On failure nothing is
+    left: no worktree, branch, or branch configuration."""
+    return _new_prep(repo, worktree, name, fork, _tagged(tag), cover)
+
+
+def _tagged(tag: str) -> tuple[str, ...]:
+    """b4's prefixes for a tag before PATCH: with PATCH among them, b4 keeps their order."""
+    return ('--set-prefixes', tag, 'PATCH') if tag else ()
 
 
 def prep_from_thread(
-    repo: pathlib.Path, worktree: pathlib.Path, name: str, fork: str, msgid: str
+    repo: pathlib.Path,
+    worktree: pathlib.Path,
+    name: str,
+    fork: str,
+    msgid: str,
+    tag: str = '',
 ) -> str:
     """A new prep branch `b4/<name>` from *fork* for a posted series (`b4 prep -F`): b4
     imports its cover letter (to review), prepares the revision after the posted one,
     and applies its patches with their authors; the change-id is the posting's when it
     carried b4's tracking. b4 reads the thread from lore. On failure nothing is left."""
-    return _new_prep(repo, worktree, name, fork, ('-F', msgid), None)
+    return _new_prep(repo, worktree, name, fork, ('-F', msgid, *_tagged(tag)), None)
 
 
 def _new_prep(
@@ -170,10 +186,15 @@ def ensure_worktree(repo: pathlib.Path, worktree: pathlib.Path, branch: str) -> 
 
 
 def run_b4(
-    worktree: pathlib.Path, branch: str, *args: str, interactive: bool = False
+    worktree: pathlib.Path,
+    branch: str,
+    *args: str,
+    interactive: bool = False,
+    stdin: Optional[str] = None,
 ) -> tuple[int, str]:
     """Run b4 with *args* on *branch*, checked out in *worktree* only meanwhile;
-    *interactive* runs it on the terminal (an editor), output not captured."""
+    *interactive* runs it on the terminal (an editor), output not captured; *stdin* is
+    its input."""
     switched = _git(worktree, 'switch', '--quiet', branch, check=False)
     if switched.returncode != 0:
         why = switched.stderr.strip()
@@ -183,7 +204,7 @@ def run_b4(
     try:
         if interactive:
             return subprocess.run([*b4_command(), *args], cwd=worktree).returncode, ''
-        return _b4(worktree, *args)
+        return _b4(worktree, *args, stdin=stdin)
     finally:
         _git(worktree, 'switch', '--quiet', '--detach', check=False)
 
@@ -195,6 +216,29 @@ def cover_text(repo: pathlib.Path, branch: str) -> str:
     )
     text = out.stdout.lstrip('\x1e')
     return text.split(TRACKING, 1)[0].strip()
+
+
+def cover_recipients(cover: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """(to, cc) a prep branch's cover letter names, as b4 send reads them."""
+    import b4.ez
+
+    tos, ccs, _body = b4.ez.get_cover_dests(cover)
+    return list(tos), list(ccs)
+
+
+def ensure_recipient(repo: pathlib.Path, worktree: pathlib.Path, branch: str, to: str) -> bool:
+    """Give a cover letter that names nobody *to* as To (b4 rewrites it); whether it did."""
+    cover = cover_text(repo, branch)
+    tos, ccs = cover_recipients(cover)
+    if tos or ccs:
+        return False
+    ensure_worktree(repo, worktree, branch)
+    code, out = run_b4(
+        worktree, branch, 'prep', '--cover-from-file', '-', stdin=f'{cover}\n\nTo: {to}\n'
+    )
+    if code != 0:
+        raise PrepError(f'b4 prep --cover-from-file failed: {out}')
+    return True
 
 
 @dataclass(frozen=True)

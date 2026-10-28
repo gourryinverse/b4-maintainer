@@ -601,7 +601,7 @@ def test_folding_another_authors_series_makes_a_prep_branch_from_its_thread(
     series = dataclasses.replace(series, identity=record.series)
     calls = []
 
-    def from_thread(repo, worktree, name, fork, msgid):  # b4 prep -F, without lore.
+    def from_thread(repo, worktree, name, fork, msgid, tag=''):  # b4 prep -F, without lore.
         calls.append((name, fork, msgid))
         return cut_prep(repo, worktree, name, fork, 'mm/foo: their change\n\nImported.\n')
 
@@ -821,3 +821,48 @@ def test_without_maintainers_a_new_patch_goes_to_the_projects_first_list(ws):
     text = service.patch_message(workspace, key, row, None)
     assert 'To: nvdimm@lists.linux.dev' in text and 'Cc:' not in text
     assert 'Subject: [ndctl PATCH] mm: fix the leak' in text
+
+
+def tagged_ws():
+    return Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': 'linux',
+                    'path': 'projects/linux',
+                    'lists': ['nvdimm@lists.linux.dev', 'linux-cxl@vger.kernel.org'],
+                    'subject_tags': ['ndctl'],
+                    'bases': [{'branch': 'me/base', 'upstream': 'up/stable'}],
+                }
+            ]
+        }
+    )
+
+
+def test_a_tagged_project_without_maintainers_gets_its_prefix_and_list(ws):
+    from b4_maintainer.adapters.prep import cover_recipients, cover_text
+
+    service, _workspace, project = ws
+    workspace = tagged_ws()
+    data = service.snapshot(workspace, trees=False)
+    key = 'work:s1:b4m/pull-ahead/leak'
+    rows = [r for r in data.details[key] if is_commit(r)]
+    result = service.cut_prep(workspace, key, rows, 'leak', 'up/stable')
+    assert result.ok
+    to, _cc = cover_recipients(cover_text(project, result.branch))
+    assert [a for _n, a in to] == ['nvdimm@lists.linux.dev']  # No get_maintainer here.
+    message = git('log', '-1', '--format=%B', f'{result.branch}~1', cwd=project)
+    assert '"prefixes": [' in message and '"ndctl"' in message and '"PATCH"' in message
+
+
+def test_a_name_already_taken_leaves_that_prep_branch_alone(ws):
+    service, _workspace, project = ws
+    workspace = tagged_ws()
+    data = service.snapshot(workspace, trees=False)
+    key = 'work:s1:b4m/pull-ahead/leak'
+    rows = [r for r in data.details[key] if is_commit(r)]
+    first = service.cut_prep(workspace, key, rows, 'taken', 'up/stable')
+    tip = git('rev-parse', first.branch, cwd=project)
+    again = service.cut_prep(workspace, key, rows, 'taken', 'up/stable')
+    assert not again.ok and 'exists' in again.error
+    assert git('rev-parse', first.branch, cwd=project) == tip

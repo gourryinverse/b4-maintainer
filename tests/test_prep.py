@@ -341,3 +341,28 @@ def test_a_prep_branch_starts_from_a_posted_thread(project, tmp_path, lore):
     assert len(subjects) == 3 and subjects[-1] == 'mm: their series'  # The cover, first.
     authors = git('log', '--format=%ae', f'{prep_fork(repo, branch)}..{branch}~1', cwd=repo)
     assert 'maintainer@example.org' not in authors.splitlines()[0]  # The patch authors.
+
+
+def test_a_tagged_projects_prep_branch_puts_its_tag_before_patch(project, tmp_path):
+    repo, fix = project
+    branch = cut_prep(repo, tmp_path / 'wt', 'tagged', 'up/stable', 'x: y\n\nBody.\n', 'ndctl')
+    tip = git('rev-parse', branch, cwd=repo)
+    pluck_onto(repo, branch, repo, [fix], tip, 'agent@b4-maintainer.invalid', 'x')
+    code, out, files = preview_send(tmp_path / 'wt', branch, tmp_path / 'out', no_sign=True)
+    assert code == 0, out
+    lines = [line for f in files for line in f.read_text().splitlines()]
+    subjects = [line for line in lines if line.startswith('Subject:')]
+    assert subjects and all(s.startswith('Subject: [ndctl PATCH') for s in subjects), subjects
+
+
+def test_a_cover_without_recipients_gets_the_list(project, tmp_path):
+    from b4_maintainer.adapters.prep import cover_recipients, ensure_recipient
+
+    repo, _fix = project
+    branch = cut_prep(repo, tmp_path / 'wt', 'tolist', 'up/stable', 'x: y\n\nBody.\n')
+    assert cover_recipients(cover_text(repo, branch)) == ([], [])
+    assert ensure_recipient(repo, tmp_path / 'wt', branch, 'nvdimm@lists.linux.dev')
+    to, _cc = cover_recipients(cover_text(repo, branch))
+    assert [addr for _name, addr in to] == ['nvdimm@lists.linux.dev']
+    assert not ensure_recipient(repo, tmp_path / 'wt', branch, 'other@example.org')  # Has one.
+    assert cover_text(repo, branch).startswith('x: y')  # The cover kept.

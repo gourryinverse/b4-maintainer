@@ -40,6 +40,7 @@ from .adapters.prep import (
     cleanup_prep,
     cover_text,
     cut_prep,
+    ensure_recipient,
     ensure_worktree,
     move_prep,
     outgoing_summary,
@@ -1002,9 +1003,17 @@ class BranchService:
             return CutResult(False, error=f'no project for {item}')
         repo = self.root / project.path
         worktree = self.root / 'var' / 'branches' / project.id / name
+        tag = project.subject_tags[0] if project.subject_tags else ''
         try:
-            branch = cut_prep(repo, worktree, name, fork, self.cover_draft(project, item, rows))
+            branch = cut_prep(
+                repo, worktree, name, fork, self.cover_draft(project, item, rows), tag
+            )
         except PrepError as ex:
+            return CutResult(False, error=str(ex))  # Nothing made (it cleans up itself).
+        try:
+            self._list_when_unaddressed(project, repo, worktree, branch)
+        except PrepError as ex:
+            remove_prep(repo, worktree, branch)  # Made here: no half-addressed branch left.
             return CutResult(False, error=str(ex))
         tip = _git(repo, 'rev-parse', branch).strip()
         result = self.pluck(workspace, item, rows, f'prep:{project.id}:{branch}', tip)
@@ -1103,8 +1112,10 @@ class BranchService:
                 branch = plan.target
             else:
                 worktree = self.root / 'var' / 'branches' / project.id / name
+                tag = project.subject_tags[0] if project.subject_tags else ''
                 try:
-                    branch = prep_from_thread(repo, worktree, name, plan.base, plan.msgid)
+                    branch = prep_from_thread(repo, worktree, name, plan.base, plan.msgid, tag)
+                    self._list_when_unaddressed(project, repo, worktree, branch)
                 except PrepError as ex:
                     return CutResult(False, error=str(ex))
                 tip = _git(repo, 'rev-parse', branch).strip()
@@ -1139,7 +1150,28 @@ class BranchService:
             ensure_worktree(repo, worktree, branch)
         except PrepError as ex:
             return 1, str(ex)
-        return run_b4(worktree, branch, *args)
+        code, out = run_b4(worktree, branch, *args)
+        if action == 'auto-to-cc' and code == 0:
+            try:
+                if self._list_when_unaddressed(project, repo, worktree, branch, always=True):
+                    out += f"\nNobody found: To {_list_address(project)} (the project's list)"
+            except PrepError as ex:
+                out += f'\n{ex}'
+        return code, out
+
+    def _list_when_unaddressed(
+        self,
+        project: Project,
+        repo: pathlib.Path,
+        worktree: pathlib.Path,
+        branch: str,
+        always: bool = False,
+    ) -> bool:
+        """A cover letter naming nobody gets the project's first list as To, when nothing
+        else would address it (no maintainers command; *always*: b4 just found nobody)."""
+        if not project.lists or (not always and _addresses_itself(repo)):
+            return False
+        return ensure_recipient(repo, worktree, branch, _list_address(project))
 
     def _prep(self, workspace: Workspace, item: str) -> tuple[pathlib.Path, pathlib.Path, str]:
         """(repo, worktree, branch) of a prep item; the worktree made if missing."""
@@ -1746,3 +1778,21 @@ def _only_on(tree: pathlib.Path, branch: str) -> list[str]:
     except OSError:
         return []
     return log.splitlines()
+
+
+def _list_address(project: Project) -> str:
+    """The project's first list as an address (lists are kept in lore's name.domain form)."""
+    return project.lists[0].replace('.', '@', 1)
+
+
+def _addresses_itself(repo: pathlib.Path) -> bool:
+    """Whether b4 can address a series here: a get_maintainer.pl, or b4's auto to/cc
+    commands configured."""
+    script = repo / 'scripts' / 'get_maintainer.pl'
+    if script.is_file() and os.access(script, os.X_OK):
+        return True
+    for key in ('b4.send-auto-to-cmd', 'b4.send-auto-cc-cmd'):
+        run = subprocess.run(['git', 'config', '--get', key], cwd=repo, capture_output=True)
+        if run.returncode == 0 and run.stdout.strip():
+            return True
+    return False
