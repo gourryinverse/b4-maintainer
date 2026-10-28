@@ -35,7 +35,7 @@ from .adapters.drafts import DraftStore, SavedDraft
 from .applydialog import ApplyDialog
 from .attachdialog import AttachDialog
 from .attachments import Attachment, gather, gather_all, git_identity, preview, render
-from .branches import ApplyChoices, CutResult, DetailRow, DropChoices
+from .branches import ApplyChoices, CutResult, DetailRow, DropChoices, FoldPlan
 from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import Derived, LaunchDialog, LaunchResult
@@ -2936,6 +2936,16 @@ class MaintainerApp(App[None]):
         if self._branches is None or self.snapshot is None:
             raise SessionError('branches are not available here')
         return self._branches, self.snapshot.workspace
+
+    def bench_fold_plan(self, item: str, folded: str) -> FoldPlan:
+        branches, workspace = self._bench_branches()
+        assert self.snapshot is not None
+        series = {i.identity: i.series for i in self.snapshot.items}
+        return branches.fold_plan(workspace, item, folded, series)
+
+    def bench_fold(self, plan: FoldPlan, extras: Sequence[str], name: str) -> CutResult:
+        branches, workspace = self._bench_branches()
+        return branches.fold_to_prep(workspace, plan, extras, name)
 
     def bench_tree_targets(self, item: str) -> tuple[list[tuple[str, str]], dict[str, str]]:
         branches, workspace = self._bench_branches()

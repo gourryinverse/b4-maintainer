@@ -1,6 +1,10 @@
 """Contract: the Branches screen's data: each project's maintainer bases, session trees,
 and prep branches, with their commits and artifacts; what a commit or artifact shows."""
 
+import dataclasses
+import re
+import subprocess
+
 import pytest
 from gitutil import git
 from sessiondata import make_record
@@ -483,3 +487,129 @@ def test_the_branches_tab_leaves_session_trees_to_the_workbench(ws):
     keys = [i.key for i in shown.items]
     assert 'tree:s1' not in keys and 'base:linux:me/base' in keys
     assert all(not k.startswith('tree:') for k in shown.targets.get('base:linux:me/base', ()))
+
+
+def folded_work(tree, base, applied):
+    """An agent's fixup for the series patch, a pull-ahead the series needs, and the
+    series folded: from the base, that pull-ahead first, then the patch with the fixup
+    squashed in."""
+    git('switch', '-q', '-c', 'b4m/fixup/foo', applied, cwd=tree)
+    commit(tree, 'foo.c', 'foo fixed\n', 'mm/foo: fix the series patch')
+    git('switch', '-q', '-c', 'b4m/pull-ahead/dep', base, cwd=tree)
+    dep = commit(tree, 'dep.c', 'dep\n', 'mm: a fix the series needs')
+    git('switch', '-q', '-c', 'b4m/folded/foo', dep, cwd=tree)
+    git('cherry-pick', applied, cwd=tree)
+    git('cherry-pick', '-n', 'b4m/fixup/foo', cwd=tree)
+    git('commit', '-q', '--amend', '--no-edit', cwd=tree)
+    git('switch', '-q', 'b4m/session/s1', cwd=tree)
+
+
+FOLDED_MANIFEST = """
+[[artifact]]
+kind = "fixup"
+title = "mm/foo: fix the series patch"
+summary = "Patch 1 needs this."
+branch = "b4m/fixup/foo"
+fixes = "1"
+
+[[artifact]]
+kind = "pull-ahead"
+title = "mm: a fix the series needs"
+summary = "Patch 1 conflicts without it."
+branch = "b4m/pull-ahead/dep"
+
+[[artifact]]
+kind = "folded"
+title = "mm/foo with its fixup folded in"
+summary = "Leads with dep."
+branch = "b4m/folded/foo"
+needs = ["b4m/pull-ahead/dep"]
+"""
+
+
+def own_prep(project, tmp_path, change_id):
+    """The maintainer's prep branch for the series (b4's tracking names its change-id)."""
+    from b4_maintainer.adapters.prep import cut_prep
+
+    branch = cut_prep(project, tmp_path / 'prep-wt', 'foo', 'up/stable', 'mm/foo\n\nv1.\n')
+    message = git('log', '-1', '--format=%B', branch, cwd=project)
+    message = re.sub(r'"change-id": "[^"]*"', f'"change-id": "{change_id}"', message)
+    tree = git('rev-parse', f'{branch}^{{tree}}', cwd=project)
+    parent = git('rev-parse', f'{branch}^', cwd=project)
+    made = subprocess.run(
+        ['git', 'commit-tree', tree, '-p', parent],
+        cwd=project,
+        input=message,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    git('update-ref', f'refs/heads/{branch}', made, cwd=project)
+    return branch
+
+
+def fold_ws(ws, tmp_path):
+    service, workspace, project = ws
+    tree = tmp_path / 'ws' / 'var' / 'worktrees' / 's1'
+    record = service._record('s1')
+    folded_work(tree, record.worktree.base, record.worktree.applied)
+    out = tmp_path / 'ws' / 'var' / 'sessions' / 's1' / 'work' / 'out'
+    manifest = out / 'artifacts.toml'
+    manifest.write_text(manifest.read_text() + FOLDED_MANIFEST)
+    return service, workspace, project, record
+
+
+def test_folding_offers_the_pull_aheads_and_targets_the_series_own_prep_branch(ws, tmp_path):
+    service, workspace, project, record = fold_ws(ws, tmp_path)
+    branch = own_prep(project, tmp_path, '20261020-mm-foo')  # The record's series.
+    plan = service.fold_plan(workspace, 'tree:s1', 'b4m/folded/foo', {})
+    assert plan.error == ''
+    assert plan.needs == ('b4m/pull-ahead/dep',)
+    assert plan.optional == (('b4m/pull-ahead/leak', 'mm: fix the leak'),)
+    assert (plan.target, plan.replaces) == (branch, True)
+    result = service.fold_to_prep(workspace, plan, ['b4m/pull-ahead/leak'], '')
+    assert result.ok and result.branch == branch and result.picked == 3
+    subjects = git('log', '--format=%s', f'{record.worktree.base}..{branch}', cwd=project)
+    assert subjects.splitlines() == [
+        'mm/foo: the series patch',  # The fixup squashed in.
+        'mm: a fix the series needs',
+        'mm: fix the leak',  # Chosen to lead.
+        'mm/foo',  # b4's cover commit, kept.
+    ]
+    assert git('show', f'{branch}:foo.c', cwd=project) == 'foo fixed'
+    assert not git('for-each-ref', 'refs/b4m/', cwd=project)  # No fetch refs left.
+    branches_tab = service.snapshot(workspace, trees=False)  # F4: a prep branch like any.
+    key = f'prep:linux:{branch}'
+    assert key in {i.key for i in branches_tab.items}
+    listed = ' '.join(r.text for r in branches_tab.details[key])
+    assert 'mm/foo: the series patch' in listed and 'mm: fix the leak' in listed
+
+
+def test_folding_another_authors_series_makes_a_prep_branch_from_its_thread(
+    ws, tmp_path, monkeypatch
+):
+    import b4_maintainer.branches as branches
+    from b4_maintainer.adapters.prep import cut_prep
+    from b4_maintainer.fixtures import make_series
+
+    service, workspace, project, record = fold_ws(ws, tmp_path)
+    series = make_series('mm/foo: their change', revision=2, msgid='cover@example.org')
+    series = dataclasses.replace(series, identity=record.series)
+    calls = []
+
+    def from_thread(repo, worktree, name, fork, msgid):  # b4 prep -F, without lore.
+        calls.append((name, fork, msgid))
+        return cut_prep(repo, worktree, name, fork, 'mm/foo: their change\n\nImported.\n')
+
+    monkeypatch.setattr(branches, 'prep_from_thread', from_thread)
+    plan = service.fold_plan(workspace, 'tree:s1', 'b4m/folded/foo', {series.identity: series})
+    assert plan.error == '' and not plan.replaces and plan.target == 'their-change'
+    result = service.fold_to_prep(workspace, plan, [], 'their-change')
+    assert result.ok and result.branch == 'b4/their-change' and result.picked == 2
+    assert calls == [('their-change', record.worktree.base, 'cover@example.org')]
+    subjects = git('log', '--format=%s', f'{record.worktree.base}..b4/their-change', cwd=project)
+    assert subjects.splitlines() == [
+        'mm/foo: the series patch',
+        'mm: a fix the series needs',
+        'mm/foo: their change',
+    ]

@@ -182,6 +182,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('space', 'mark', 'mark'),
         Binding('p', 'pluck', 'pluck'),
         Binding('P', 'new_prep', 'new prep branch'),
+        Binding('f', 'fold', 'fold to prep'),
         Binding('D', 'derive', 'derive a session', show=False),
     ]
 
@@ -706,6 +707,90 @@ class WorkbenchScreen(Screen[None]):
             self._status(f'Not plucked: {why}; nothing changed')
         self._load_contents()
 
+    def _folded(self) -> Optional[ContentRow]:
+        """The selected row, if it is a commit of a session's folded series."""
+        row = self.row()
+        a = row.attachment if row is not None else None
+        if row is None or row.kind != 'commit' or a is None:
+            return None
+        return row if a.branch.startswith('b4m/folded/') else None
+
+    def action_fold(self) -> None:
+        """f: the folded series as a prep branch: the series' own (its commits replaced,
+        the next revision), else a new one from the posted thread; each other
+        pull-ahead leads or stays out."""
+        from .app import Confirm
+
+        row = self._folded()
+        plan_of = getattr(self.app, 'bench_fold_plan', None)
+        fold: Any = getattr(self.app, 'bench_fold', None)
+        if row is None or row.attachment is None or plan_of is None or fold is None:
+            return
+        branch = row.attachment.branch
+
+        def done(result: Any) -> None:
+            if result.ok:
+                self._status(
+                    f'Made {result.branch} ({_count(result.picked, "commit")}): F4 shows it, '
+                    'with its cover letter, checks, sign-off, and send'
+                )
+            else:
+                self._status(f'Not folded: {result.error}')
+
+        def planned(plan: Any) -> None:
+            if plan.error:
+                self._status(f'Cannot fold {branch}: {plan.error}')
+                return
+
+            def confirm(extras: list[str], name: str) -> None:
+                lead = f', after {_count(len(extras), "pull-ahead")}' if extras else ''
+                where = f'on {plan.base[:12]}{lead}'
+                folded = f'{plan.subject} folded ({_count(plan.commits, "commit")})'
+                if plan.replaces:
+                    text = (
+                        f'Replace the commits of {plan.target} with {folded} {where}? b4 keeps '
+                        f'its cover letter and tracking: the next send is v{plan.revision}.'
+                    )
+                else:
+                    text = (
+                        f'Make b4/{name} for v{plan.revision} of {folded} {where}? b4 prep -F '
+                        'reads the posted thread from lore for its cover letter.'
+                    )
+
+                def answered(yes: Optional[bool]) -> None:
+                    if yes:
+                        self._act(lambda: fold(plan, extras, name), done, 'Folding…')
+
+                self.app.push_screen(Confirm(f'{text} [y|N]'), answered)
+
+            def chosen(extras: Optional[list[str]]) -> None:
+                if extras is None:
+                    return
+                if plan.replaces:
+                    confirm(extras, '')
+                    return
+
+                def named(name: Optional[str]) -> None:
+                    if name:
+                        confirm(extras, name.strip())
+
+                self.app.push_screen(
+                    Ask('Name the new prep branch (b4/<name>)', plan.target), named
+                )
+
+            if not plan.optional:
+                chosen([])
+                return
+            carried = ', '.join(plan.needs) or 'none'
+            title = (
+                f'It leads with: {carried}. Lead with which others? (those it conflicts '
+                'without; leave independent fixes out)'
+            )
+            options = [(b, f'{title_} ({b})') for b, title_ in plan.optional]
+            self.app.push_screen(PickMany(title, options), chosen)
+
+        self._act(lambda: plan_of(row.item, branch), planned, 'Reading the folded series…')
+
     def action_new_prep(self) -> None:
         rows = self._chosen()
         forks_of = getattr(self.app, 'bench_fork_points', None)
@@ -919,6 +1004,8 @@ class WorkbenchScreen(Screen[None]):
             return pane == 'bench-contents' and row is not None and row.kind == 'commit'
         if action in ('pluck', 'new_prep'):
             return pane == 'bench-contents' and bool(self._chosen())
+        if action == 'fold':
+            return pane == 'bench-contents' and self._folded() is not None
         if action == 'derive':
             row = self.row()
             kinds = ('tree', 'commit')

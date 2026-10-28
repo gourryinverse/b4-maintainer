@@ -121,7 +121,13 @@ Python 3.11 or newer.
   Items, the launch preview). On Trees, space marks commits, `p` plucks them (or the
   selected one) onto the project's base, a prep branch, or another session tree, `P` cuts
   a prep branch from them, `D` derives a session, and `x` on a tree removes it after
-  saying what it would lose. Enter on a Mailboxes row opens that thread in the tab (its
+  saying what it would lose. A session that leaves fixups also leaves the series with
+  them folded in (`b4m/folded/<slug>`: from the base, the pull-aheads it needs first,
+  each fixup squashed into its patch); `f` on it makes the next revision's prep branch:
+  pick which other pull-aheads lead (those it conflicts without), then the series' own
+  prep branch has its commits replaced (b4 keeps its cover letter and tracking), or a
+  new one is made from the posted thread (`b4 prep -F`, authors kept). F4 shows it with
+  its cover letter, checks, sign-off, and send. Enter on a Mailboxes row opens that thread in the tab (its
   tree and the selected message; Escape closes it), where `r` replies to the selected
   message and `R` adds session output (with the tmux editor the draft opens beside the
   app and `ctrl+s` sends from the tab; otherwise the reply opens on LKML). Enter on a

@@ -44,9 +44,11 @@ from .adapters.prep import (
     move_prep,
     outgoing_summary,
     prep_fork,
+    prep_from_thread,
     prep_tracking,
     preview_send,
     remove_prep,
+    reroll_prep,
     run_b4,
     sign_off,
 )
@@ -62,6 +64,7 @@ from .workspace import MaintainerBase, Project, Workspace
 
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult, SeriesPatch
+    from .model import Series
 
 SHOW_LINES = 4000  # A commit or file is cut here.
 LIST_LIMIT = 200  # Commits listed per branch or worktree.
@@ -141,6 +144,28 @@ class DropChoices:
     commits: Mapping[str, tuple[BaseCommit, ...]] = field(default_factory=dict)
     tips: Mapping[str, str] = field(default_factory=dict)
     problem: str = ''
+
+
+@dataclass(frozen=True)
+class FoldPlan:
+    """What `f` on a session's folded series makes: its commits, after the pull-aheads
+    chosen from *optional*, on its base as a prep branch: the series' own (its commits
+    replaced: the next revision), else a new one from the posted thread."""
+
+    project: str = ''
+    tree: str = ''  # The session tree holding the branches.
+    base: str = ''
+    folded: str = ''  # Its b4m/folded/ branch.
+    commits: int = 0
+    needs: tuple[str, ...] = ()  # Pull-aheads it carries already.
+    optional: tuple[tuple[str, str], ...] = ()  # (branch, title) of the others.
+    target: str = ''  # The prep branch it replaces, or the new one's suggested name.
+    replaces: bool = False
+    expected: str = ''  # The replaced prep branch's tip, as shown.
+    msgid: str = ''  # The posted series, for b4 prep -F.
+    subject: str = ''
+    revision: int = 0  # The revision the prep branch prepares.
+    error: str = ''
 
 
 @dataclass(frozen=True)
@@ -818,6 +843,113 @@ class BranchService:
             return CutResult(False, error=why)
         return CutResult(True, branch, len(result.picked))
 
+    def fold_plan(
+        self, workspace: Workspace, item: str, folded: str, series: Mapping[str, 'Series']
+    ) -> FoldPlan:
+        """What folding *folded* (a branch of tree *item*) into a prep branch involves
+        (blocking): its manifest's pull-aheads, and the prep branch it lands on. *series*:
+        cached series by identity (a workbench session's is found by patch subjects)."""
+        where = item.removeprefix('tree:')
+        record = self._record(where)
+        project = workspace.project(record.project) if record is not None else None
+        if record is None or record.worktree is None or project is None:
+            return FoldPlan(error=f'no session tree {where}')
+        tree, base = record.worktree.path, record.worktree.base
+        classed = classify_tree(pathlib.Path(tree), record.worktree)
+        branches = {b.name: b for b in classed.branches}
+        branch = branches.get(folded)
+        if branch is None or branch.kind != 'folded':
+            return FoldPlan(error=f'{folded} is not a folded series in {where}')
+        if branch.problem or not branch.commits:
+            return FoldPlan(error=f'{folded}: {branch.problem or "no commits"}')
+        artifacts = load_artifacts(self._out(record.id) / 'work' / 'out', set(branches))[0]
+        titles = {a.branch: a.title for a in artifacts if a.branch}
+        needs = next((a.needs for a in artifacts if a.branch == folded), ())
+        optional = tuple(
+            (b.name, titles.get(b.name) or b.commits[-1].subject)
+            for b in classed.branches
+            if b.kind == 'pull-ahead' and b.name not in needs and b.commits and not b.problem
+        )
+        plan = FoldPlan(
+            project.id,
+            tree,
+            base,
+            folded,
+            len(branch.commits),
+            tuple(needs),
+            optional,
+        )
+        repo = self.root / project.path
+        posted = _posted_series(record.series, [c.subject for c in branch.commits], series)
+        identity = posted.identity if posted is not None else record.series
+        change_id = identity.removeprefix('change-id:') if identity.startswith('change-id:') else ''
+        for name in _prep_branches(repo) if change_id else ():
+            tracking = prep_tracking(repo, name)
+            if tracking.get('change-id') == change_id:
+                tip = _git(repo, 'rev-parse', name).strip()
+                return dataclasses.replace(
+                    plan,
+                    target=name,
+                    replaces=True,
+                    expected=tip,
+                    subject=posted.subject if posted is not None else name,
+                    revision=int(tracking['revision']),
+                )
+        if posted is None or not posted.msgids:
+            return dataclasses.replace(
+                plan, error='its series is not in the cache (F5 fetches it), and has no prep branch'
+            )
+        return dataclasses.replace(
+            plan,
+            target=_branch_name(posted.subject),
+            msgid=posted.msgids[0],
+            subject=posted.subject,
+            revision=posted.revision + 1,
+        )
+
+    def fold_to_prep(
+        self, workspace: Workspace, plan: FoldPlan, extras: Sequence[str], name: str
+    ) -> CutResult:
+        """Make the prep branch *plan* describes (blocking): the pull-aheads *extras*
+        first, then the folded series, on its base. A conflict or a moved branch changes
+        nothing; a new prep branch that cannot take them is removed."""
+        project = workspace.project(plan.project)
+        if project is None or plan.error:
+            return CutResult(False, error=plan.error or f'no project {plan.project}')
+        repo = self.root / project.path
+        wanted = [*(e for e in extras if e not in plan.needs), plan.folded]
+        refs = [f'refs/b4m/fold/{n}' for n in range(len(wanted))]
+        specs = [f'+refs/heads/{b}:{r}' for b, r in zip(wanted, refs)]
+        try:
+            _git(repo, 'fetch', '--quiet', '--no-tags', plan.tree, *specs)
+            shas: list[str] = []
+            for ref in refs:
+                for sha in _git(repo, 'rev-list', '--reverse', f'{plan.base}..{ref}').split():
+                    if sha not in shas:
+                        shas.append(sha)
+            if plan.replaces:
+                result = reroll_prep(repo, plan.target, plan.base, shas, plan.expected)
+                branch = plan.target
+            else:
+                worktree = self.root / 'var' / 'branches' / project.id / name
+                try:
+                    branch = prep_from_thread(repo, worktree, name, plan.base, plan.msgid)
+                except PrepError as ex:
+                    return CutResult(False, error=str(ex))
+                tip = _git(repo, 'rev-parse', branch).strip()
+                result = reroll_prep(repo, branch, plan.base, shas, tip)
+                if not result.ok:
+                    remove_prep(repo, worktree, branch)
+        except (OSError, PrepError) as ex:
+            return CutResult(False, error=str(ex))
+        finally:
+            for ref in refs:
+                subprocess.run(['git', 'update-ref', '-d', ref], cwd=repo, capture_output=True)
+        if not result.ok:
+            why = f'{result.failed} does not apply' if result.failed else result.error
+            return CutResult(False, error=why)
+        return CutResult(True, branch, len(shas))
+
     def prep_run(self, workspace: Workspace, item: str, action: str) -> tuple[int, str]:
         """b4 on a prep branch: recipients (auto-to-cc), checks (check), or info."""
         args = PREP_ACTIONS.get(action)
@@ -1264,3 +1396,33 @@ def _unpushed_rows(repo: pathlib.Path, name: str) -> tuple[DetailRow, ...]:
         sha, _, subject = line.partition('\x00')
         rows.append(_commit_row(sha, subject, repo))
     return tuple(rows)
+
+
+def _prep_branches(repo: pathlib.Path) -> list[str]:
+    """The project's b4 prep branches (b4/<name>, not b4's review branches)."""
+    names = _git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/b4/')
+    return [n for n in names.split() if not n.startswith('b4/review/')]
+
+
+def _posted_series(
+    identity: str, subjects: Sequence[str], series: Mapping[str, 'Series']
+) -> Optional['Series']:
+    """The series a session's folded branch is of: its own, else (a workbench session)
+    the cached series sharing the most patch subjects with it."""
+    if identity in series:
+        return series[identity]
+    wanted = set(subjects)
+    best = max(
+        series.values(),
+        key=lambda s: len(wanted & {p.subject for p in s.patches}),
+        default=None,
+    )
+    if best is None or not wanted & {p.subject for p in best.patches}:
+        return None
+    return best
+
+
+def _branch_name(subject: str) -> str:
+    """A prep branch name from a series subject: its words after the subsystem prefix."""
+    words = re.findall(r'[a-z0-9]+', subject.rsplit(': ', 1)[-1].lower())
+    return '-'.join(words)[:40].strip('-') or 'series'

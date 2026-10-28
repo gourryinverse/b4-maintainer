@@ -24,7 +24,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from .bases import PluckResult, _replay  # The same replay as plucking.
 
@@ -97,6 +97,27 @@ def cut_prep(
     """A new prep branch `b4/<name>` from *fork*, made by `b4 prep -n` in a sparse worktree
     at *worktree*, its cover letter set from *cover* (subject line, blank line, body).
     On failure nothing is left: no worktree, branch, or branch configuration."""
+    return _new_prep(repo, worktree, name, fork, (), cover)
+
+
+def prep_from_thread(
+    repo: pathlib.Path, worktree: pathlib.Path, name: str, fork: str, msgid: str
+) -> str:
+    """A new prep branch `b4/<name>` from *fork* for a posted series (`b4 prep -F`): b4
+    imports its cover letter (to review), prepares the revision after the posted one,
+    and applies its patches with their authors; the change-id is the posting's when it
+    carried b4's tracking. b4 reads the thread from lore. On failure nothing is left."""
+    return _new_prep(repo, worktree, name, fork, ('-F', msgid), None)
+
+
+def _new_prep(
+    repo: pathlib.Path,
+    worktree: pathlib.Path,
+    name: str,
+    fork: str,
+    extra: Sequence[str],
+    cover: Optional[str],
+) -> str:
     if not NAME.match(name):
         raise PrepError(f'{name!r}: a prep branch name is lower-case letters, digits, . _ -')
     branch, start = f'b4/{name}', f'{START}/{name}'
@@ -115,7 +136,7 @@ def cut_prep(
     try:
         _git(repo, 'branch', '--quiet', start, fork_sha.stdout.strip())
         _sparse_worktree(repo, worktree, start)
-        code, out = _b4(worktree, 'prep', '-n', name, '-f', fork_sha.stdout.strip())
+        code, out = _b4(worktree, 'prep', '-n', name, '-f', fork_sha.stdout.strip(), *extra)
         if code != 0:
             raise PrepError(f'b4 prep -n failed: {out}')
         _git(repo, 'branch', '--quiet', '-D', start)
@@ -324,6 +345,27 @@ def move_prep(repo: pathlib.Path, branch: str, onto: str, expected: str) -> Pluc
     commit recreated there with its message (and tracking) intact, then each commit
     replayed; a change *onto* already has is dropped. A conflict, a moved branch, or a
     checked-out one changes nothing. No worktree; one guarded update-ref."""
+    return _rebuild(repo, branch, onto, None, expected, f'move onto {onto[:12]}')
+
+
+def reroll_prep(
+    repo: pathlib.Path, branch: str, onto: str, shas: Sequence[str], expected: str
+) -> PluckResult:
+    """The prep branch's next revision: b4's cover commit (and tracking) recreated on
+    *onto*, then *shas* (commits *repo* has) in place of the branch's own. A conflict, a
+    moved branch, or a checked-out one changes nothing."""
+    return _rebuild(repo, branch, onto, list(shas), expected, f'new commits on {onto[:12]}')
+
+
+def _rebuild(
+    repo: pathlib.Path,
+    branch: str,
+    onto: str,
+    commits: Optional[list[str]],
+    expected: str,
+    note: str,
+) -> PluckResult:
+    """*branch* as b4's cover commit on *onto* followed by *commits* (None: its own)."""
     tip = _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}', check=False)
     if tip.returncode != 0:
         return PluckResult(False, error=f'{branch} does not exist')
@@ -356,7 +398,9 @@ def move_prep(repo: pathlib.Path, branch: str, onto: str, expected: str) -> Pluc
     )
     if made.returncode != 0:
         return PluckResult(False, error=made.stderr.strip())
-    shas = _git(repo, 'rev-list', '--reverse', f'{cover}..{branch}').stdout.split()
+    shas = commits
+    if shas is None:
+        shas = _git(repo, 'rev-list', '--reverse', f'{cover}..{branch}').stdout.split()
     replayed = _replay(repo, made.stdout.strip(), shas)
     if not replayed.ok:
         return replayed
@@ -364,7 +408,7 @@ def move_prep(repo: pathlib.Path, branch: str, onto: str, expected: str) -> Pluc
         repo,
         'update-ref',
         '-m',
-        f'b4-maintainer: move onto {onto[:12]}',
+        f'b4-maintainer: {note}',
         f'refs/heads/{branch}',
         replayed.tip,
         expected,

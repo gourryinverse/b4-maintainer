@@ -238,3 +238,106 @@ def test_cleanup_of_an_empty_prep_branch_removes_it_directly(project, tmp_path):
         text=True,
     )
     assert left.stdout == ''
+
+
+def test_a_prep_branch_takes_new_commits_in_place_of_its_own(project, tmp_path):
+    """The next revision: b4's cover commit (and tracking) recreated on the new base, then
+    the given commits in place of the branch's; a moved branch or a conflict changes
+    nothing."""
+    from b4_maintainer.adapters.prep import reroll_prep
+
+    repo, fix = project
+    branch = cut_prep(repo, tmp_path / 'wt', 'next', 'up/stable', 'mm: next\n\nBody.\n')
+    tip = git('rev-parse', branch, cwd=repo)
+    pluck_onto(repo, branch, repo, [fix], tip, 'agent@b4-maintainer.invalid', 'x')
+    git('switch', '-q', '--detach', 'up/stable', cwd=repo)
+    lead = commit(repo, 'mm/lead.c', 'lead\n', 'mm: a pull-ahead it needs')
+    folded = commit(repo, 'mm/fix.c', 'fixed better\n', 'mm: fix a thing\n\nBecause.')
+    git('switch', '-q', 'main', cwd=repo)
+    old = git('rev-parse', branch, cwd=repo)
+    assert not reroll_prep(repo, branch, 'up/stable', [lead, folded], 'f' * 40).ok  # Moved.
+    result = reroll_prep(repo, branch, 'up/stable', [lead, folded], old)
+    assert result.ok
+    assert git('log', '--format=%s', f'up/stable..{branch}', cwd=repo).splitlines() == [
+        'mm: fix a thing',
+        'mm: a pull-ahead it needs',
+        'mm: next',
+    ]
+    assert git('show', f'{branch}:mm/fix.c', cwd=repo) == 'fixed better'
+    assert prep_tracking(repo, branch)['revision'] == 1 and cover_text(repo, branch).startswith(
+        'mm: next'
+    )
+    now = git('rev-parse', branch, cwd=repo)
+    git('switch', '-q', '--detach', 'up/stable', cwd=repo)
+    clash = commit(repo, 'mm/lead.c', 'other\n', 'mm: clashes with the lead')
+    git('switch', '-q', 'main', cwd=repo)
+    assert not reroll_prep(repo, branch, 'up/stable', [clash, lead], now).ok
+    assert git('rev-parse', branch, cwd=repo) == now
+
+
+@pytest.fixture
+def lore(tmp_path, monkeypatch):
+    """A lore stand-in serving one thread's mbox (b4.midmask points at it)."""
+    import gzip
+    import http.server
+    import threading
+
+    served = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = served.get('mbox')
+            if body is None or not self.path.endswith('/t.mbox.gz'):
+                self.send_response(404)
+                self.end_headers()
+                return
+            data = gzip.compress(body)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/gzip')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    for name in ('NO_PROXY', 'no_proxy'):  # Reach it directly, not through a proxy.
+        monkeypatch.setenv(name, '127.0.0.1,localhost')
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield served, f'http://127.0.0.1:{server.server_address[1]}/all/%s'
+    server.shutdown()
+
+
+def test_a_prep_branch_starts_from_a_posted_thread(project, tmp_path, lore):
+    """Someone else's series: b4 prep -F imports its cover letter and prepares the
+    revision after the posted one, the patches with their authors (the change-id is
+    b4's own unless the posting carried b4's tracking)."""
+    from b4_maintainer.adapters.prep import prep_from_thread
+    from b4_maintainer.fixtures import PatchSpec, write_series_mbox
+
+    repo, _fix = project
+    served, midmask = lore
+    git('config', 'b4.midmask', midmask, cwd=repo)
+    mbox = tmp_path / 'thread.mbx'
+    sent = write_series_mbox(
+        mbox,
+        'mm: their series',
+        revision=2,
+        patches=[PatchSpec('mm/one.c'), PatchSpec('mm/two.c')],
+        change_id='20261001-their-series-0123456789ab',
+    )
+    served['mbox'] = mbox.read_bytes()
+    git('switch', '-q', '--detach', 'up/stable', cwd=repo)
+    commit(repo, 'mm/one.c', 'old\n', 'mm: one')
+    base = commit(repo, 'mm/two.c', 'old\n', 'mm: two')
+    git('switch', '-q', 'main', cwd=repo)
+    branch = prep_from_thread(repo, tmp_path / 'wt', 'their-series', base, sent.msgids[0])
+    assert branch == 'b4/their-series'
+    tracking = prep_tracking(repo, branch)
+    assert tracking['revision'] == 3 and '-their-series-' in tracking['change-id']
+    assert 'Imported from' in cover_text(repo, branch)
+    subjects = git('log', '--format=%s', f'{base}..{branch}', cwd=repo).splitlines()
+    assert len(subjects) == 3 and subjects[-1] == 'mm: their series'  # The cover, first.
+    authors = git('log', '--format=%ae', f'{prep_fork(repo, branch)}..{branch}~1', cwd=repo)
+    assert 'maintainer@example.org' not in authors.splitlines()[0]  # The patch authors.

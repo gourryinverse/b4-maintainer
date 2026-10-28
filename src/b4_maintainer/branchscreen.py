@@ -15,7 +15,7 @@ what goes. F5 reloads; F3 or Escape returns to the series list.
 
 import pathlib
 import re
-from typing import TYPE_CHECKING, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Mapping, Optional, Protocol, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -32,6 +32,7 @@ from .branches import (
     CutResult,
     DetailRow,
     DropChoices,
+    FoldPlan,
     is_commit,
 )
 from .launchdialog import Derived
@@ -43,6 +44,7 @@ from .workspace import Workspace
 
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult
+    from .model import Series
 
 
 class Branches(Protocol):
@@ -72,6 +74,14 @@ class Branches(Protocol):
     def tree_targets(
         self, workspace: Workspace, item: str
     ) -> tuple[list[tuple[str, str]], dict[str, str]]: ...
+
+    def fold_plan(
+        self, workspace: Workspace, item: str, folded: str, series: Mapping[str, 'Series']
+    ) -> FoldPlan: ...
+
+    def fold_to_prep(
+        self, workspace: Workspace, plan: FoldPlan, extras: Sequence[str], name: str
+    ) -> CutResult: ...
 
     def cut_prep(
         self, workspace: Workspace, item: str, rows: Sequence[DetailRow], name: str, fork: str

@@ -12,6 +12,7 @@ from b4_maintainer.attachments import Attachment
 from b4_maintainer.branches import CutResult
 from b4_maintainer.branchscreen import Ask, Pick
 from b4_maintainer.workbench import ContentRow, Entry, Item, Workbench, WorkbenchStore
+from b4_maintainer.workbenchscreen import PickMany
 
 TREE = ContentRow(
     '  s1 · linux · b4m/session/s1', 'tree', 'linux', session='s1', path='/t', item='tree:s1'
@@ -178,3 +179,122 @@ async def test_d_derives_a_session_from_a_tree(demo_root, tmp_path):
         await settle(pilot)
         [(parent, derived)] = launched
         assert parent == 's1' and (derived.start, derived.start_from) == ('c1', 's1')
+
+
+FOLDED = ContentRow(
+    '    folded: mm: one',
+    'commit',
+    'linux',
+    session='s1',
+    attachment=Attachment(
+        'patch',
+        'patch · folded · mm: one',
+        's1',
+        repo='/t',
+        sha='f1',
+        title='mm: one',
+        branch='b4m/folded/one',
+    ),
+    item='tree:s1',
+)
+
+
+class FoldBranches(TreeBranches):
+    def __init__(self, replaces):
+        super().__init__()
+        self.replaces = replaces
+        self.folds = []
+
+    def fold_plan(self, workspace, item, folded, series):
+        from b4_maintainer.branches import FoldPlan
+
+        return FoldPlan(
+            'linux',
+            '/t',
+            'b' * 40,
+            folded,
+            2,
+            ('b4m/pull-ahead/dep',),
+            (('b4m/pull-ahead/leak', 'mm: fix the leak'), ('b4m/pull-ahead/old', 'mm: old')),
+            'b4/one' if self.replaces else 'one-series',
+            self.replaces,
+            'tip0',
+            '' if self.replaces else 'cover@example.org',
+            'mm: one series',
+            3,
+        )
+
+    def fold_to_prep(self, workspace, plan, extras, name):
+        self.folds.append((plan.folded, list(extras), name))
+        return CutResult(True, plan.target if plan.replaces else f'b4/{name}', 3)
+
+
+class FoldService(TreeService):
+    def contents(self, workspace, bench, series, latest):
+        return [ContentRow('Trees', 'heading'), TREE, FOLDED]
+
+
+def fold_app(demo_root, tmp_path, replaces):
+    store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
+    store.save(Workbench('w', 'W', (Entry('linux', '', (Item(branch='me/fix'),)),)))
+    branches = FoldBranches(replaces)
+    app = MaintainerApp(
+        FixtureSource(demo_root).load,
+        branches=branches,
+        workbenches=FoldService(tmp_path, store, lambda: []),
+    )
+    return app, branches
+
+
+async def test_f_folds_into_the_series_own_prep_branch(demo_root, tmp_path):
+    app, branches = fold_app(demo_root, tmp_path, replaces=True)
+    async with app.run_test(size=(200, 50)) as pilot:
+        screen = await tab(pilot)
+        screen.select_row('tree')
+        await settle(pilot)
+        assert not screen.check_action('fold', ())  # Only on a folded series.
+        screen.select_row('commit')
+        await settle(pilot)
+        assert screen.check_action('fold', ())
+        await pilot.press('f')
+        await settle(pilot)
+        pick = app.screen
+        assert isinstance(pick, PickMany) and 'b4m/pull-ahead/dep' in pick.title_text
+        assert [key for key, _label in pick.choices] == [
+            'b4m/pull-ahead/leak',
+            'b4m/pull-ahead/old',
+        ]
+        await pilot.press('space', 'enter')  # Lead with leak; leave old out.
+        await settle(pilot)
+        confirm = app.screen
+        assert isinstance(confirm, Confirm) and 'b4/one' in confirm.prompt
+        assert 'v3' in confirm.prompt and 'cover letter' in confirm.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert branches.folds == [('b4m/folded/one', ['b4m/pull-ahead/leak'], '')]
+        assert 'Made b4/one' in screen.status_text() and 'F4' in screen.status_text()
+
+
+async def test_f_makes_a_prep_branch_from_the_thread_for_another_authors_series(
+    demo_root, tmp_path
+):
+    app, branches = fold_app(demo_root, tmp_path, replaces=False)
+    async with app.run_test(size=(200, 50)) as pilot:
+        screen = await tab(pilot)
+        screen.select_row('commit')
+        await settle(pilot)
+        await pilot.press('f')
+        await settle(pilot)
+        await pilot.press('enter')  # No extra pull-aheads.
+        await settle(pilot)
+        ask = app.screen
+        assert isinstance(ask, Ask) and ask.query_one('Input').value == 'one-series'
+        await pilot.press('enter')
+        await settle(pilot)
+        confirm = app.screen
+        assert isinstance(confirm, Confirm) and 'b4/one-series' in confirm.prompt
+        assert 'b4 prep -F' in confirm.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert branches.folds == [('b4m/folded/one', [], 'one-series')]
+        assert 'Made b4/one-series' in screen.status_text()
