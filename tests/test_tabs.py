@@ -43,7 +43,7 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
     app = make(demo_root, tmp_path)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        assert tab_text(app) == ' F2 LKML  F3 Workbench  F4 Branches  F6 Settings '
+        assert tab_text(app) == ' F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Settings '
         assert app.screen.query_one(TabBar).current == 'lkml'
         await pilot.press('f3')
         await settle(pilot)
@@ -151,3 +151,49 @@ async def test_f4_is_branches_without_session_trees(demo_root, tmp_path):
         await pilot.press('f4')
         await settle(pilot)
         assert app.screen.service.trees_asked == [False]
+
+
+class RefreshActions:
+    """A live source's refresh, counted; loads come from the demo."""
+
+    def __init__(self, root):
+        self.source = FixtureSource(root)
+        self.refreshed = 0
+
+    def load(self):
+        return self.source.load()
+
+    def refresh(self, progress):
+        progress('Fetching lists…')
+        self.refreshed += 1
+        return 'Refreshed 1 list(s)'
+
+
+async def test_f5_refreshes_from_any_tab_and_the_open_tab_rereads(demo_root, tmp_path):
+    store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
+    store.save(BENCH)
+    actions, branches = RefreshActions(demo_root), FakeBranches()
+    app = MaintainerApp(
+        actions.load,
+        actions=actions,
+        branches=branches,
+        workbenches=FakeService(tmp_path, store, lambda: []),
+    )
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        assert 'f5' not in footer_keys(app)  # At the top now.
+        await pilot.press('f4')
+        await settle(pilot)
+        before = branches.loads
+        await pilot.press('f5')
+        await settle(pilot)
+        screen = app.screen
+        assert isinstance(screen, BranchesScreen) and actions.refreshed == 1
+        assert branches.loads > before  # The open tab reread.
+        assert 'Refreshed 1 list(s)' in screen.status_text()
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.press('f5')
+        await settle(pilot)
+        assert isinstance(app.screen, WorkbenchScreen) and actions.refreshed == 2
+        assert 'Refreshed 1 list(s)' in app.screen.status_text()

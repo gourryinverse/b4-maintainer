@@ -78,6 +78,12 @@ def available_keys(app):
     return {key for key, active in app.screen.active_bindings.items() if active.enabled}
 
 
+def tab_bar(app):
+    from b4_maintainer.widgets import TabBar
+
+    return app.screen.query_one(TabBar).text()
+
+
 async def settle(pilot):
     await pilot.app.workers.wait_for_complete()
     await pilot.pause()
@@ -127,7 +133,7 @@ async def test_refresh_reports_progress_and_reloads(demo_root):
         series_list = await settle(pilot)
         await pilot.press('down')
         selected = series_list.highlighted_item.identity
-        assert 'f5' in footer_keys(app)
+        assert app.check_action('refresh', ()) and 'F5 Refresh' in tab_bar(app)
         await pilot.press('f5')
         series_list = await settle(pilot)
         assert live.refreshes == 1
@@ -395,7 +401,7 @@ async def test_f5_in_a_thread_refreshes_and_reloads_it_in_place(demo_root):
         await pilot.press('down')  # Somewhere in the thread.
         await pilot.pause()
         place = app._tree.highlighted
-        assert 'f5' in footer_keys(app)
+        assert app.check_action('refresh', ()) and 'F5 Refresh' in tab_bar(app)
         await pilot.press('f5')
         await settle(pilot)
         assert live.refreshes == 1

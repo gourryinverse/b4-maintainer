@@ -68,7 +68,9 @@ Python 3.11 or newer.
     ./b4-maintainer --demo .local/demo
 
 - Tabs across the top: `F2` LKML (the series list and threads), `F3` Workbench, `F4`
-  Branches, `F6` Settings; each keeps its place when you switch away and back.
+  Branches, `F6` Settings; each keeps its place when you switch away and back. `F5
+  Refresh` sits among them: from any tab it fetches and reloads (its progress shows on
+  that tab, and the open tab rereads).
 - Settings shows which key patatt signs mail with for every project (and any checkout's
   own), and sets one up in your global git configuration after a confirmation: an
   existing PGP key from gpg (`patatt.signingkey = openpgp:<fingerprint>`), a new patatt

@@ -451,7 +451,8 @@ class MaintainerApp(App[None]):
         # One key; the enabled action (and footer label) follows the item's state.
         Binding('x', 'hide', 'hide', show=False),
         Binding('x', 'unhide', 'unhide', show=False),
-        Binding('f5', 'refresh', 'refresh', key_display='F5'),
+        # On the tab bar, as F5 Refresh: it runs from any tab.
+        Binding('f5', 'refresh', 'refresh', key_display='F5', show=False),
         Binding('r', 'reply', 'reply'),
         Binding('R', 'reply_attach', 'reply + session output'),
         Binding('a', 'apply_series', 'apply', show=False),
@@ -663,6 +664,25 @@ class MaintainerApp(App[None]):
                 self._reload_thread(self._reading)  # After F5: new replies, same place.
             self._sync_bindings()
         self._reload_reading = False
+        self._refresh_tabs(snapshot)
+
+    def _refresh_tabs(self, snapshot: Snapshot) -> None:
+        """A new snapshot (e.g. after F5): the open Workbench or Branches tab rereads
+        now; the others when shown again."""
+        for tab in self._installed:
+            target = self.get_screen(tab)
+            if isinstance(target, WorkbenchScreen):
+                target.workspace = snapshot.workspace
+                target.series = {i.identity: i.series for i in snapshot.items}
+                target.latest = {i.identity: i.series.revision for i in snapshot.items}
+            elif isinstance(target, BranchesScreen):
+                target.workspace = snapshot.workspace
+            else:
+                continue
+            if self.screen is target and target.is_mounted:
+                target.reread()
+            else:
+                target.stale = target.is_mounted
 
     def _view_items(self, view_id: str) -> tuple[WorkItem, ...]:
         assert self.index is not None
@@ -784,6 +804,8 @@ class MaintainerApp(App[None]):
             return False  # A prompt or dialog owns every key while it is open.
         if action == 'keys':
             return not isinstance(self.screen, ModalScreen)
+        if action == 'refresh':
+            return self._actions is not None  # F5, from any tab.
         if action in ('tab', 'artifacts') and not isinstance(self.screen, ModalScreen):
             on_lkml = len(self.screen_stack) == 1
             if action == 'artifacts' and self._reading is not None and on_lkml:
@@ -3610,6 +3632,9 @@ class MaintainerApp(App[None]):
         self._notice = notice
         if self.index is not None:
             self._update_status()
+        shown: Any = getattr(self.screen, 'show_notice', None)
+        if shown is not None:  # Another tab: its own status line says it.
+            shown(notice)
 
     def _action_done(self, notice: str, reload: bool) -> None:
         self._set_notice(notice)

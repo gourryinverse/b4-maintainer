@@ -205,6 +205,7 @@ class WorkbenchScreen(Screen[None]):
         self._preview = ''  # What a launch of the selected workbench would prepare.
         self._shown = ''  # The text on the right.
         self._status_text = ''
+        self._note = ''  # The app's last notice, kept across the next reread.
         self.stale = False  # Set when the app switches back to this tab.
         self._sessions: list[tuple[str, str, bool]] = []  # Its sessions: (id, label, live).
         self._sessions_of = UNFILED + '?'  # The workbench they are of (none yet).
@@ -250,7 +251,9 @@ class WorkbenchScreen(Screen[None]):
     def _reload(self, select: str = '') -> None:
         self.benches, self._problems = self.service.store.list()
         self._fill_benches(select or self._pending[0] or self._bench_id())
-        self._status('; '.join(self._problems) or ('' if self.benches else 'n makes a workbench'))
+        said = '; '.join(p for p in (self._note, *self._problems) if p)
+        self._note = ''
+        self._status(said or ('' if self.benches else 'n makes a workbench'))
         rows = getattr(self.app, 'workbench_sessions', None)
         if rows is None:
             return
@@ -407,6 +410,14 @@ class WorkbenchScreen(Screen[None]):
     def _status(self, text: str) -> None:
         self._status_text = text
         self.query_one('#bench-status', Static).update(text)
+
+    def show_notice(self, text: str) -> None:
+        """The app's notice (e.g. F5's progress), kept across the reread that follows."""
+        self._note = text
+        self._status(text)
+
+    def reread(self) -> None:
+        self._reload()
 
     # The workbench's sessions.
 

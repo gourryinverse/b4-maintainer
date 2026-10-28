@@ -75,6 +75,10 @@ class SettingsScreen(Screen[None]):
     def status_text(self) -> str:
         return self._status_text
 
+    def show_notice(self, text: str) -> None:
+        """The app's notice (e.g. F5's progress)."""
+        self.query_one('#settings-note', Static).update(text)
+
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         event.stop()  # The app's own lists handle theirs.
 

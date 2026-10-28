@@ -294,7 +294,6 @@ class BranchesScreen(Screen[None]):
         Binding('d', 'prep_run("compare")', 'compare', show=False),
         Binding('x', 'reap', 'remove'),
         Binding('D', 'derive', 'derive a session', show=False),
-        Binding('f5', 'reload', 'reload', key_display='F5'),
     ]
 
     def __init__(self, service: Branches, workspace: Workspace) -> None:
@@ -424,6 +423,14 @@ class BranchesScreen(Screen[None]):
     def _status(self, text: str) -> None:
         self._status_text = text
         self.query_one('#branch-status', Static).update(text)
+
+    def show_notice(self, text: str) -> None:
+        """The app's notice (e.g. F5's progress), kept across the reload that follows."""
+        self._note = text
+        self._status(text)
+
+    def reread(self) -> None:
+        self.action_reload()
 
     def status_text(self) -> str:
         return self._status_text
