@@ -54,6 +54,24 @@ def patatt_sign_default() -> bool:
     return value.lower() not in {'yes', 'true', 'y'}
 
 
+def patatt_key(checkout: pathlib.Path) -> bool:
+    """Whether patatt has a key to sign with in this checkout: patatt.signingkey or
+    user.signingkey (without either, patatt refuses: "no key configured")."""
+    for key in ('patatt.signingkey', 'user.signingkey'):
+        run = subprocess.run(
+            ['git', 'config', '--get', key], cwd=checkout, capture_output=True, text=True
+        )
+        if run.returncode == 0 and run.stdout.strip():
+            return True
+    return False
+
+
+def patatt_send_default() -> bool:
+    """Sign patches unless b4.send-no-patatt-sign says not to, as b4 send does."""
+    value = str(b4.get_main_config().get('send-no-patatt-sign', '') or '')
+    return value.lower() not in {'yes', 'true', 'y'}
+
+
 def load_lore_message(sources: Sequence[str], msgid: str) -> 'b4.LoreMessage':
     """The message with this ID from the item's cached threads, as b4 parses it."""
     for source in sources:

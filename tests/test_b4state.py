@@ -124,3 +124,17 @@ def test_seen_flags_live_in_workspace_b4_messages_db(ws, home):
         assert 'Seen' in messages.get_flags(conn, 'a@example.org').split()
         conn.close()
     assert not (home / 'xdg-data').exists()
+
+
+def test_patatt_signs_only_with_a_key_configured(tmp_path, home):
+    from gitutil import git, make_checkout
+
+    from b4_maintainer.adapters.b4state import patatt_key
+
+    checkout = make_checkout(tmp_path / 'demo')
+    assert not patatt_key(checkout)
+    git('config', 'user.signingkey', 'ABCDEF', cwd=checkout)
+    assert patatt_key(checkout)
+    git('config', '--unset', 'user.signingkey', cwd=checkout)
+    git('config', 'patatt.signingkey', 'ed25519:mykey', cwd=checkout)
+    assert patatt_key(checkout)

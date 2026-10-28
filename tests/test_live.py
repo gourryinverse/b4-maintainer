@@ -776,4 +776,19 @@ def test_a_written_message_goes_through_b4_honouring_dry_run(live, home):
         'From: M <m@example.org>\nTo: Sub <sub@example.org>\nSubject: [PATCH] mm: x\n'
         'Message-ID: <x@example.org>\n\nA fix.\n'
     )
-    assert source.send_message('demo', text) == 'Dry-run: [PATCH] mm: x logged, not sent'
+    assert source.send_message('demo', text) == 'Dry-run: [PATCH] mm: x logged, not sent (unsigned)'
+
+
+def test_without_a_patatt_key_a_message_goes_unsigned(live, home):
+    source, _fakes, root = live
+    (home / '.gitconfig').write_text('[user]\n\tname = M\n\temail = m@example.org\n')
+    source.email_dryrun, source.no_sign = True, False  # Signing wanted, but no key.
+    assert not source.will_sign('demo')
+    text = 'From: M <m@example.org>\nTo: S <s@example.org>\nSubject: [PATCH] x\n\nA fix.\n'
+    assert source.send_message('demo', text).startswith('Dry-run')  # Not "no key".
+    from gitutil import git
+
+    git('config', 'patatt.signingkey', 'ed25519:k', cwd=root / 'projects' / 'demo')
+    assert source.will_sign('demo')
+    git('config', 'b4.send-no-patatt-sign', 'yes', cwd=root / 'projects' / 'demo')
+    assert not source.will_sign('demo')  # As b4 send would.

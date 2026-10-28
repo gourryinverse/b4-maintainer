@@ -673,7 +673,8 @@ class LiveSource:
         checkout = self.checkout(project)
         lmsg = b4state.load_lore_message(item.sources, msgid)
         b4state.activate(checkout)
-        sign = not self.no_sign and b4state.patatt_sign_default()
+        # Without a key patatt refuses ("no key configured"): such replies go unsigned.
+        sign = not self.no_sign and b4state.patatt_sign_default() and b4state.patatt_key(checkout)
         return ReplyTarget(lmsg, checkout, self.email_dryrun, sign)
 
     def send_message(self, project_id: str, text: str) -> str:
@@ -689,8 +690,8 @@ class LiveSource:
         if project is None:
             raise RuntimeError(f'no project {project_id}')
         msg = email.message_from_string(text, policy=email.policy.default)
+        sign = self.will_sign(project_id)
         b4state.activate(self.checkout(project))
-        sign = not self.no_sign and b4state.patatt_sign_default()
         smtp, fromaddr = b4.get_smtp(dryrun=self.email_dryrun)
         sent = b4.send_mail(
             smtp,
@@ -703,10 +704,22 @@ class LiveSource:
         )
         if sent is None:
             raise RuntimeError('b4 could not send it')
+        unsigned = '' if sign else ' (unsigned)'
         if self.email_dryrun:
-            return f'Dry-run: {msg["Subject"]} logged, not sent'
+            return f'Dry-run: {msg["Subject"]} logged, not sent{unsigned}'
         mark_outgoing_seen([msg])  # type: ignore[list-item]
-        return f'Sent {msg["Subject"]}'
+        return f'Sent {msg["Subject"]}{unsigned}'
+
+    def will_sign(self, project_id: str) -> bool:
+        """Whether a patch sent for the project is patatt-signed: not --no-sign, not
+        b4.send-no-patatt-sign (as b4 send), and a key configured (else patatt refuses)."""
+        project = self.workspace().project(project_id)
+        if self.no_sign or project is None:
+            return False
+        checkout = self.checkout(project)
+        with b4state.b4_repo(checkout):
+            wanted = b4state.patatt_send_default()
+        return wanted and b4state.patatt_key(checkout)
 
     def answered(self, item: WorkItem, msgid: str) -> str:
         project = self.workspace().project(item.project)

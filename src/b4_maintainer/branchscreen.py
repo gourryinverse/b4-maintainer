@@ -915,8 +915,11 @@ class BranchesScreen(Screen[None]):
                 where,
                 f'To: {msg["To"] or "(nobody)"}',
                 *([f'Cc: {msg["Cc"]}'] if msg['Cc'] else []),
-                'It goes as you, with your Signed-off-by (you certify the DCO). [y|N]',
+                'It goes as you, with your Signed-off-by (you certify the DCO).',
             ]
+            signing: Any = getattr(self.app, 'mail_signing', None)
+            note = signing(project) if signing is not None else ''
+            lines += [note, '[y|N]'] if note else ['[y|N]']
 
             def answered(yes: Optional[bool]) -> None:
                 if yes:

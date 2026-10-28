@@ -153,6 +153,8 @@ class SourceActions(Protocol):
 
     def send_message(self, project_id: str, text: str) -> str: ...
 
+    def will_sign(self, project_id: str) -> bool: ...
+
 
 class SeriesList(ScrollView, can_focus=True):
     """Virtual list: renders only visible rows; switching views swaps a tuple.
@@ -2949,6 +2951,16 @@ class MaintainerApp(App[None]):
 
         saved = suspend_and_edit(self, text.encode(), 'patch.eml')
         return saved.decode(errors='replace') if saved is not None else None
+
+    def mail_signing(self, project: str) -> str:
+        """How a patch sent for *project* is signed, for the confirmation (blocking)."""
+        actions = self._actions
+        will_sign = getattr(actions, 'will_sign', None)
+        if will_sign is None:
+            return ''
+        if will_sign(project):
+            return 'Signed with patatt.'
+        return 'Unsigned: no patatt key (patatt.signingkey or user.signingkey), or signing is off.'
 
     def send_message(self, project: str, text: str) -> str:
         """Send *text* through b4, the terminal handed over while it runs."""
