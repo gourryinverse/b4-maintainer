@@ -553,3 +553,25 @@ def test_a_conflicting_item_leaves_nothing_and_says_where_an_agent_starts(upstre
     # The handoff: every item, in order, as one mbox for git am.
     text = items_mbox(project, base, items).decode()
     assert text.index('mm/foo: name line three') < text.index('mm: fix it')
+
+
+def test_a_single_patch_and_a_single_commit_apply_alone(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import items_mbox, prepare_items_tree
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, mbox = upstream
+    fix_branch(project, base)
+    git('switch', '-q', 'me/fix', cwd=project)
+    write(project, 'mm/other.c', 'other\n')
+    single = commit(project, 'mm: other fix')  # The tip alone, not the fix before it.
+    git('switch', '-q', 'master', cwd=project)
+    items = (
+        TreeItem('mm: foo and bar v2 patch 2', str(mbox), 2, patches=(2,)),
+        TreeItem('mm: other fix', branch=single, single=True),
+    )
+    dest = tmp_path / 'var' / 'worktrees' / 'w1' / 'demo'
+    prepare_items_tree(project, dest, BRANCH, base, items, AGENT)
+    assert subjects(dest, f'{base}..HEAD') == ['mm/bar: add bar', 'mm: other fix']
+    text = items_mbox(project, base, items).decode()
+    assert 'mm/bar: add bar' in text and 'mm: other fix' in text
+    assert 'name line three' not in text and 'mm: fix it' not in text

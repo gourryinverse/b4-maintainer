@@ -253,6 +253,21 @@ def _kinds(section: str) -> tuple[str, ...]:
     return next((kinds for kinds, _title in SECTIONS if kinds[0] == section), (section,))
 
 
+WHOLE_KINDS = ('branch', 'prep', 'review', 'work')  # w can add these whole to a workbench.
+
+
+def _bench_branch(key: str, row: Optional[DetailRow]) -> str:
+    """A workbench item's branch for item *key* (*row*: a commit of it): a session's
+    branch as tree:<session>:<branch>, which a workbench fetches from that tree; any other
+    as its name in the project."""
+    kind, _, rest = key.partition(':')
+    if kind == 'work':  # work:<session>:<branch>
+        return f'tree:{rest}'
+    if kind == 'tree':  # tree:<session>, the commit on its row's branch.
+        return f'{key}:{row.branch if row is not None else ""}'
+    return rest.partition(':')[2]  # <kind>:<project>:<name or path>
+
+
 class BranchesScreen(Screen[None]):
     DEFAULT_CSS = """
     BranchesScreen #branch-panes { height: 1fr; }
@@ -296,6 +311,7 @@ class BranchesScreen(Screen[None]):
         Binding('S', 'send', 'send'),
         Binding('u', 'prep_run("trailers")', 'trailers', show=False),
         Binding('d', 'prep_run("compare")', 'compare', show=False),
+        Binding('w', 'add_to_workbench', 'to workbench'),
         Binding('x', 'reap', 'remove'),
         Binding('D', 'derive', 'derive a session', show=False),
     ]
@@ -658,6 +674,8 @@ class BranchesScreen(Screen[None]):
             return self._is_commit(self.selected_row()) and len(self._chosen()) == 1
         if action in ('fold', 'unfold'):
             return self.focused is self.query_one('#branch-items')
+        if action == 'add_to_workbench':
+            return bool(key) and (key.partition(':')[0] in WHOLE_KINDS or bool(self._chosen()))
         if action == 'reap':
             return self.service.reapable(self.data, key)
         if action == 'derive':
@@ -901,6 +919,52 @@ class BranchesScreen(Screen[None]):
             self.app.call_from_thread(self._acted, note)
 
         self.run_worker(work, thread=True, group='branches-act')
+
+    def action_add_to_workbench(self) -> None:
+        """w: the selected branch onto a workbench, or only its marked commits, or only the
+        selected one (asking which, when the whole branch could go too)."""
+        selected, project = self.selected_item(), self._project()
+        if not selected or not project:
+            return
+        key: str = selected
+        whole = key.partition(':')[0] in WHOLE_KINDS
+        name = _bench_branch(key, None)
+        marked = self.marked_rows()
+        row = self.selected_row()
+        in_rows = self.focused is self.query_one('#branch-rows')
+        commits = marked or ([row] if row is not None and in_rows and self._is_commit(row) else [])
+
+        def add_commits(rows: list[DetailRow]) -> None:
+            picks = [(_bench_branch(key, r), r.key, r.subject) for r in rows]
+            if len(rows) == 1:
+                self._add_to_workbench(project, picks, f'{rows[0].key[:12]} {rows[0].subject}')
+            else:
+                self._add_to_workbench(project, picks, f'{len(rows)} commits of {name}')
+
+        def scoped(scope: Optional[str]) -> None:
+            if scope == 'branch':
+                self._add_to_workbench(project, [(name, '', '')], name)
+            elif scope == 'commit' and row is not None:
+                add_commits([row])
+
+        if commits and whole and not marked and row is not None:
+            choices = [
+                ('branch', f'The whole branch: {name}'),
+                ('commit', f'Only {row.key[:12]} {row.subject}'),
+            ]
+            self.app.push_screen(Pick('Add what to a workbench?', choices), scoped)
+        elif commits:
+            add_commits(commits)
+        elif whole:
+            self._add_to_workbench(project, [(name, '', '')], name)
+        else:
+            self._status('w adds commits here: select one (Tab), or mark some (space)')
+
+    def _add_to_workbench(self, project: str, picks: list[tuple[str, str, str]], what: str) -> None:
+        hook: Any = getattr(self.app, 'add_branch_to_workbench', None)
+        reason = hook(project, picks, what) if hook else 'workbenches are not available here'
+        if reason:
+            self._status(f'Not added: {reason}')
 
     def action_mail_patch(self) -> None:
         """m: one commit as a patch email through b4. A fixup replies to the series patch

@@ -1,7 +1,8 @@
 """Contract: workbenches are named recipes for sessions over several projects, one file
-each in state/workbenches/ (synced): per project, a base and the series and local
-branches applied on it in order."""
+each in state/workbenches/: per project, a base and the series and local branches
+applied on it in order (or one patch of a series, one commit of a branch)."""
 
+import dataclasses
 import pathlib
 
 import pytest
@@ -488,3 +489,46 @@ def test_a_sessions_artifacts_become_items():
     assert artifact_item(single, report) == ('', Item(file='/o/report.md'))
     note = Attachment('text', 'finding: x', 's1', title='x', text='Only words.')
     assert artifact_item(single, note) is None
+
+
+def test_a_single_patch_and_a_single_commit_round_trip_as_items():
+    from b4_maintainer.workbench import workbench_toml
+
+    bench = Workbench('w', 'W', ())
+    bench = add_series(bench, 'linux', 'change-id:foo', 3, 'mm: foo', patches=(2,))
+    bench = add_series(bench, 'linux', 'change-id:foo', 3, 'mm: foo', patches=(4,))  # Another.
+    bench = add_branch(bench, 'linux', 'tree:s1:b4m/fixup/x', commit='c' * 40, subject='mm: fix x')
+    again = parse_workbench(workbench_toml(bench), 'w')
+    assert again == bench
+    first, second, single = again.entries[0].items
+    assert (first.patches, second.patches) == ((2,), (4,))
+    assert first.label == 'mm: foo v3 patch 2'
+    assert (
+        single.commit == 'c' * 40
+        and single.label == f'mm: fix x ({"c" * 12} of tree:s1:b4m/fixup/x)'
+    )
+    with pytest.raises(WorkbenchError):
+        add_series(again, 'linux', 'change-id:foo', 3, 'mm: foo', patches=(2,))  # Already there.
+
+
+def test_a_single_patch_and_commit_become_tree_items_that_say_so(tmp_path):
+    from b4_maintainer.fixtures import make_series
+    from b4_maintainer.workbench import WorkbenchService
+    from b4_maintainer.workspace import Workspace
+
+    store = WorkbenchStore(tmp_path / 'wb')
+    service = WorkbenchService(tmp_path, store, lambda: [])
+    series = {'change-id:foo': make_series('mm: foo', revision=3, change_id='foo')}
+    series['change-id:foo'] = dataclasses.replace(
+        series['change-id:foo'], identity='change-id:foo', source='/mail/foo'
+    )
+    bench = add_series(
+        Workbench('w', 'W', ()), 'linux', 'change-id:foo', 3, 'mm: foo', patches=(2,)
+    )
+    bench = add_branch(bench, 'linux', 'me/fix', commit='c' * 40, subject='mm: fix x')
+    service.branch_repo = lambda workspace, project, branch: ('/repo', branch)
+    plans, problems, _tree = service.plans(Workspace.from_config({}), bench, series)
+    assert problems == []
+    patch, commit = plans[0].items
+    assert (patch.source, patch.revision, patch.patches) == ('/mail/foo', 3, (2,))
+    assert (commit.branch, commit.single) == ('c' * 40, True)

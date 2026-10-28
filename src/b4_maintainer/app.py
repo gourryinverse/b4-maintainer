@@ -46,6 +46,7 @@ from .reader import (
     SASHIKO_PREFIX,
     SEVERITY_STYLES,
     TreeRow,
+    bare_subject,
     branch,
     content_title,
     find_post,
@@ -81,6 +82,7 @@ from .workbench import (
     Item,
     Workbench,
     WorkbenchError,
+    add_branch,
     add_mail,
     add_project,
     add_series,
@@ -2558,7 +2560,7 @@ class MaintainerApp(App[None]):
                 return
             if result.ok:
                 n = len(result.applied)
-                notice = f'Applied {n} patch{"es" if n != 1 else ""} to {branch} · F3 shows it'
+                notice = f'Applied {n} patch{"es" if n != 1 else ""} to {branch} · F4 shows it'
             else:
                 notice = f'Not applied: {result.error}'
             self.call_from_thread(self._action_done, notice, result.ok)
@@ -2690,26 +2692,60 @@ class MaintainerApp(App[None]):
 
     def action_add_to_workbench(self) -> None:
         """w: the open or selected series onto a workbench (or a new one), under its
-        project; one not routed to a project asks which."""
+        project; one not routed to a project asks which. Reading one of its patches asks
+        whether the whole series goes, or only that patch."""
         service, snapshot = self._workbenches, self.snapshot
         item = self._reading or self._item
         if service is None or snapshot is None or item is None:
             return
         workspace = snapshot.workspace
+        post = None
+        if self._reading is item and self._thread is not None and not item.series.discussion:
+            post = find_post(self._thread, self._post_key)
+        patches: tuple[int, ...] = ()
 
         def chose_project(project: Optional[str]) -> None:
             if project:
-                self._pick_workbench(item, project)
+                self._pick_workbench(item, project, patches)
 
-        if item.project:
-            self._pick_workbench(item, item.project)
-        else:
-            projects = [(p.id, p.label) for p in workspace.projects]
-            self.push_screen(
-                Pick(f'Which project is {item.series.subject} for?', projects), chose_project
-            )
+        def to_project() -> None:
+            if item.project:
+                self._pick_workbench(item, item.project, patches)
+            else:
+                projects = [(p.id, p.label) for p in workspace.projects]
+                self.push_screen(
+                    Pick(f'Which project is {item.series.subject} for?', projects), chose_project
+                )
 
-    def _pick_workbench(self, item: WorkItem, project: str) -> None:
+        def scoped(scope: Optional[str]) -> None:
+            nonlocal patches
+            if scope is None:
+                return
+            if scope == 'patch' and post is not None:
+                patches = (post.counter,)
+            to_project()
+
+        if post is None or post.counter == 0:
+            to_project()
+            return
+        s = item.series
+        self.push_screen(
+            Pick(
+                'Add what to a workbench?',
+                [
+                    ('series', f'The whole series: {s.subject} v{s.revision}'),
+                    ('patch', f'Only patch {post.counter}: {bare_subject(post.message.subject)}'),
+                ],
+            ),
+            scoped,
+        )
+
+    def _pick_workbench(self, item: WorkItem, project: str, patches: tuple[int, ...] = ()) -> None:
+        what = item.series.subject + (f' patch {patches[0]}' if patches else '')
+        self._choose_workbench(what, lambda bench: self._add_to(bench, item, project, patches))
+
+    def _choose_workbench(self, what: str, add: Callable[[Workbench], None]) -> None:
+        """Which workbench (or a new one, named) *what* goes onto: *add* does it."""
         service = self._workbenches
         if service is None:
             return
@@ -2727,19 +2763,55 @@ class MaintainerApp(App[None]):
                 elif wid:
                     bench = next((b for b in benches if b.id == wid), None)
                     if bench is not None:
-                        self._add_to(bench, item, project)
+                        add(bench)
 
             def named(label: Optional[str]) -> None:
                 if label:
-                    self._add_to(Workbench(service.store.new_id(label), label), item, project)
+                    add(Workbench(service.store.new_id(label), label))
 
-            self.push_screen(
-                Pick(f'Add {item.series.subject} to which workbench?', options), picked
-            )
+            self.push_screen(Pick(f'Add {what} to which workbench?', options), picked)
 
         self.run_worker(work, thread=True, group='workbench')
 
-    def _add_to(self, bench: Workbench, item: WorkItem, project: str) -> None:
+    def add_branch_to_workbench(
+        self, project: str, picks: Sequence[tuple[str, str, str]], what: str
+    ) -> Optional[str]:
+        """w on Branches: (branch, commit, subject) *picks* (a whole branch with no commit,
+        else only that commit) onto a workbench, under *project*; any already on it are
+        left as they are. The notice is the app's; a reason when there is no workbench."""
+        service, snapshot = self._workbenches, self.snapshot
+        if service is None or snapshot is None:
+            return 'workbenches are not available here'
+        found = snapshot.workspace.project(project)
+        base = found.bases[0].branch if found and found.bases else ''
+
+        def add(bench: Workbench) -> None:
+            changed, skipped = bench, 0
+            for name, commit, subject in picks:
+                try:
+                    changed = add_branch(
+                        changed, project, name, base=base, commit=commit, subject=subject
+                    )
+                except WorkbenchError:
+                    skipped += 1
+            if changed is not bench:
+                try:
+                    service.store.save(changed)
+                except OSError as exc:
+                    self._set_notice(f'Not added: {exc}')
+                    return
+            there = f' ({skipped} already there)' if skipped else ''
+            if skipped == len(picks):
+                self._set_notice(f'Not added: {what} is already on {bench.label}')
+            else:
+                self._set_notice(f'Added {what} to {bench.label} ({project}){there} · F3 shows it')
+
+        self._choose_workbench(what, add)
+        return None
+
+    def _add_to(
+        self, bench: Workbench, item: WorkItem, project: str, patches: tuple[int, ...] = ()
+    ) -> None:
         service, snapshot = self._workbenches, self.snapshot
         if service is None or snapshot is None:
             return
@@ -2752,15 +2824,21 @@ class MaintainerApp(App[None]):
                 changed = add_mail(bench, project, item.identity, s.subject, msgid, base=base)
             else:
                 changed = add_series(
-                    bench, project, item.identity, s.revision, s.subject, base=base, msgid=msgid
+                    bench,
+                    project,
+                    item.identity,
+                    s.revision,
+                    s.subject,
+                    base=base,
+                    msgid=msgid,
+                    patches=patches,
                 )
             service.store.save(changed)
         except (WorkbenchError, OSError) as exc:
             self._set_notice(f'Not added: {exc}')
             return
-        self._set_notice(
-            f'Added {s.subject} v{s.revision} to {bench.label} ({project}) · F4 shows it'
-        )
+        what = f'{s.subject} v{s.revision}' + (f' patch {patches[0]}' if patches else '')
+        self._set_notice(f'Added {what} to {bench.label} ({project}) · F3 shows it')
 
     def launch_workbench(self, bench: Workbench) -> None:
         """F1 on the Workbench screen: the launch dialog for a session over *bench*: its

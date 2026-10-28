@@ -162,6 +162,39 @@ async def test_w_adds_the_series_to_a_workbench_or_a_new_one(demo_root, tmp_path
         assert fresh is not None and fresh.entry(other.project).items[0].series == other.identity
 
 
+async def test_w_on_a_patch_adds_the_whole_series_or_only_that_patch(demo_root, tmp_path):
+    app, store = make(demo_root, tmp_path, [BENCH])
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        item = app.query_one('SeriesList').highlighted_item
+        await pilot.press('enter')  # Read it.
+        await settle(pilot)
+        await pilot.press('w')  # On the cover letter: the whole series, as before.
+        await settle(pilot)
+        assert [key for key, _label in app.screen.choices] == ['cxl', '+new']
+        await pilot.press('escape')
+        await settle(pilot)
+        tree = app.query_one('#tree')
+        for row in range(tree.option_count):  # Down to patch 2.
+            tree.highlighted = row
+            await pilot.pause()
+            if app.tree_position() == ('2', 0):
+                break
+        assert app.tree_position() == ('2', 0)
+        await pilot.press('w')
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        assert [key for key, _label in app.screen.choices] == ['series', 'patch']
+        assert 'Only patch 2: ' in app.screen.choices[1][1]
+        await pilot.press('down', 'enter')  # Only patch 2.
+        await settle(pilot)
+        await pilot.press('enter')  # Onto cxl.
+        await settle(pilot)
+        added = store.get('cxl').entry(item.project).items[-1]
+        assert (added.series, added.patches) == (item.identity, (2,))
+        assert f'{item.series.subject} v{item.series.revision} patch 2' in app.status_text()
+
+
 async def test_the_apps_own_keys_wait_while_the_screen_is_open(demo_root, tmp_path):
     app, _store = make(demo_root, tmp_path, [BENCH])
     async with app.run_test(size=(140, 40)) as pilot:  # Medium: v toggles the views.

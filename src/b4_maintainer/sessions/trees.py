@@ -143,6 +143,8 @@ class TreeItem:
     repo: str = ''
     apply: bool = True  # False: given to the session to read (a discussion, a file).
     file: str = ''  # A file from disk given as it is, not as mail.
+    patches: tuple[int, ...] = ()  # A series: only these patches of it (by number).
+    single: bool = False  # A branch item: only its tip commit (*branch* names it).
 
 
 # Where a tree b4 could not apply the series in keeps b4's mbox for the agent: under .git,

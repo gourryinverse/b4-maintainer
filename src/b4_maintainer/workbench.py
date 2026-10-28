@@ -31,7 +31,9 @@ if TYPE_CHECKING:
 DIRECTORY = 'workbenches'  # Under state/.
 _TOP = frozenset({'label', 'origin', 'entry'})
 _ENTRY = frozenset({'project', 'base', 'items'})
-_ITEM = frozenset({'series', 'revision', 'subject', 'branch', 'mail', 'file', 'msgid'})
+_ITEM = frozenset(
+    {'series', 'revision', 'subject', 'branch', 'mail', 'file', 'msgid', 'patches', 'commit'}
+)
 _KINDS = ('series', 'branch', 'mail', 'file')  # An item is exactly one of these.
 
 
@@ -48,11 +50,19 @@ class Item:
     mail: str = ''  # Else a discussion's identity: read, never applied.
     file: str = ''  # Else a file from disk: applied if b4 finds patches in it, else read.
     msgid: str = ''  # A message of a mail item's thread: kept in the cache, fetched by it.
+    patches: tuple[int, ...] = ()  # A series item: only these patches of it (by number).
+    commit: str = ''  # A branch item: only this commit of it.
 
     @property
     def label(self) -> str:
+        if self.series and self.patches:
+            numbers = ', '.join(str(n) for n in self.patches)
+            word = 'patch' if len(self.patches) == 1 else 'patches'
+            return f'{self.subject} v{self.revision} {word} {numbers}'
         if self.series:
             return f'{self.subject} v{self.revision}'
+        if self.commit:
+            return f'{self.subject or self.commit[:12]} ({self.commit[:12]} of {self.branch})'
         if self.mail:
             return f'{self.subject} (discussion)'
         if self.file:
@@ -102,6 +112,8 @@ def _item(raw: Any, project: str) -> Item:
         str(raw.get('mail', '')),
         str(raw.get('file', '')),
         str(raw.get('msgid', '')),
+        tuple(int(n) for n in raw.get('patches', [])),
+        str(raw.get('commit', '')),
     )
 
 
@@ -146,8 +158,15 @@ def workbench_toml(bench: Workbench) -> str:
                 fields = f'mail = {_s(item.mail)}, subject = {_s(item.subject)}'
             elif item.file:
                 fields = f'file = {_s(item.file)}'
+            elif item.commit:
+                fields = (
+                    f'branch = {_s(item.branch)}, commit = {_s(item.commit)}, '
+                    f'subject = {_s(item.subject)}'
+                )
             else:
                 fields = f'branch = {_s(item.branch)}'
+            if item.patches:
+                fields += f', patches = [{", ".join(str(n) for n in item.patches)}]'
             if item.msgid:
                 fields += f', msgid = {_s(item.msgid)}'
             lines.append(f'  {{ {fields} }},')
@@ -269,12 +288,14 @@ def add_series(
     subject: str,
     base: str = '',
     msgid: str = '',
+    patches: tuple[int, ...] = (),
 ) -> Workbench:
-    """The series last under *project* (an entry made at *base* if it has none)."""
+    """The series last under *project* (an entry made at *base* if it has none); with
+    *patches*, only those patches of it."""
     entry = _entry(bench, project, base)
-    if any(i.series == series for i in entry.items):
+    if any(i.series == series and i.patches == tuple(patches) for i in entry.items):
         raise WorkbenchError(f'{subject} is already on this workbench')
-    item = Item(series, revision, subject, msgid=msgid)
+    item = Item(series, revision, subject, msgid=msgid, patches=tuple(patches))
     return _with_entry(bench, replace(entry, items=entry.items + (item,)))
 
 
@@ -297,10 +318,23 @@ def add_file(bench: Workbench, project: str, path: str, base: str = '') -> Workb
     return _with_entry(bench, replace(entry, items=entry.items + (Item(file=path),)))
 
 
-def add_branch(bench: Workbench, project: str, branch: str, base: str = '') -> Workbench:
-    """The local branch last under *project* (an entry made at *base* if it has none)."""
+def add_branch(
+    bench: Workbench,
+    project: str,
+    branch: str,
+    base: str = '',
+    commit: str = '',
+    subject: str = '',
+) -> Workbench:
+    """The local branch last under *project* (an entry made at *base* if it has none);
+    with *commit*, only that commit of it (*subject* labels it)."""
     entry = _entry(bench, project, base)
-    if any(i.branch == branch for i in entry.items):
+    if commit:
+        if any(i.branch == branch and i.commit == commit for i in entry.items):
+            raise WorkbenchError(f'{subject or commit[:12]} is already on this workbench')
+        item = Item(branch=branch, commit=commit, subject=subject)
+        return _with_entry(bench, replace(entry, items=entry.items + (item,)))
+    if any(i.branch == branch and not i.commit for i in entry.items):
         raise WorkbenchError(f'{branch} is already on this workbench')
     return _with_entry(bench, replace(entry, items=entry.items + (Item(branch=branch),)))
 
@@ -505,14 +539,19 @@ class WorkbenchService:
                             f'{item.label}: only v{known.revision} is cached (v on F4 takes it)'
                         )
                     else:
-                        items.append(TreeItem(item.label, known.source, item.revision))
+                        items.append(
+                            TreeItem(item.label, known.source, item.revision, patches=item.patches)
+                        )
                     continue
                 repo, name = self.branch_repo(workspace, entry.project, item.branch)
                 if not repo:
                     tree_problems.append(f'{item.branch}: its tree is gone')
                     continue
                 other = repo if item.branch.startswith('tree:') else ''
-                items.append(TreeItem(item.branch, branch=name, repo=other))
+                if item.commit:  # Only this commit of the branch.
+                    items.append(TreeItem(item.label, branch=item.commit, repo=other, single=True))
+                else:
+                    items.append(TreeItem(item.branch, branch=name, repo=other))
             plans.append(TreePlan(entry.project, entry.base, tuple(items)))
         if not bench.entries:
             problems.append(f'{bench.label} has nothing to prepare: w adds series to it')
@@ -690,13 +729,18 @@ class WorkbenchService:
             known = series.get(item.series)
             if known is None:
                 return f'{text} · not in the cache (F5 fetches it)'
-            if known.revision == item.revision:
+            if known.revision == item.revision and item.patches:
+                text += f' · {len(item.patches)} of {len(known.patches)} patches'
+            elif known.revision == item.revision:
                 text += f' · {len(known.patches)} patches'
             newer = latest.get(item.series, 0)
             return text + (f' · v{newer} available (v)' if newer > item.revision else '')
         repo, name = self.branch_repo(workspace, entry.project, item.branch)
         if not repo:
-            return f'{item.branch} · its tree is gone'
+            return f'{item.label} · its tree is gone'
+        if item.commit:
+            there = _git(pathlib.Path(repo), 'cat-file', '-t', item.commit) == 'commit'
+            return f'{item.label} · {"one commit" if there else "not a commit there"}'
         if start is None:
             return item.branch
         count = _git(pathlib.Path(repo), 'rev-list', '--count', '--no-merges', f'{start}..{name}')

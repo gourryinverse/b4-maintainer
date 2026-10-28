@@ -105,7 +105,9 @@ Python 3.11 or newer.
   ndctl tree, patched together): per project, a base and the series and local branches
   applied on it in order, one file each in `state/workbenches/`. `w` in the
   series list or a thread adds the series (or a discussion, which sessions read but never
-  apply) to one (or a new one); `a` on the Workbench tab adds a thread by lore link or
+  apply) to one (or a new one); on a patch in a thread it asks: the whole series, or only
+  that patch. `w` in Branches (`F4`) adds the selected branch, or only the selected commit
+  (it asks), or only the marked commits, each alone; `a` on the Workbench tab adds a thread by lore link or
   Message-ID (fetched into the cache, kept there while a workbench names it) or a file
   from disk (applied if b4 finds patches in it, else read), under the selected project or
   the one picked (the thread's own suggested first); `m` moves an item to another project (a project stays until `x` removes it); `a` also adds a
@@ -227,8 +229,11 @@ Python 3.11 or newer.
   upstream, a prep branch, or any ref, to pluck onto; `r` rebases
   a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`
   on its tree (or an apply session's) moves the base to its result. Space marks commits and `p` plucks them onto
-  a base, a prep branch, or a branch made with `b`: an agent's become yours with `Assisted-by:` (`[sessions]
-  assisted_by`, default the session's model); others keep their authors. `n` makes a b4
+  a base, a prep branch, or a branch made with `b` (one checked out is fast-forwarded in
+  its checkout after a confirmation, `git merge --ff-only`): an agent's become yours with
+  `Assisted-by:` (`[sessions] assisted_by`, default the session's model); others keep
+  their authors. `w` adds the branch, or its marked or selected commits, to a workbench.
+  `n` makes a b4
   prep branch from the marked commits (name, fork point, cover drafted from the agents'
   summaries) in a sparse worktree under `var/branches/`; on it, `t` adds recipients,
   `c` checks, `e` edits the cover letter, `s` adds your Signed-off-by (you certify the

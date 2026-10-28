@@ -105,7 +105,9 @@ def _from_review(project: pathlib.Path, change_id: str, revision: int) -> Option
     return base, applied
 
 
-def _am_bytes(source: str, revision: int) -> tuple['b4.LoreSeries', bytes]:
+def _am_bytes(
+    source: str, revision: int, patches: Sequence[int] = ()
+) -> tuple['b4.LoreSeries', bytes]:
     lmbx = b4.LoreMailbox()
     for msg in b4.get_msgs_from_mailbox_or_maildir(source):
         lmbx.add_message(msg)
@@ -113,7 +115,9 @@ def _am_bytes(source: str, revision: int) -> tuple['b4.LoreSeries', bytes]:
     if lser is None or not any(lser.patches[1:]):
         raise PrepareError(f'no v{revision} series in {source}')
     b4.MAIN_CONFIG['attestation-policy'] = 'off'  # Offline; the session reviews the code.
-    msgs = lser.get_am_ready(noaddtrailers=True, allowbadchars=True)
+    msgs = lser.get_am_ready(
+        noaddtrailers=True, allowbadchars=True, cherrypick=list(patches) or None
+    )
     if not msgs:
         raise PrepareError(f'v{revision}: no patches ready to apply')
     out = io.BytesIO()
@@ -122,13 +126,19 @@ def _am_bytes(source: str, revision: int) -> tuple['b4.LoreSeries', bytes]:
 
 
 def _apply(
-    project: pathlib.Path, dest: pathlib.Path, source: str, revision: int, base: Optional[str]
+    project: pathlib.Path,
+    dest: pathlib.Path,
+    source: str,
+    revision: int,
+    base: Optional[str],
+    patches: Sequence[int] = (),
 ) -> tuple[str, str]:
-    """(base, last series commit), applying the series from its mail."""
+    """(base, last series commit), applying the series (only *patches*, if any) from its
+    mail."""
     sha: Optional[str] = None
     with b4_repo(project), _captured() as log:
         try:
-            lser, ambytes = _am_bytes(source, revision)
+            lser, ambytes = _am_bytes(source, revision, patches)
             if base is None:
                 base, _hint = b4.review.detect_apply_base(lser, str(project))
             sha = _commit(project, base)
@@ -149,13 +159,18 @@ def _apply(
 
 
 def _apply_more(
-    project: pathlib.Path, dest: pathlib.Path, source: str, revision: int, tip: str
+    project: pathlib.Path,
+    dest: pathlib.Path,
+    source: str,
+    revision: int,
+    tip: str,
+    patches: Sequence[int] = (),
 ) -> str:
     """A further series applied on top of *tip* (a commit in the clone): the new tip."""
     with b4_repo(project), _captured() as log:
         subject = f'v{revision}'
         try:
-            lser, ambytes = _am_bytes(source, revision)
+            lser, ambytes = _am_bytes(source, revision, patches)
             subject = f'{lser.subject} v{revision}'
             b4.git_fetch_am_into_repo(
                 str(dest), ambytes, at_base=tip, am_flags=['-3'], resolve=True
@@ -182,11 +197,14 @@ def _agent(dest: pathlib.Path, identity: tuple[str, str]) -> None:
     hook.chmod(0o755)
 
 
-def series_mbox(project: pathlib.Path, source: str, revision: int) -> bytes:
-    """b4's am-ready mbox of the series, as a session tree applies it."""
+def series_mbox(
+    project: pathlib.Path, source: str, revision: int, patches: Sequence[int] = ()
+) -> bytes:
+    """b4's am-ready mbox of the series (only *patches*, if any), as a session tree
+    applies it."""
     with b4_repo(project), _captured() as log:
         try:
-            return _am_bytes(source, revision)[1]
+            return _am_bytes(source, revision, patches)[1]
         except PrepareError:
             raise
         except Exception as ex:
@@ -301,7 +319,8 @@ def prepare_items_tree(
 ) -> Worktree:
     """A workbench session's tree for one project at *dest*, on *branch*: *base* (empty: b4
     chooses for a first series, else the project's HEAD), then *items* in order: series
-    applied by b4, local branches' commits beyond the base replayed (authors kept). An
+    applied by b4 (only some patches, if the item says), local branches' commits beyond the
+    base replayed (only the one commit of a single item; authors kept). An
     item that does not apply fails it all, saying where an agent would start; nothing is
     left behind."""
     from .bases import _replay  # The same replay as plucking.
@@ -317,9 +336,13 @@ def prepare_items_tree(
         for item in (i for i in items if i.apply):  # Read-only items stay out of trees.
             try:
                 if item.source and tip is None:
-                    start, tip = _apply(project, dest, item.source, item.revision, None)
+                    start, tip = _apply(
+                        project, dest, item.source, item.revision, None, item.patches
+                    )
                 elif item.source:
-                    tip = _apply_more(project, dest, item.source, item.revision, tip or '')
+                    tip = _apply_more(
+                        project, dest, item.source, item.revision, tip or '', item.patches
+                    )
                 else:
                     if start is None:
                         start = tip = _git(project, 'rev-parse', 'HEAD')
@@ -329,7 +352,12 @@ def prepare_items_tree(
                         raise PrepareError(f'{item.branch} is not a branch in {where}')
                     if item.repo:
                         _git(dest, 'fetch', '--quiet', '--no-tags', str(where), head)
-                    shas = _git(dest, 'rev-list', '--reverse', '--no-merges', f'{start}..{head}')
+                    if item.single:  # Only this commit.
+                        shas = head
+                    else:
+                        shas = _git(
+                            dest, 'rev-list', '--reverse', '--no-merges', f'{start}..{head}'
+                        )
                     replayed = _replay(dest, tip or start, shas.split())
                     if not replayed.ok:
                         raise PrepareError(
@@ -358,11 +386,12 @@ def items_mbox(project: pathlib.Path, start: str, items: Sequence[TreeItem]) -> 
     parts = []
     for item in (i for i in items if i.apply):
         if item.source:
-            parts.append(series_mbox(project, item.source, item.revision))
+            parts.append(series_mbox(project, item.source, item.revision, item.patches))
             continue
         where = pathlib.Path(item.repo) if item.repo else project
+        commits = ['-1', item.branch] if item.single else [f'{start}..{item.branch}']
         run = subprocess.run(
-            ['git', 'format-patch', '--stdout', '--no-signature', f'{start}..{item.branch}'],
+            ['git', 'format-patch', '--stdout', '--no-signature', *commits],
             cwd=where,
             capture_output=True,
             stdin=subprocess.DEVNULL,

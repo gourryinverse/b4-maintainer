@@ -183,7 +183,7 @@ def post_label(thread: SeriesThread, key: str, item: WorkItem, absent: str = '·
     replies = f' ({len(post.replies)})' if post.replies else ''
     if thread.discussion:
         return f'discussion{replies}'
-    title = _bare_subject(post.message.subject)  # Last: the render cuts it to the pane.
+    title = bare_subject(post.message.subject)  # Last: the render cuts it to the pane.
     if post.counter == 0:
         return f'0/{total} cover{replies} {title}'.rstrip()
     found = len(_new_findings(sashiko_patch(item.sashiko, post)))
@@ -192,7 +192,7 @@ def post_label(thread: SeriesThread, key: str, item: WorkItem, absent: str = '·
     return f'{post.counter}/{total} {marks}{replies}{badge} {title}'.rstrip()
 
 
-def _bare_subject(subject: str) -> str:
+def bare_subject(subject: str) -> str:
     """A posting's subject without its [PATCH v3 2/5]-style prefixes."""
     return re.sub(r'^(\s*\[[^\]]*\])+\s*', '', subject).strip()
 

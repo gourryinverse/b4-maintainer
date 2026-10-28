@@ -97,6 +97,7 @@ class DetailRow:
     git_args: tuple[str, ...] = ()  # Shown by running git with these in repo instead.
     branch: str = ''  # The session tree branch a commit is on.
     show_text: str = ''  # Shown as is (e.g. a cover letter).
+    subject: str = ''  # A commit's subject.
 
 
 @dataclass(frozen=True)
@@ -131,7 +132,8 @@ def _count(n: int, one: str) -> str:
 
 
 def _commit_row(sha: str, subject: str, repo: pathlib.Path, note: str = '') -> DetailRow:
-    return DetailRow(f'  {sha[:12]}  {subject}' + (f'  ({note})' if note else ''), sha, str(repo))
+    text = f'  {sha[:12]}  {subject}' + (f'  ({note})' if note else '')
+    return DetailRow(text, sha, str(repo), subject=subject)
 
 
 @dataclass(frozen=True)
