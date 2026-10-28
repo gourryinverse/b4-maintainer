@@ -142,3 +142,37 @@ async def test_b_makes_a_branch_to_pluck_onto(demo_root):
         await settle(pilot)
         assert service.made == [('linux', 'try-lock', 'up/stable')]
         assert 'Made try-lock' in screen.status_text()
+
+
+class FlaggedBranches(SectionBranches):
+    def snapshot(self, workspace, trees=True):
+        import dataclasses
+
+        data = super().snapshot(workspace, trees)
+        items = tuple(
+            dataclasses.replace(
+                i,
+                label='me/base · 2 commits',
+                info=('On up/stable', '2 behind', 'Checked out in ~/linux'),
+                flagged=True,
+            )
+            if i.kind == 'base'
+            else i
+            for i in data.items
+        )
+        return dataclasses.replace(data, items=items)
+
+
+async def test_details_sit_under_the_list_and_a_star_marks_special_conditions(demo_root):
+    app = make_app(demo_root, FlaggedBranches())
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        labels = [label.strip() for label in screen.item_labels()]
+        assert 'me/base · 2 commits *' in labels  # Short, marked; no wrapping details.
+        assert str(screen.query_one('#branch-info').border_title) == 'Details'
+        details = screen.details_text()
+        assert 'Checked out in ~/linux' in details and '2 behind' in details
+        screen.select_item('prep:linux:b4/pa')
+        await settle(pilot)
+        assert 'Checked out' not in screen.details_text()
+        assert 'b4/pa' in screen.details_text()

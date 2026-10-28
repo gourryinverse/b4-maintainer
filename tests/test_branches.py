@@ -93,7 +93,8 @@ def test_each_project_lists_its_bases_trees_and_prep_branches(ws):
     ]
     by_key = {i.key: i for i in found.items}
     base, tree = by_key['base:linux:me/base'], by_key['tree:s1']
-    assert 'me/base on up/stable' in base.label and '1 commit' in base.label
+    assert base.label == 'me/base · 1 commit' and not base.flagged  # Short: details below.
+    assert 'On up/stable' in base.info
     assert 'mm: fix foo leak' in tree.label and '1 pull-ahead' in tree.label
     assert 'b4/pull-aheads' in by_key['prep:linux:b4/pull-aheads'].label
 
@@ -115,7 +116,8 @@ def test_worktrees_review_branches_and_other_local_work_are_listed(ws, tmp_path)
     assert order == ['base', 'worktree', 'worktree', 'tree', 'work', 'prep', 'review', 'branch']
     by_key = {i.key: i for i in found.items}
     main = by_key[f'worktree:linux:{project}']
-    assert 'main' in main.label and '1 changed' in main.label
+    assert main.label == 'main · 1 changed' and main.flagged  # Uncommitted changes.
+    assert 'projects/linux' in ' '.join(main.info)  # Where it is: in the details.
     assert '?? scratch.txt' in [r.text.strip() for r in found.details[main.key]]
     linked = by_key[f'worktree:linux:{topic}']
     assert 'topic' in linked.label and 'clean' in linked.label
@@ -164,12 +166,14 @@ def test_a_base_rebases_from_here(ws):
     git('update-ref', 'refs/remotes/up/stable', tip, cwd=project)
     git('switch', '-q', 'main', cwd=project)
     found = service.snapshot(workspace)
-    assert '1 behind' in found.items[0].label
+    behind = found.items[0]
+    assert any('1 behind' in line for line in behind.info)
+    assert behind.flagged and 'behind' not in behind.label
     result = service.rebase(
         workspace, 'base:linux:me/base', found.statuses['base:linux:me/base'].tip
     )
     assert result.ok
-    assert '1 behind' not in service.snapshot(workspace).items[0].label
+    assert not any('behind' in line for line in service.snapshot(workspace).items[0].info)
 
 
 def test_a_trees_extra_checkouts_are_listed_under_it(ws, tmp_path):
@@ -649,3 +653,11 @@ def test_b_makes_a_plain_branch_to_pluck_onto(ws):
     assert not service.new_branch(workspace, 'linux', 'try-leak', 'up/stable').ok  # Exists.
     assert not service.new_branch(workspace, 'linux', 'bad name', 'up/stable').ok
     assert not service.new_branch(workspace, 'linux', 'x', 'no-such-ref').ok
+
+
+def test_a_base_checked_out_somewhere_says_so_in_its_details(ws):
+    service, workspace, project = ws
+    git('switch', '-q', 'me/base', cwd=project)
+    base = service.snapshot(workspace, trees=False).items[0]
+    assert base.label == 'me/base · 1 commit' and base.flagged
+    assert any(line.startswith('Checked out in projects/linux') for line in base.info)

@@ -75,7 +75,9 @@ class BranchItem:
     key: str  # <kind>:<project>:<branch or path>, tree:<session>, or work:<tree>:<branch>
     kind: str  # base, worktree, tree, work (a session's agent branch), prep, review, branch
     project: str
-    label: str
+    label: str  # Short: the list never wraps; the rest is in *info*.
+    info: tuple[str, ...] = ()  # Its details (the pane under the list).
+    flagged: bool = False  # Something needs attention (said in *info*): marked with *.
 
 
 @dataclass(frozen=True)
@@ -213,14 +215,20 @@ class BranchService:
                 key = f'base:{project.id}:{base.branch}'
                 status = base_status(repo, base)
                 statuses[key] = status
-                items.append(BranchItem(key, 'base', project.id, _base_label(status)))
+                info, flagged = _base_info(status, self.root)
+                items.append(
+                    BranchItem(key, 'base', project.id, _base_label(status), info, flagged)
+                )
                 details[key] = _base_rows(status, repo)
             checked_out = set()
             for path, branch in _worktrees(repo):
                 key = f'worktree:{project.id}:{path}'
                 checked_out.add(branch)
                 label, rows = _worktree(pathlib.Path(path), branch, self.root)
-                items.append(BranchItem(key, 'worktree', project.id, label))
+                changed = any(r.text == 'Changes' for r in rows)
+                where = _short_path(pathlib.Path(path), self.root)
+                info = (f'Checkout at {where}', 'Uncommitted changes' if changed else 'Clean')
+                items.append(BranchItem(key, 'worktree', project.id, label, info, changed))
                 details[key] = rows
             for key, record in ((k, r) for k, r in views if r.project == project.id):
                 assert record.worktree is not None
@@ -273,7 +281,13 @@ class BranchService:
                     note = (
                         f'{commits} not upstream' if kind == 'branch' else _count(commits, 'commit')
                     )
-                    items.append(BranchItem(key, kind, project.id, f'{name} · {note}'))
+                    what = {
+                        'prep': 'b4 prep branch',
+                        'review': "b4's review branch",
+                        'branch': 'Local branch: commits on no remote',
+                    }[kind]
+                    info = (f'{what} {name}', note)
+                    items.append(BranchItem(key, kind, project.id, f'{name} · {note}', info))
                     details[key] = rows
         identities, preps = {}, {}
         for project in workspace.projects:
@@ -291,9 +305,13 @@ class BranchService:
             preps[item.key] = tracking
             commits = sum(1 for r in details.get(item.key, ()) if is_commit(r))
             label = f'{branch} · v{tracking["revision"]} · {_count(commits, "commit")}'
-            if tracking['sent']:
-                label += f' · sent {", ".join(tracking["sent"])}'
-            items[n] = dataclasses.replace(item, label=label)
+            sent = f'Sent {", ".join(tracking["sent"])}' if tracking['sent'] else 'Never sent'
+            info = (
+                f'b4 prep branch {branch}',
+                f'Preparing v{tracking["revision"]}: {_count(commits, "commit")}',
+                sent,
+            )
+            items[n] = dataclasses.replace(item, label=label, info=info)
         targets, tips = {}, {}
         for item in items:
             project = workspace.project(item.project)
@@ -346,9 +364,20 @@ class BranchService:
             if not branch.commits:
                 continue
             name = branch.name.removeprefix('b4m/')
-            mark = ' !' if branch.problem else ''
-            label = f'{record.id} {name} · {_count(len(branch.commits), "commit")}{mark}'
-            item = BranchItem(f'work:{where}:{branch.name}', 'work', record.project, label)
+            label = f'{record.id} {name} · {_count(len(branch.commits), "commit")}'
+            info = (
+                f'{branch.kind} {branch.name} of session {record.id}: {session_label(record)}',
+                f'In its tree {tree}',
+                *((f'! {branch.problem}',) if branch.problem else ()),
+            )
+            item = BranchItem(
+                f'work:{where}:{branch.name}',
+                'work',
+                record.project,
+                label,
+                info,
+                bool(branch.problem),
+            )
             rows = [DetailRow(f'{branch.kind} {branch.name} (session {record.id})')]
             if branch.problem:
                 rows.append(DetailRow(f'  ! {branch.problem}'))
@@ -1337,17 +1366,30 @@ class BranchService:
 
 def _base_label(status: BaseStatus) -> str:
     b = status.base
-    head = f'{b.branch} on {b.upstream}'
     if not status.exists:
-        return f'{head} · no such branch'
-    parts = [f'{status.behind} behind'] if status.behind else []
+        return f'{b.branch} · no such branch'
+    return f'{b.branch} · {_count(len(status.commits), "commit")}'
+
+
+def _base_info(
+    status: BaseStatus, root: Optional[pathlib.Path] = None
+) -> tuple[tuple[str, ...], bool]:
+    """A base's details, and whether one needs attention (missing, behind its upstream,
+    checked out, or unreadable)."""
+    b = status.base
+    if not status.exists:
+        return (f'No branch {b.branch}', f'Upstream {b.upstream}'), True
+    info = [f'On {b.upstream}']
+    if status.behind:
+        info.append(f'{status.behind} behind: r rebases it')
     landed = sum(c.landed for c in status.commits)
-    parts.append(_count(len(status.commits), 'commit') + (f' ({landed} landed)' if landed else ''))
+    info.append(_count(len(status.commits), 'commit') + (f', {landed} landed' if landed else ''))
     if status.checked_out:
-        parts.append(f'checked out in {status.checked_out}')
+        where = _short_path(pathlib.Path(status.checked_out), root)
+        info.append(f'Checked out in {where} (moved only when not)')
     if status.error:
-        parts.append(status.error)
-    return f'{head} · {" · ".join(parts)}'
+        info.append(status.error)
+    return tuple(info), bool(status.behind or status.checked_out or status.error)
 
 
 def _base_rows(status: BaseStatus, repo: pathlib.Path) -> tuple[DetailRow, ...]:
@@ -1393,7 +1435,7 @@ def _worktree(
     except OSError as ex:
         return f'{where} · {ex}', ()
     state = f'{len(changed)} changed' if changed else 'clean'
-    label = f'{branch or "detached"} · {state} · {where}'
+    label = f'{branch or "detached"} · {state}'  # Where it is: in its details.
     rows = [DetailRow('Changes'), *(DetailRow(f'  {line}') for line in changed)] if changed else []
     rows += _unpushed_rows(path, 'HEAD')
     return label, tuple(rows)

@@ -202,9 +202,11 @@ Python 3.11 or newer.
   each project in folding sections (← folds, → unfolds, Enter toggles; folds stay
   across reloads): Bases, Rebase and apply sessions, Prep, Session work (every session
   tree's agent branches: pull-ahead, fixup, folded, tests), Review, Other (local
-  branches with work not on any remote, and those made with `b`), and Checkouts; the
-  middle pane lists the selected branch's commits, the right one the selected commit,
-  and the footer the keys for the selected kind. `b` makes a plain branch at a base, an
+  branches with work not on any remote, and those made with `b`), and Checkouts. Labels
+  stay short; the Details pane under the list says the rest (upstream, how far behind,
+  where it is checked out, what was sent, uncommitted changes, problems), and `*` marks
+  a branch whose details need attention. The middle pane lists the selected branch's
+  commits, the right one the selected commit, and the footer the keys for its kind. `b` makes a plain branch at a base, an
   upstream, a prep branch, or any ref, to pluck onto; `r` rebases
   a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`
   on its tree (or an apply session's) moves the base to its result. Space marks commits and `p` plucks them onto

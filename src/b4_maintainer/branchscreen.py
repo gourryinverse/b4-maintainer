@@ -229,11 +229,14 @@ SECTIONS = (
 class BranchesScreen(Screen[None]):
     DEFAULT_CSS = """
     BranchesScreen #branch-panes { height: 1fr; }
-    BranchesScreen #branch-items { width: 3fr; }
+    BranchesScreen #branch-left { width: 3fr; }
+    BranchesScreen #branch-items { height: 1fr; }
+    BranchesScreen #branch-info { height: 7; padding: 0 1; }
     BranchesScreen #branch-rows { width: 3fr; }
     BranchesScreen #branch-show-pane { width: 4fr; }
     /* Each pane titled on its top edge, as on the Workbench. */
-    BranchesScreen #branch-items, BranchesScreen #branch-rows, BranchesScreen #branch-show-pane {
+    BranchesScreen #branch-items, BranchesScreen #branch-rows, BranchesScreen #branch-show-pane,
+    BranchesScreen #branch-info {
         border: none; border-top: solid $panel-lighten-2; border-title-color: $text-muted;
     }
     BranchesScreen #branch-rows, BranchesScreen #branch-show-pane {
@@ -286,11 +289,14 @@ class BranchesScreen(Screen[None]):
         # Folded headings: a project (its id) or a section (<project>:<kind>).
         self._folded: set[str] = set()
         self._select = ''  # The item (or h:<heading>) to select after the next reload.
+        self._details = ''  # The details pane's text.
 
     def compose(self) -> ComposeResult:
         yield TabBar('branches')
         with Horizontal(id='branch-panes'):
-            yield OptionList(id='branch-items')
+            with Vertical(id='branch-left'):
+                yield OptionList(id='branch-items')
+                yield Static('', id='branch-info', markup=False)  # The selected one's details.
             yield OptionList(id='branch-rows')
             yield TextPane(id='branch-show-pane')
         yield Static('Loading…', id='branch-status', markup=False)
@@ -299,6 +305,7 @@ class BranchesScreen(Screen[None]):
     def on_mount(self) -> None:
         items = self.query_one('#branch-items', OptionList)
         items.border_title = 'Branches'
+        self.query_one('#branch-info', Static).border_title = 'Details'
         self.query_one('#branch-rows', OptionList).border_title = 'Commits'
         items.focus()
         self.action_reload()
@@ -363,7 +370,8 @@ class BranchesScreen(Screen[None]):
                 if shut:
                     continue
                 for item in group:
-                    options.append(Option(f'      {item.label}', id=item.key))
+                    star = ' *' if item.flagged else ''  # Its details say why.
+                    options.append(Option(f'      {item.label}{star}', id=item.key))
                     ids.append(item.key)
         with self.prevent(OptionList.OptionHighlighted):  # Shown below, once.
             items.clear_options()
@@ -396,6 +404,9 @@ class BranchesScreen(Screen[None]):
         """The selected branch's key (None on a heading)."""
         current = self._current_id()
         return current if current and not current.startswith('h:') else None
+
+    def details_text(self) -> str:
+        return self._details
 
     def selected_heading(self) -> Optional[str]:
         """The selected heading: a project, or <project>:<kind>."""
@@ -475,9 +486,25 @@ class BranchesScreen(Screen[None]):
     def _show_rows(self) -> None:
         key = self.selected_item()
         self._rows = tuple(self.data.details.get(key, ())) if key else ()
-        label = next((i.label for i in self.data.items if i.key == key), '')
+        item = next((i for i in self.data.items if i.key == key), None)
         rows_pane = self.query_one('#branch-rows', OptionList)
-        rows_pane.border_title = label.split(' · ', 1)[0] if label else 'Commits'
+        rows_pane.border_title = item.label.split(' · ', 1)[0] if item else 'Commits'
+        heading = self.selected_heading()
+        if item is not None:
+            details = '\n'.join(item.info or (item.label,))
+        elif heading is not None:
+            project, _, kind = heading.partition(':')
+            group = [
+                i for i in self.data.items if i.project == project and (not kind or i.kind == kind)
+            ]
+            flagged = sum(i.flagged for i in group)
+            details = f'{len(group)} listed' + (
+                f', {flagged} marked * (see each)' if flagged else ''
+            )
+        else:
+            details = ''
+        self._details = details
+        self.query_one('#branch-info', Static).update(details)
         self.refresh_bindings()  # The footer shows the selected kind's keys.
         self._marks = set()
         self._render_rows(next((n for n, r in enumerate(self._rows) if r.key), None))
