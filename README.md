@@ -101,8 +101,9 @@ Python 3.11 or newer.
   project, or artifacts from any session (any workbench's: a commit brings its tree
   branch, a file joins as a file); `F3` lists them with a
   preview of what a launch prepares: `n` new (named, with the projects ticked, each at
-  its first maintainer base: a project with no items still gets a tree at its base), `r` rename, `x` remove (a workbench or
-  project after a confirmation), `b` a project's base, `B` add a local branch (the
+  its first maintainer base: a project with no items still gets a tree at its base), `r` rename, `x` remove (a project, or a workbench with its sessions: live ones ended, their
+  trees removed, their records and output deleted, after a confirmation listing what
+  each tree would lose; a tree with changes asks again), `b` a project's base, `B` add a local branch (the
   project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
   and `F1` launches a session over it, choosing for each project (in place of Mode): a
   tree with its items applied; a tree at its base with its items for the agent (in its
@@ -128,8 +129,8 @@ Python 3.11 or newer.
 - Every session is filed in a workbench: F1 on a series makes that series' workbench the
   first time (named after it, the series on its base; `origin` in its file) and files
   the session there, so its sessions and their output are found in the Workbench tab; a
-  derived session goes with its parent. Sessions from before are listed under
-  Unfiled sessions.
+  derived session goes with its parent. Sessions from before (or whose workbench is
+  gone) are listed under Unfiled sessions.
 - Every session (lightweight too) writes its results under `out/` and records them in
   `out/artifacts.toml` (the b4m-artifacts skill): findings, reports, comparisons,
   reproducers, results, and, without a tree, proposed changes as `diff` files.

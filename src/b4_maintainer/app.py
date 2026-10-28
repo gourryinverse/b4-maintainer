@@ -2856,14 +2856,35 @@ class MaintainerApp(App[None]):
             return []
         states = {v.record.id: v.state for v in self._overview.sessions}
         records = sorted(hub.records(), key=lambda r: r.created, reverse=True)
+        known = {b.id for b in self._workbenches.store.list()[0]} if self._workbenches else set()
         rows = []
         for r in records:
-            if r.workbench != bench_id:
+            filed = r.workbench if r.workbench in known else ''  # Its workbench gone: unfiled.
+            if filed != bench_id:
                 continue
             state = states.get(r.id, r.state or 'ended')
             label = f'{r.id} · {r.mode} · {state} · {r.created[:16]}'
             rows.append((r.id, label, state in LIVE_STATES))
         return rows
+
+    def bench_removal(self, bench_id: str) -> tuple[list[str], list[str], dict[str, TreeState]]:
+        """(workbench *bench_id*'s sessions, the live ones, what removing each of their
+        trees would lose) (blocking)."""
+        hub = self._sessions
+        if hub is None:
+            return [], [], {}
+        sids = [r.id for r in hub.records() if r.workbench == bench_id]
+        live, losses = hub.session_losses(sids) if sids else ([], {})
+        return sids, live, losses
+
+    def remove_bench_sessions(self, sids: Sequence[str]) -> list[str]:
+        """End the sessions, remove their trees, delete them (blocking; confirmed)."""
+        hub = self._sessions
+        if hub is None:
+            return []
+        removed = hub.remove_sessions(sids)
+        self.call_from_thread(self.poll_sessions)
+        return removed
 
     def session_output(self, sid: str) -> list[Attachment]:
         """What session *sid* produced: its prompt, commits, files (blocking)."""

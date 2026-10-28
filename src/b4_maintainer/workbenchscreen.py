@@ -1018,13 +1018,62 @@ class WorkbenchScreen(Screen[None]):
             )
             return
 
-        def drop_bench(yes: Optional[bool]) -> None:
-            if yes:
-                self.service.store.delete(bench.id)
-                self._reload()
-                self._status(f'Removed {bench.label}')
+        look = getattr(self.app, 'bench_removal', None)
+        if look is None:
+            self._confirm_removal(bench, ([], [], {}))
+            return
+        self._act(
+            lambda: look(bench.id),
+            lambda found: self._confirm_removal(bench, found),
+            'Looking at what it would lose…',
+        )
 
-        self.app.push_screen(Confirm(f'Remove the workbench {bench.label}? [y|N]'), drop_bench)
+    def _confirm_removal(
+        self, bench: Workbench, found: tuple[list[str], list[str], Mapping[str, Any]]
+    ) -> None:
+        """Removing a workbench takes its sessions: live ones ended, their trees removed,
+        their records and output deleted. A tree with changes asks a second time."""
+        from .app import Confirm
+
+        sids, live, losses = found
+        reap: Any = getattr(self.app, 'remove_bench_sessions', None)
+        if sids:
+            listed = ', '.join(f'{s} (live: ended)' if s in live else s for s in sids)
+            lines = [f'Remove the workbench {bench.label} and its sessions?']
+            lines.append(f'  Sessions, deleted with their output: {listed}')
+            lines += [f'  {path}: {state.describe()}' for path, state in losses.items()]
+        else:
+            lines = [f'Remove the workbench {bench.label} (no sessions)?']
+        changed = [f'  {p}: {s.describe()}' for p, s in losses.items() if not s.clean]
+
+        def removed(_result: object) -> None:
+            self._reload()
+            self._status(
+                f'Removed {bench.label}' + (f' and {_count(len(sids), "session")}' if sids else '')
+            )
+
+        def remove() -> None:
+            def work() -> None:
+                if sids and reap is not None:
+                    reap(sids)
+                self.service.store.delete(bench.id)
+
+            self._act(work, removed, 'Removing…')
+
+        def again(yes: Optional[bool]) -> None:
+            if yes:
+                remove()
+
+        def first(yes: Optional[bool]) -> None:
+            if not yes:
+                return
+            if changed:
+                prompt = 'This will be lost:\n' + '\n'.join(changed) + '\nRemove anyway? [y|N]'
+                self.app.push_screen(Confirm(prompt), again)
+            else:
+                remove()
+
+        self.app.push_screen(Confirm('\n'.join([*lines, '[y|N]'])), first)
 
     def action_base(self) -> None:
         bench, project = self.bench(), self._project()

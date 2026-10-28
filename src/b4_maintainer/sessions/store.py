@@ -8,6 +8,7 @@ the drawer's once-a-second poll stays cheap with many sessions. One poll at a ti
 import os
 import pathlib
 import re
+import shutil
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
@@ -65,6 +66,16 @@ class SessionStore:
     def set_state(self, sid: str, state: str) -> None:
         """Record an app state (stopped, ended, failed), or clear it with ''."""
         self.record(sid).replace(state=state).save(self.directory(sid) / RECORD)
+
+    def delete(self, sid: str) -> None:
+        """The session's directory, gone: its record, events, package, and output."""
+        directory = self.directory(sid)
+        if directory.is_symlink() or not directory.is_dir():
+            raise OSError(f'{directory} is not a session directory')
+        shutil.rmtree(directory)
+        self._records.pop(sid, None)
+        self._logs.pop(sid, None)
+        self._progress.pop(sid, None)
 
     def append(self, sid: str, event: Event) -> None:
         EventLog.append(self.directory(sid) / EVENTS, event)

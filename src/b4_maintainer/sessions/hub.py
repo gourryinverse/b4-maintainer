@@ -898,6 +898,52 @@ class SessionHub:
             removed.append(path)
         return removed
 
+    def _removable(self, sids: Sequence[str]) -> list[tuple[SessionView, list[str]]]:
+        """Each session's view and its listed trees; refuses one being prepared."""
+        views = {v.record.id: v for v in self._poll()}
+        found = []
+        for sid in sids:
+            view = views.get(sid)
+            if view is None:
+                raise SessionError(f'no session {sid}')
+            if view.state == 'preparing':
+                raise SessionError(f'session {sid} is being prepared')
+            listed = {w.path for w in self.worktrees.list([view.record])}
+            found.append(
+                (view, [t.path for _p, t in session_trees(view.record) if t.path in listed])
+            )
+        return found
+
+    def session_losses(self, sids: Sequence[str]) -> tuple[list[str], dict[str, TreeState]]:
+        """(the live sessions among *sids*, what removing each of their trees would lose)."""
+        found = self._removable(sids)
+        live = [v.record.id for v, _paths in found if v.state in LIVE]
+        losses = {
+            path: self.worktrees.inspect(path, _tree_at(v.record, path))
+            for v, paths in found
+            for path in paths
+        }
+        return live, losses
+
+    def remove_sessions(self, sids: Sequence[str]) -> list[str]:
+        """End the live ones, remove their trees, delete their records and output (the
+        maintainer confirmed what goes)."""
+        removed = []
+        for view, paths in self._removable(sids):
+            if view.state in LIVE:
+                self.runner.end(view.record)
+            for path in paths:
+                try:
+                    self.worktrees.remove(path)
+                except OSError as exc:
+                    raise SessionError(f'Cannot remove {path}: {exc}') from exc
+            try:
+                self.store.delete(view.record.id)
+            except OSError as exc:
+                raise SessionError(f'Cannot delete session {view.record.id}: {exc}') from exc
+            removed.append(view.record.id)
+        return removed
+
     def artifacts(self, sid: str) -> list[str]:
         return self.store.artifacts(sid)
 
