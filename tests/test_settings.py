@@ -13,7 +13,7 @@ FPR = '0123456789ABCDEF0123456789ABCDEFAAAABBBB'
 
 
 async def settle(pilot):
-    for _ in range(3):
+    for _ in range(6):  # An action's worker, then the status reread's.
         await pilot.app.workers.wait_for_complete()
         await pilot.pause()
 
