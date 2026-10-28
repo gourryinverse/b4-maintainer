@@ -58,9 +58,13 @@ class LaunchChoice:
     agent_apply: str = ''
     # The workbench the session is filed in (F1 finds or makes its series' one).
     workbench: str = ''
-    # A workbench launch: (project, use) for each tree: apply (its items applied), deliver
-    # (a tree at its base, its items for the agent), or none (no tree: its mail only).
+    # (project, use) per project. A workbench launch: apply (its items applied), deliver
+    # (a tree at its base, its items for the agent), or none (no tree: its mail only). A
+    # series launch: its project apply, deliver, or read (no tree: read its checkout);
+    # each other project base (a tree at its base), read, or none.
     trees: tuple[tuple[str, str], ...] = ()
+    # A series launch: (project, base) of each other project's tree.
+    bases: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

@@ -86,6 +86,8 @@ class SessionRecord:
     workbench: str = ''
     trees: tuple[ProjectTree, ...] = ()
     home: str = ''
+    # Project checkouts it may read, besides its trees: (project, path).
+    reads: tuple[tuple[str, str], ...] = ()
 
     def replace(self, **changes: Any) -> 'SessionRecord':
         return dataclasses.replace(self, **changes)
@@ -99,6 +101,7 @@ class SessionRecord:
             dict(t, applied=list(t['applied']), delivered=list(t['delivered']))
             for t in data['trees']
         ]
+        data['reads'] = [list(r) for r in self.reads]
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f'.{path.name}.tmp')
         tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + '\n')
@@ -122,6 +125,7 @@ class SessionRecord:
             )
             for t in data.get('trees', ())
         )
+        known['reads'] = tuple((str(p), str(c)) for p, c in data.get('reads', ()))
         return cls(**known, worktree=Worktree(**worktree) if worktree else None)
 
 

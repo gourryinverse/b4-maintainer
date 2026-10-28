@@ -140,6 +140,13 @@ Python 3.11 or newer.
   the session there, so its sessions and their output are found in the Workbench tab; a
   derived session goes with its parent. Sessions from before (or whose workbench is
   gone) are listed under Unfiled sessions.
+- F1 on a series chooses each project's checkout in place of Mode: the series' own as a
+  tree with the series applied, a tree at its base with the series for the agent, or its
+  checkout to read (following the goal's suggestion until you pick); each other project
+  as a tree at its base, its checkout to read, or left out (e.g. a userland library
+  tested against the kernel). Any tree makes a worktree session (trees side by side);
+  otherwise it reads the checkouts chosen, and its prompt names them. A project you add
+  is saved in the series' workbench and offered chosen the next time.
 - Every session (lightweight too) writes its results under `out/` and records them in
   `out/artifacts.toml` (the b4m-artifacts skill): findings, reports, comparisons,
   reproducers, results, and, without a tree, proposed changes as `diff` files.

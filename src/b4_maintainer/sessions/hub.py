@@ -125,6 +125,10 @@ class Worktrees(Protocol):
         """Why no tree can be prepared for the project's series; empty if one can."""
         ...
 
+    def checkout(self, project: str) -> str:
+        """The project's checkout, for a session to read; empty if it has none."""
+        ...
+
     def prepare(
         self,
         record: SessionRecord,
@@ -221,6 +225,9 @@ class RecordWorktrees:
         if self.directory is None or not self.checkouts.get(project):
             return f'project {project or "(none)"} has no checkout'
         return ''
+
+    def checkout(self, project: str) -> str:
+        return self.checkouts.get(project, '')
 
     def prepare(
         self,
@@ -585,6 +592,30 @@ class SessionHub:
             record = record.replace(provenance={**record.provenance, **guidance})
         if planned.mode == 'worktree' and target.scope != 'series':
             raise SessionError('worktree sessions apply a series; this session has none')
+        uses = dict(choice.trees) if target.scope == 'series' else {}
+        own = uses.get(target.project, '')
+        others = [(p, u) for p, u in uses.items() if p != target.project]
+        reads = [p for p, u in others if u == 'read']
+        if own == 'read' or (planned.mode == 'lightweight' and uses):
+            reads.insert(0, target.project)
+        read = tuple((p, c) for p in reads if (c := self.worktrees.checkout(p)))
+        record = record.replace(reads=read)
+        extra = [p for p, u in others if u == 'base']
+        if planned.mode == 'worktree' and (extra or own == 'deliver'):
+            bases = dict(choice.bases)
+            plans = [TreePlan(p, bases.get(p, ''), ()) for p in extra]
+            if own in ('apply', 'deliver'):
+                label = f'{target.subject} v{target.revision}'
+                item = TreeItem(label, target.source, target.revision)
+                mine = TreePlan(target.project, choice.base, (item,), choice.agent_apply, own)
+                plans.insert(0, mine)
+            return self._start(
+                record,
+                spec,
+                None,
+                lambda r: (target.source, planned.included),
+                self._preparer(plans),
+            )
 
         def tree(r: SessionRecord) -> Worktree:
             if choice.agent_apply:
@@ -722,20 +753,7 @@ class SessionHub:
         if guidance:
             record = record.replace(provenance={**record.provenance, **guidance})
 
-        def trees(r: SessionRecord) -> SessionRecord:
-            made: list[ProjectTree] = []
-            for entry in (p for p in plans if p.use != 'none'):  # No tree: its mail only.
-                try:
-                    made.append(self.worktrees.prepare_entry(r, entry))
-                except TreeError as exc:
-                    self.worktrees.remove_home(r)
-                    raise TreeError(
-                        f'{entry.project}: {exc}', exc.output, exc.base, entry.project
-                    ) from exc
-            return r.replace(
-                trees=tuple(made), home=str(pathlib.Path(made[0].worktree.path).parent)
-            )
-
+        trees = self._preparer(plans)
         threads = [
             (f'{entry.project}-{n}.mbx', item.source, f'{item.label} ({entry.project})')
             for entry in plans
@@ -751,6 +769,26 @@ class SessionHub:
         tree_plans = [p for p in plans if p.use != 'none']
         prepare = trees if planned.mode == 'worktree' and tree_plans else None
         return self._start(record, spec, None, lambda r: (None, package), prepare, threads, files)
+
+    def _preparer(self, plans: Sequence[TreePlan]) -> Callable[[SessionRecord], SessionRecord]:
+        """Prepares a tree per plan (a 'none' plan has none) side by side in the session's
+        folder; one that cannot be prepared leaves none of them."""
+
+        def trees(r: SessionRecord) -> SessionRecord:
+            made: list[ProjectTree] = []
+            for entry in (p for p in plans if p.use != 'none'):  # No tree: its mail only.
+                try:
+                    made.append(self.worktrees.prepare_entry(r, entry))
+                except TreeError as exc:
+                    self.worktrees.remove_home(r)
+                    raise TreeError(
+                        f'{entry.project}: {exc}', exc.output, exc.base, entry.project
+                    ) from exc
+            return r.replace(
+                trees=tuple(made), home=str(pathlib.Path(made[0].worktree.path).parent)
+            )
+
+        return trees
 
     def launch_apply(
         self,

@@ -9,7 +9,7 @@ Each section is one Tab stop: arrows move within it, Enter or Space picks.
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -47,6 +47,18 @@ TREE_USES = {
     'deliver': 'tree at its base, its items for the agent',
     'none': 'no tree: its mail only',
 }
+# A series launch: its own project, and each other project.
+SERIES_USES = {
+    'apply': 'tree, the series applied',
+    'deliver': 'tree at its base, the series for the agent',
+    'read': 'no tree: read its checkout',
+}
+OTHER_USES = {
+    'base': 'tree at its base',
+    'read': 'no tree: read its checkout',
+    'none': 'leave it out',
+}
+TREE_KINDS = frozenset({'apply', 'deliver', 'base'})  # Uses that make a tree.
 BASE_PLACEHOLDER = 'Base: empty lets b4 choose (HEAD if it applies, the series base, a guess)'
 NO_SERIES = 'a workspace session has no series to apply'
 LAUNCH = 'Launch (ctrl+s)'
@@ -117,10 +129,21 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         trees: Sequence[str] = (),
         mailboxes: Sequence[str] = (),
         tree_projects: Sequence[str] = (),
+        tree_options: Optional[Mapping[str, Mapping[str, str]]] = None,
+        tree_defaults: Optional[Mapping[str, str]] = None,
+        follow: str = '',
     ) -> None:
         super().__init__()
-        # A workbench launch: its projects, each with a choice of tree in place of Mode.
+        # Projects, each with a choice of tree (or checkout) in place of Mode: a
+        # workbench's (TREE_USES), or every project for a series (*tree_options*: each
+        # project's uses; *tree_defaults*: those chosen to start). *follow*: the project
+        # whose choice follows the suggested mode until the maintainer picks one.
         self.tree_projects = list(tree_projects)
+        self.tree_options = dict(tree_options or {})
+        self.tree_defaults = dict(tree_defaults or {})
+        self.follow = follow
+        self._follow_shown = ''
+        self._follow_explicit = False
         # A workbench launch: what each tree holds (worktree mode), and the series whose
         # mail it reads (either mode).
         self.trees = list(trees)
@@ -228,10 +251,17 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 section = field.id if field.kind == 'text' else f'{field.id}:text'
                 widgets.append(self._input(field.id, section, placeholder))
         widgets += self._package()
-        if self.tree_projects:  # A workbench: a choice of tree per project, not Mode.
-            uses = [(key, label, False) for key, label in TREE_USES.items()]
+        if self._tree_groups():  # A choice of tree per project, not Mode.
+            self._follow_explicit = False
             for project in self.tree_projects:
-                widgets += self._group(f'Tree: {project}', f'tree:{project}', uses, 2)
+                uses = self._uses(project)
+                keys = [key for key, _label, _off in uses]
+                start = self.tree_defaults.get(project, 'none')
+                if project == self.follow:
+                    start = self._follow_key(self._suggested_mode)
+                    self._follow_shown = start
+                pressed = keys.index(start) if start in keys else 0
+                widgets += self._group(f'Tree: {project}', f'tree:{project}', uses, pressed)
         else:
             modes = [(m, MODE_LABELS[m], False) for m in MODES]
             widgets += self._group('Mode', 'mode', modes, 0)
@@ -335,6 +365,36 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         self._sections[id(radio)] = group
         return radio
 
+    def _tree_groups(self) -> bool:
+        """Per-project choices replace Mode: a workbench, or a series (not derived)."""
+        return bool(self.tree_projects) and self.scope == 'series' and self.derived is None
+
+    def _uses(self, project: str) -> list[tuple[str, str, bool]]:
+        options = self.tree_options.get(project) or TREE_USES
+        return [(key, label, False) for key, label in options.items()]
+
+    def _uses_labels(self, project: str) -> list[tuple[str, str]]:
+        return list((self.tree_options.get(project) or TREE_USES).items())
+
+    def _base_text(self) -> str:
+        base = self._inputs['base'].value.strip() if 'base' in self._inputs else ''
+        return base or 'the base b4 chooses'
+
+    def _follow_key(self, mode: str) -> str:
+        """The followed project's choice for a suggested mode."""
+        return 'apply' if mode == 'worktree' else 'read'
+
+    def _show_follow(self, key: str) -> None:
+        """Show the followed project's suggested choice, as _show_mode does for Mode."""
+        group = f'tree:{self.follow}'
+        old = self._sets[group]
+        uses = self._uses(self.follow)
+        keys = [k for k, _label, _off in uses]
+        new = self._radio(group, uses, keys.index(key) if key in keys else 0)
+        self.query_one('#launch-body', Vertical).mount(new, before=old)
+        old.remove()
+        self._follow_shown = key
+
     def _show_mode(self, mode: str) -> None:
         """Show the suggested mode as pressed, without counting it as the maintainer's choice.
 
@@ -371,7 +431,15 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
     # State
 
     def _tree_uses(self) -> tuple[tuple[str, str], ...]:
-        return tuple((p, self.selected(f'tree:{p}') or 'none') for p in self.tree_projects)
+        if not self._tree_groups():
+            return ()
+
+        def use(project: str) -> str:
+            if project == self.follow and self._follow_shown and not self._follow_explicit:
+                return self._follow_shown  # Shown: its set may still be mounting.
+            return self.selected(f'tree:{project}') or self.tree_defaults.get(project, 'none')
+
+        return tuple((p, use(p)) for p in self.tree_projects)
 
     def selected(self, group: str) -> Optional[str]:
         radio = self._sets.get(group)
@@ -387,7 +455,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         options = (widget.get_option_at_index(n) for n in range(widget.option_count))
         return [o.value for o in options if o.value in chosen]
 
-    def _choice(self, mode: Optional[str]) -> LaunchChoice:
+    def _choice(self, mode: Optional[str], trees: bool = True) -> LaunchChoice:
+        """The choices made; without *trees*, as if no tree were chosen (for the
+        profile's own suggestion of a mode)."""
         assert self.profile is not None
         choices: dict[str, object] = {}
         text: dict[str, str] = {}
@@ -407,9 +477,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                     choices[field.id] = value
             elif value:
                 text[field.id] = value
-        trees = self._tree_uses()
-        if trees:  # A workbench: worktree when any project has a tree.
-            mode = 'worktree' if any(use != 'none' for _p, use in trees) else 'lightweight'
+        uses = self._tree_uses() if trees else ()
+        if uses:  # Worktree when any project has a tree.
+            mode = 'worktree' if any(use in TREE_KINDS for _p, use in uses) else 'lightweight'
         return LaunchChoice(
             self.profile.id,
             choices,
@@ -422,7 +492,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             frozenset(self._skills_off),
             self._context_off(),
             *self._derived_choice(),
-            trees=trees,
+            trees=uses,
         )
 
     def _derived_choice(self) -> tuple[str, str, str]:
@@ -452,7 +522,13 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         situation = self.situation
         if self.scope != 'series' and not situation.worktree_reason:
             situation = dataclasses.replace(situation, worktree_reason=NO_SERIES)
-        self._suggested_mode = plan(self.profile, self._choice(None), situation, items).mode
+        self._suggested_mode = plan(
+            self.profile, self._choice(None, trees=False), situation, items
+        ).mode
+        if self.follow and self._tree_groups() and not self._follow_explicit:
+            wanted = self._follow_key(self._suggested_mode)
+            if wanted != self._follow_shown and f'tree:{self.follow}' in self._sets:
+                self._show_follow(wanted)
         self.plan = plan(self.profile, self._choice(self._explicit_mode), situation, items)
         if 'mode' in self._sets and self._explicit_mode is None:
             if self._mode_shown != self.plan.mode:
@@ -484,6 +560,9 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             if group == 'mode':
                 self._mode_shown = key
                 self._explicit_mode = None if key == self._suggested_mode else key
+            if group == f'tree:{self.follow}' and key != self._follow_shown:
+                self._follow_explicit = True  # The maintainer's choice from now on.
+                self._follow_shown = key
             self._update()
 
     def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
@@ -598,7 +677,13 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         if p.skills:
             lines.append(f'Skills:   {", ".join(p.skills)}')
         lines.append(f'May:      {PERMISSION_LABELS.get(p.permissions, p.permissions)}')
-        if self.tree_projects:
+        if self._tree_groups() and not self.trees:  # A series: each project's checkout.
+            lines.append('Checkouts:')
+            for project, use in self._tree_uses():
+                label = dict(self._uses_labels(project)).get(use, use)
+                where = f' on {self._base_text()}' if project == self.follow else ''
+                lines.append(f'  {project}: {label}{where if use in TREE_KINDS else ""}')
+        elif self.tree_projects:
             uses = dict(self._tree_uses())
             lines.append('Trees:')
             for project, tree in zip(self.tree_projects, self.trees):

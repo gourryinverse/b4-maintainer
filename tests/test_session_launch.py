@@ -365,3 +365,50 @@ def test_guidance_skills_make_their_repositories_readable_and_are_recorded(
     assert spec.readable == (style,)
     assert record.provenance == {'kernel-style': git('rev-parse', 'HEAD', cwd=style)}
     assert isinstance(spec.readable[0], pathlib.Path)
+
+
+def test_a_lightweight_series_session_reads_the_checkouts_chosen(store, profile):
+    """Lightweight: no trees; the series' own checkout and each project chosen to read,
+    recorded with their paths (the sandbox lets it read them; its prompt names them)."""
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees)
+    reads = choice(trees=(('linux', 'read'), ('ndctl', 'read'), ('qemu', 'none')))
+    record = hub.launch(TARGET, profile, reads, situation(), ITEMS)
+    assert record.mode == 'lightweight' and record.worktree is None and record.trees == ()
+    assert record.reads == (('linux', '/w/projects/linux'), ('ndctl', '/w/projects/ndctl'))
+    assert store.record(record.id).reads == record.reads
+    system = (store.directory(record.id) / 'system.md').read_text()
+    assert '/w/projects/ndctl' in system and 'read-only' in system
+
+
+def test_a_series_session_can_take_another_projects_tree(store, profile):
+    """The series applied in its project's tree, beside a tree of another project at its
+    base (e.g. a userland library to test against the kernel): one folder, as a
+    workbench session's, still the series' own session."""
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees)
+    target = Target(**{**TARGET.__dict__, 'source': '/mail/thread'})
+    both = choice(
+        mode='worktree',
+        base='v6.18',
+        trees=(('linux', 'apply'), ('ndctl', 'base')),
+        bases=(('ndctl', 'gourry/base'),),
+    )
+    record = hub.launch(target, profile, both, situation(worktree_reason=''), ITEMS)
+    [(_sid, mine), (_sid2, other)] = trees.entries
+    assert (mine.project, mine.base, mine.use) == ('linux', 'v6.18', 'apply')
+    assert [i.source for i in mine.items] == ['/mail/thread']
+    assert (other.project, other.base, other.items) == ('ndctl', 'gourry/base', ())
+    assert [t.project for t in record.trees] == ['linux', 'ndctl'] and record.home
+    assert (record.scope, record.series) == ('series', TARGET.series)
+    assert record.permissions == 'execute'
+
+
+def test_without_other_projects_a_series_launch_is_as_before(store, profile):
+    runner, trees = FakeSessionRunner(store), FakeWorktrees()
+    hub = SessionHub(store, runner, trees)
+    target = Target(**{**TARGET.__dict__, 'source': '/mail/thread'})
+    alone = choice(mode='worktree', trees=(('linux', 'apply'), ('ndctl', 'none')))
+    record = hub.launch(target, profile, alone, situation(worktree_reason=''), ITEMS)
+    assert trees.prepared == [(record.id, '/mail/thread', '')] and trees.entries == []
+    assert record.worktree is not None and record.reads == ()

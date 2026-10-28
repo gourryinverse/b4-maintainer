@@ -202,6 +202,9 @@ class FakeWorktrees:
     def reason(self, project):
         return self.why
 
+    def checkout(self, project):
+        return f'/w/projects/{project}' if project else ''
+
     def prepare_start(self, record, start, start_from):
         from b4_maintainer.sessions.records import Worktree
 

@@ -131,11 +131,11 @@ async def test_choices_needing_a_tree_switch_the_mode_until_changed_back(demo_ro
     async with app.run_test(size=(180, 50)) as pilot:
         dialog = await open_dialog(pilot)
         await act(pilot, dialog.pick, 'goal', 'reproduce')
-        assert dialog.selected('mode') == 'worktree'
+        assert dialog.selected('tree:linux') == 'apply'  # A tree: worktree.
         assert 'Worktree suggested' in dialog.summary_text()
-        await act(pilot, dialog.pick, 'mode', 'lightweight')
+        await act(pilot, dialog.pick, 'tree:linux', 'read')
         await act(pilot, dialog.pick, 'artifacts', 'selftest')
-        assert dialog.selected('mode') == 'lightweight'
+        assert dialog.selected('tree:linux') == 'read'
 
 
 async def test_goals_combine_with_custom_text(demo_root, store, runner):
@@ -167,7 +167,7 @@ async def test_choices_select_default_skills_under_advanced(demo_root, store, ru
         # vng needs a tree: worktree mode, which also suggests the branches skill.
         assert dialog.ticked('skills') == ['b4m-artifacts', 'b4m-branches', 'vng']
         assert 'Skills:   b4m-artifacts, b4m-branches, vng' in dialog.summary_text()
-        await act(pilot, dialog.pick, 'mode', 'lightweight')  # No sandbox in this test.
+        await act(pilot, dialog.pick, 'tree:linux', 'read')  # No sandbox in this test.
         assert dialog.ticked('skills') == ['b4m-artifacts', 'vng']
         await pilot.press('ctrl+s')
         await settle(pilot)
@@ -196,7 +196,7 @@ async def test_worktree_sessions_are_refused_without_a_sandbox(demo_root, store,
         dialog = await open_dialog(pilot)
         assert 'Permissions' not in dialog.labels()  # The mode decides.
         await act(pilot, dialog.pick, 'goal', 'reproduce')
-        assert dialog.selected('mode') == 'worktree'
+        assert dialog.selected('tree:linux') == 'apply'
         assert 'worktree sessions unavailable' in dialog.summary_text()
         assert 'sandbox' in dialog.summary_text()
         assert not dialog.can_launch()
@@ -335,7 +335,8 @@ async def test_tab_moves_between_sections_and_shift_tab_back(demo_root, store, r
             'apparatus',
             'command',
             'package',
-            'mode',
+            'tree:linux',
+            'tree:qemu',
             'model',
             'advanced',
             'launch',
@@ -526,7 +527,7 @@ async def test_a_limit_that_blocks_the_launch_is_said_first(demo_root, store, ru
         button = dialog.query_one('#launch-go', Button)
         assert button.disabled and 'Cannot launch' in str(button.label)
         await act(pilot, dialog.pick, 'apparatus', 'vng')
-        await act(pilot, dialog.pick, 'mode', 'lightweight')
+        await act(pilot, dialog.pick, 'tree:linux', 'read')
         assert dialog.can_launch() and str(button.label) == 'Launch (ctrl+s)'
 
 

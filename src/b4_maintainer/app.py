@@ -38,7 +38,7 @@ from .attachments import Attachment, gather, gather_all, git_identity, preview, 
 from .branches import ApplyChoices, CutResult, DetailRow, DropChoices, FoldPlan
 from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
-from .launchdialog import Derived, LaunchDialog, LaunchResult
+from .launchdialog import OTHER_USES, SERIES_USES, Derived, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .package import series_context
@@ -81,6 +81,7 @@ from .workbench import (
     Workbench,
     WorkbenchError,
     add_mail,
+    add_project,
     add_series,
     artifact_item,
     series_bench,
@@ -3109,8 +3110,40 @@ class MaintainerApp(App[None]):
         target = _target(item) if item is not None else None
         series = series_context(item) if item is not None else ()
         items: dict[str, tuple[ContextItem, ...]] = {'series': series, 'workspace': ()}
-        dialog = LaunchDialog(target, profiles, situation, items, problems)
+        projects, options, defaults = self._series_checkouts(item)
+        dialog = LaunchDialog(
+            target,
+            profiles,
+            situation,
+            items,
+            problems,
+            tree_projects=projects,
+            tree_options=options,
+            tree_defaults=defaults,
+            follow=item.project or '' if item is not None and projects else '',
+        )
         self.push_screen(dialog, self._launch_chosen)
+
+    def _series_checkouts(
+        self, item: Optional[WorkItem]
+    ) -> tuple[list[str], dict[str, dict[str, str]], dict[str, str]]:
+        """F1 on a routed series: every project, its own first, with the uses each may
+        have; the other projects in the series' workbench start chosen to read."""
+        snapshot = self.snapshot
+        if item is None or not item.project or snapshot is None:
+            return [], {}, {}
+        others = [p.id for p in snapshot.workspace.projects if p.id != item.project]
+        saved: set[str] = set()
+        if self._workbenches is not None:
+            try:
+                benches = self._workbenches.store.list()[0]
+            except OSError:
+                benches = []
+            bench = next((b for b in benches if b.origin == item.identity), None)
+            saved = {e.project for e in bench.entries} if bench is not None else set()
+        options = {item.project: dict(SERIES_USES), **{p: dict(OTHER_USES) for p in others}}
+        defaults = {p: 'read' if p in saved else 'none' for p in others}
+        return [item.project, *others], options, defaults
 
     def launch_derived(
         self, parent: str, derived: Derived, context: Optional[ContextItem] = None
@@ -3165,6 +3198,8 @@ class MaintainerApp(App[None]):
             choice = result.choice
             if target.scope == 'series' and not choice.workbench:
                 choice = dataclasses.replace(choice, workbench=self._file_in(target, choice))
+            if target.scope == 'series' and choice.trees:
+                choice = self._other_checkouts(target, choice)
             skills = hub.skills()[0]
             situation = _situation(hub, workspace, hub.overview(), skills, target.project)
             if plan(result.profile, result.choice, situation, result.items).mode == 'worktree':
@@ -3186,6 +3221,34 @@ class MaintainerApp(App[None]):
             return f'Launched session {record.id}: {label}'
 
         self._session_call(launch)
+
+    def _other_checkouts(self, target: Target, choice: LaunchChoice) -> LaunchChoice:
+        """Other projects chosen for a series session (blocking): saved in its workbench
+        (at their first maintainer base) for next time; each tree's base from there."""
+        service, snapshot = self._workbenches, self.snapshot
+        chosen = [p for p, use in choice.trees if p != target.project and use != 'none']
+        if not chosen or snapshot is None:
+            return choice
+        bench = service.store.get(choice.workbench) if service and choice.workbench else None
+        for project in chosen:
+            if bench is not None and bench.entry(project) is None:
+                found = snapshot.workspace.project(project)
+                base = found.bases[0].branch if found is not None and found.bases else ''
+                bench = add_project(bench, project, base)
+        if bench is not None and service is not None:
+            try:
+                service.store.save(bench)
+            except OSError:
+                pass  # Not remembered; the session still has them.
+        bases = []
+        for project, use in choice.trees:
+            if use != 'base':
+                continue
+            entry = bench.entry(project) if bench is not None else None
+            found = snapshot.workspace.project(project)
+            fallback = found.bases[0].branch if found is not None and found.bases else ''
+            bases.append((project, entry.base if entry is not None else fallback))
+        return dataclasses.replace(choice, bases=tuple(bases))
 
     def _file_in(self, target: Target, choice: LaunchChoice) -> str:
         """The workbench a series session is filed in (blocking): its parent's, else the

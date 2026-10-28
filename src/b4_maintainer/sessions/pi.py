@@ -103,6 +103,7 @@ def pi_command(
     worktree = session_home(record)  # A workbench session's folder holds all its trees.
     projects = dict.fromkeys([record.project, *(p for p, _tree in session_trees(record))])
     readable = [str(work), worktree, *(site.checkouts.get(p, '') for p in projects)]
+    readable += [path for _project, path in record.reads]
     readable += [str(s) for s in spec.skills] + [str(r) for r in spec.readable]
     env = {
         'B4M_SESSION': record.id,
@@ -200,6 +201,12 @@ def system_prompt(
         f'Write output files only under {work / "out"}.',
         f'Permissions: {permissions}.',
     ]
+    if record.reads:
+        facts.append(
+            'Project checkouts to read (read-only; never write in them): '
+            + '; '.join(f'{p} at {path}' for p, path in record.reads)
+            + '.'
+        )
     tree = record.worktree
     writable = tree is not None and record.permissions == 'execute'
     if record.trees:
