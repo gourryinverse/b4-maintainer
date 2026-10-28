@@ -94,6 +94,7 @@ class LiveSource:
         self._seen = seen
         self._mark_seen = mark_seen
         self._items: tuple[WorkItem, ...] = ()  # The last load's.
+        self._layout_memo: dict[str, tuple[str, frozenset[str]]] = {}  # Project: (tree, dirs).
         self._sashiko_url = sashiko_url
         self._sashiko_get = sashiko_get
         self._sashiko_patchset = sashiko_patchset
@@ -218,7 +219,9 @@ class LiveSource:
                     extra.append(match)
                 states[match.identity] = SeriesState(to_review=True)
                 assigned[match.identity] = project.id
-        items = self._ownership(ws, build_items(series + extra, states, ws, assigned))
+        layouts = self._layouts(ws)
+        items = build_items(series + extra, states, ws, assigned, layouts=layouts)
+        items = self._ownership(ws, items)
         watched = self.watched.load()
         items = tuple(
             dataclasses.replace(i, watched=True) if i.identity in watched else i for i in items
@@ -235,6 +238,39 @@ class LiveSource:
         )
         self._items = items  # For marking an item read: the items sharing its threads.
         return Snapshot(ws, items)
+
+    def _layouts(self, ws: Workspace) -> dict[str, frozenset[str]]:
+        """Each checked-out project's directories at its HEAD, for routing a series by
+        the files it touches; read once per tree and kept in var/layouts/."""
+        found: dict[str, frozenset[str]] = {}
+        cache = self.root / 'var' / 'layouts'
+        for project in ws.projects:
+            checkout = self.checkout(project)
+            if not (checkout / '.git').exists():
+                continue
+            tree = _git_out(checkout, 'rev-parse', 'HEAD^{tree}')
+            if not tree:
+                continue
+            memo = self._layout_memo.get(project.id)
+            if memo is not None and memo[0] == tree:
+                found[project.id] = memo[1]
+                continue
+            path = cache / f'{project.id}.json'
+            try:
+                saved = json.loads(path.read_text())
+                dirs = frozenset(saved['dirs']) if saved.get('tree') == tree else None
+            except (OSError, ValueError, KeyError, TypeError):
+                dirs = None
+            if dirs is None:
+                listed = _git_out(checkout, 'ls-tree', '-r', '-d', '--name-only', 'HEAD')
+                dirs = frozenset(listed.splitlines())
+                cache.mkdir(parents=True, exist_ok=True)
+                tmp = cache / f'.{project.id}.tmp'
+                tmp.write_text(json.dumps({'tree': tree, 'dirs': sorted(dirs)}))
+                tmp.replace(path)
+            self._layout_memo[project.id] = (tree, dirs)
+            found[project.id] = dirs
+        return found
 
     def _ownership(self, ws: Workspace, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
         """Mark maintained series and author roles from each project's MAINTAINERS."""
@@ -804,3 +840,11 @@ def _when(date: str) -> Optional[datetime.datetime]:
         return datetime.datetime.fromisoformat(date)
     except ValueError:
         return None
+
+
+def _git_out(repo: pathlib.Path, *args: str) -> str:
+    """git's output, or '' when it fails (an empty checkout, no HEAD yet)."""
+    run = subprocess.run(
+        ['git', *args], cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL
+    )
+    return run.stdout.strip() if run.returncode == 0 else ''

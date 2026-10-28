@@ -374,18 +374,40 @@ def _families(series: Iterable[Series]) -> dict[str, str]:
     return canonical
 
 
-def _route(series: Series, ws: Workspace) -> tuple[Optional[str], tuple[str, ...]]:
-    """Suggest a project: by a subject tag, else by list membership among the projects
-    without tags; ambiguity needs confirmation."""
+def _route(
+    series: Series, ws: Workspace, layouts: Mapping[str, Collection[str]]
+) -> tuple[Optional[str], tuple[str, ...]]:
+    """Suggest a project: by a subject tag; else, among the projects on its lists, the
+    one whose tree (*layouts*: each project's directories) holds the most of the files
+    its patches touch; else by list membership among the projects without tags.
+    Ambiguity needs confirmation."""
     words = set(series.prefixes)
     tagged = tuple(p.id for p in ws.projects if words & set(p.subject_tags))
     if len(tagged) == 1:
         return tagged[0], ()
     lists = set(series.list_candidates())
-    matched = tuple(p.id for p in ws.projects if lists & set(p.lists) and not p.subject_tags)
+    on_lists = [p for p in ws.projects if lists & set(p.lists)]
+    if len(on_lists) > 1 and series.paths and layouts:
+        scores = {p.id: _touches(series.paths, layouts.get(p.id, ())) for p in on_lists}
+        best = max(scores.values())
+        winners = [pid for pid, n in scores.items() if n == best]
+        if best and len(winners) == 1:
+            return winners[0], ()
+    matched = tuple(p.id for p in on_lists if not p.subject_tags)
     if len(matched) == 1:
         return matched[0], ()
     return None, matched
+
+
+def _touches(paths: Iterable[str], directories: Collection[str]) -> int:
+    """How many *paths* sit in one of *directories* (their own, else an enclosing one
+    below the top: every tree has a top)."""
+    count = 0
+    for path in paths:
+        parts = path.split('/')[:-1]
+        if any('/'.join(parts[:n]) in directories for n in range(len(parts), 0, -1)):
+            count += 1
+    return count
 
 
 def build_items(
@@ -394,11 +416,13 @@ def build_items(
     ws: Workspace,
     assigned: Optional[Mapping[str, str]] = None,
     responsible: Collection[str] = (),
+    layouts: Optional[Mapping[str, Collection[str]]] = None,
 ) -> tuple[WorkItem, ...]:
     """One work item per series identity, showing its latest revision.
 
     *assigned* maps identities to projects already chosen, e.g. by native tracking.
     *responsible* holds identities of series the maintainer maintains.
+    *layouts*: each project's directories, for routing by the files a series touches.
     """
     series = list(series)
     canonical = _families(series)
@@ -424,7 +448,7 @@ def build_items(
 
     items = []
     for identity, s in latest.items():
-        project, candidates = _route(s, ws)
+        project, candidates = _route(s, ws, layouts or {})
         chosen = first(assigned or {}, identity)
         if chosen:
             project, candidates = chosen, ()

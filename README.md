@@ -166,7 +166,10 @@ Python 3.11 or newer.
   `[sashiko] hide_clean = false` shows them.
 - Series go to the project whose `lists` they were sent to. On lists projects share, a
   project's `subject_tags` (e.g. `["ndctl", "daxctl"]` for `[ndctl PATCH]`) claim the
-  series whose subject prefix carries one; a project with tags takes only those. Only
+  series whose subject prefix carries one; untagged, the project whose checkout holds
+  the directories its patches touch takes it (each project's directories are read once
+  per HEAD tree, kept in `var/layouts/`), else the project without tags. A tracked
+  series stays in the project b4 tracks it in: `$` then `t` moves it. Only
   `[[profiles]]` lists are fetched by `F5`; a profile labelled like its project stands in
   for that project's own sidebar view.
 - A ref's `authority` is `mainline`, `acceptance`, or `preliminary` (highest first); an

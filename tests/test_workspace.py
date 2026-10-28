@@ -374,6 +374,44 @@ def test_a_subject_tag_routes_a_series_on_a_shared_list_to_its_project():
     assert items['cxl/list: show the region mode'].candidates == ()
 
 
+def test_an_untagged_series_on_shared_lists_goes_where_its_files_are():
+    """No subject tag: every project on its lists is a candidate, and the one whose tree
+    has the directories its patches touch takes it; with no such evidence the untagged
+    project keeps it, as before."""
+    config = {
+        'projects': [
+            {'id': 'linux', 'lists': ['linux-cxl@vger.kernel.org']},
+            {
+                'id': 'ndctl',
+                'lists': ['linux-cxl@vger.kernel.org', 'nvdimm@lists.linux.dev'],
+                'subject_tags': ['ndctl'],
+            },
+        ]
+    }
+    ws = Workspace.from_config(config)
+    layouts = {
+        'linux': frozenset({'drivers', 'drivers/cxl', 'tools', 'tools/testing'}),
+        'ndctl': frozenset({'daxctl', 'daxctl/lib', 'test', 'cxl'}),
+    }
+    lists = ('nvdimm.lists.linux.dev', 'linux-cxl.vger.kernel.org')
+    tool = make_series(
+        'daxctl: use whole-device hotplug',
+        lists=lists,
+        paths=['daxctl/lib/libdaxctl.c', 'daxctl/device.c', 'test/daxctl-create.sh'],
+    )
+    kernel = make_series('cxl: fix a region', lists=lists, paths=['drivers/cxl/region.c'])
+    unknown = make_series('cxl: no paths known', lists=lists)
+    items = {
+        i.series.subject: i for i in build_items([tool, kernel, unknown], {}, ws, layouts=layouts)
+    }
+    assert items['daxctl: use whole-device hotplug'].project == 'ndctl'
+    assert items['cxl: fix a region'].project == 'linux'
+    assert items['cxl: no paths known'].project == 'linux'  # Untagged keeps it.
+    # Without layouts (no checkouts read), routing is as it was.
+    plain = {i.series.subject: i for i in build_items([tool], {}, ws)}
+    assert plain['daxctl: use whole-device hotplug'].project == 'linux'
+
+
 def test_a_profile_named_like_its_project_stands_in_for_the_project_view():
     config = {
         'projects': [

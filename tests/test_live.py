@@ -663,3 +663,65 @@ def test_a_landed_stable_fix_is_no_longer_pending():
     assert _stable_pending((item,))[0].state.stable_pending
     landed = dataclasses.replace(item, landed=True)
     assert not _stable_pending((landed,))[0].state.stable_pending
+
+
+TWO_PROJECTS = """\
+[[projects]]
+id = "kernel"
+path = "projects/kernel"
+lists = ["linux-cxl@vger.kernel.org"]
+
+[[projects]]
+id = "tool"
+path = "projects/tool"
+lists = ["linux-cxl@vger.kernel.org", "nvdimm@lists.linux.dev"]
+subject_tags = ["tool"]
+
+[[profiles]]
+id = "cxl"
+label = "CXL"
+project = "kernel"
+lists = ["linux-cxl@vger.kernel.org"]
+"""
+
+
+def test_an_untagged_series_goes_to_the_project_holding_its_files(tmp_path):
+    from gitutil import git
+
+    root = tmp_path / 'ws'
+    for name, path in (('kernel', 'drivers/cxl/region.c'), ('tool', 'daxctl/lib/libdaxctl.c')):
+        repo = make_checkout(root / 'projects' / name)
+        (repo / path).parent.mkdir(parents=True)
+        (repo / path).write_text('old\n')
+        git('add', '-A', cwd=repo)
+        git('-c', 'user.name=M', '-c', 'user.email=m@example.org', 'commit', '-qm', 'x', cwd=repo)
+    (root / 'workspace.toml').write_text(TWO_PROJECTS)
+    fakes = Fakes()
+    source = LiveSource(
+        root,
+        tracked_series=fakes.tracked_series,
+        search_for=fakes.search_for,
+        track=fakes.track,
+        b4_command=['b4'],
+        now=lambda: NOW,
+        identity=lambda checkout: None,
+    )
+    cxl = 'linux-cxl.vger.kernel.org'
+    for name, subject, path in (
+        ('tool', 'daxctl: use whole-device hotplug', 'daxctl/lib/libdaxctl.c'),
+        ('kernel', 'cxl: fix a region', 'drivers/cxl/region.c'),
+    ):
+        mbox = tmp_path / 'src' / f'{name}.mbx'
+        mbox.parent.mkdir(exist_ok=True)
+        date = NOW - datetime.timedelta(days=1)
+        write_series_mbox(mbox, subject, patches=[PatchSpec(path)], lists=(cxl,), date=date)
+        fakes.answers.setdefault(cxl, []).extend(b4.get_msgs_from_mailbox_or_maildir(str(mbox)))
+    source.refresh()
+    items = {i.series.subject: i for i in source.load().items}
+    assert items['daxctl: use whole-device hotplug'].project == 'tool'
+    assert items['cxl: fix a region'].project == 'kernel'
+    cached = root / 'var' / 'layouts' / 'tool.json'
+    assert cached.exists()  # Read once per tree.
+    assert {i.series.subject: i.project for i in source.load().items} == {
+        k: v.project for k, v in items.items()
+    }
