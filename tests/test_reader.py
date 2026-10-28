@@ -46,7 +46,7 @@ async def test_enter_opens_reader_on_cover_and_escape_returns(demo_root):
         labels = app.tree_labels()
         assert labels[0].startswith('▸ 0/5 cover (1)')
         assert [label.split()[0] for label in labels[1:]] == ['1/5', '2/5', '▸', '4/5', '5/5']
-        assert labels[3].startswith('▸ 3/5') and labels[3].endswith('(3)')
+        assert labels[3].startswith('▸ 3/5') and ' (3) ' in labels[3]
         text = app.content_text()
         assert 'Synthetic cover letter.' in text
         assert 'Acked-by: Reviewer One' not in text
@@ -381,12 +381,27 @@ async def test_titles_and_labels_render_brackets_literally(tmp_path):
         assert any(p.startswith('[mm] core') for p in prompts)
 
 
+async def test_each_posting_is_labelled_with_its_subject_without_the_prefix(demo_root):
+    """The tree reads 2/5 ·R· mm: subject (no [PATCH ...]), cut to the pane with …."""
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        await open_reader(pilot)
+        thread = app._thread
+        labels = app.tree_labels()
+        for label, post in zip(labels, (thread.cover, *thread.patches)):
+            subject = post.message.subject.split('] ', 1)[-1]
+            assert '[' not in label.split('·')[0]
+            assert subject[:10] in label, (label, subject)
+        assert all(len(label) <= app._tree.scrollable_content_region.width for label in labels)
+
+
 async def test_patch_label_and_content_include_carried_tags(demo_root):
     app = MaintainerApp(FixtureSource(demo_root).load)
     async with app.run_test(size=(180, 40)) as pilot:
         await loaded(pilot)
         await open_reader(pilot)
-        assert app.tree_labels()[2] == '  2/5 ·R·'
+        assert app.tree_labels()[2].startswith('  2/5 ·R· ')
         await pilot.press('down', 'down')
         await pilot.pause()
         assert (

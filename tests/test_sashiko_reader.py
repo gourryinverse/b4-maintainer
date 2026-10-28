@@ -83,7 +83,7 @@ def test_tree_marks_findings_and_sashiko_replies():
     item = reviewed_item()
     merged = with_sashiko(thread(item), item.sashiko, BOTS)
     labels = [r.label for r in tree_rows(merged, item, {'1', '2'}, bots=BOTS)]
-    assert labels[0].startswith('▾ 1/1') and labels[0].endswith(' 1!')
+    assert labels[0].startswith('▾ 1/1') and ' 1! ' in labels[0]
     assert labels[2].strip().startswith('└─> ◆ Sashiko (not on list)')
     assert '1!' not in labels[3]  # Pre-existing findings are not counted.
     assert labels[4].strip().startswith('└─> ◆ Sashiko')
