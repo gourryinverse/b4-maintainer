@@ -792,3 +792,29 @@ def test_without_a_patatt_key_a_message_goes_unsigned(live, home):
     assert source.will_sign('demo')
     git('config', 'b4.send-no-patatt-sign', 'yes', cwd=root / 'projects' / 'demo')
     assert not source.will_sign('demo')  # As b4 send would.
+
+
+def test_a_sent_series_is_tracked_on_refresh_once_lore_has_it(live):
+    import json
+
+    source, fakes, root = live
+    pending = root / 'var' / 'pending-track.json'
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    pending.write_text(
+        json.dumps([{'project': 'demo', 'msgid': 'sent-v1@example.org', 'subject': 'mm: x'}])
+    )
+    misses = []
+
+    def track(checkout, msgid, command):
+        if not misses:
+            misses.append(msgid)
+            raise RuntimeError('b4 review track failed: not found on lore yet')
+        fakes.track_calls.append((checkout.name, msgid))
+
+    source._track = track
+    first = source.refresh()
+    assert json.loads(pending.read_text())  # Not on lore yet: kept for the next refresh.
+    assert 'tracked' not in first
+    second = source.refresh()
+    assert fakes.track_calls == [('demo', 'sent-v1@example.org')]
+    assert 'tracked mm: x' in second and json.loads(pending.read_text()) == []

@@ -761,7 +761,33 @@ class LiveSource:
         return list(wanted.items())
 
     def refresh(self, progress: Callable[[str], None] = lambda _: None) -> str:
-        return self._refresh(progress)
+        return self._refresh(progress) + self._track_sent(progress)
+
+    def _track_sent(self, progress: Callable[[str], None]) -> str:
+        """Track series this maintainer sent (var/pending-track.json, written after b4
+        send) once lore has them; those it does not have yet wait for the next refresh."""
+        path = self.root / 'var' / PENDING_TRACK
+        try:
+            pending = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return ''
+        if not pending:
+            return ''
+        ws = self.workspace()
+        command = list(self._b4_command) if self._b4_command else default_b4_command()
+        left, tracked = [], []
+        for entry in pending:
+            project = ws.project(str(entry.get('project', '')))
+            if project is None:
+                continue  # Its project is gone: nothing to track it in.
+            progress(f'Tracking what you sent: {entry.get("subject", "")}…')
+            try:
+                self._track(self.checkout(project), str(entry['msgid']), command)
+                tracked.append(str(entry.get('subject', entry['msgid'])))
+            except Exception:
+                left.append(entry)  # Not on lore yet (or offline): the next refresh.
+        _write_json(path, left)
+        return ''.join(f'; tracked {subject}' for subject in tracked)
 
     def _refresh(self, progress: Callable[[str], None]) -> str:
         ws = self.workspace()
@@ -975,3 +1001,13 @@ def _git_out(repo: pathlib.Path, *args: str) -> str:
         ['git', *args], cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
     return run.stdout.strip() if run.returncode == 0 else ''
+
+
+PENDING_TRACK = 'pending-track.json'  # Series sent from Branches, to track once on lore.
+
+
+def _write_json(path: pathlib.Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f'.{path.name}.tmp')
+    tmp.write_text(json.dumps(data, indent=1) + '\n')
+    tmp.replace(path)

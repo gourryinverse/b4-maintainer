@@ -898,3 +898,30 @@ def test_the_send_summary_says_what_blocks_a_prep_branch(ws, monkeypatch):
         service, 'prep_run', lambda w, i, a: (0, 'Success: 0, Warning: 1, Error: 2')
     )
     assert any('checks' in b for b in service.send_summary(workspace, item).blockers)
+
+
+def test_a_newly_sent_revision_waits_to_be_tracked(ws, monkeypatch):
+    import json
+
+    import b4_maintainer.branches as branches
+
+    service, workspace, project = ws
+    data = service.snapshot(workspace, trees=False)
+    key = 'work:s1:b4m/pull-ahead/leak'
+    rows = [r for r in data.details[key] if is_commit(r)]
+    made = service.cut_prep(workspace, key, rows, 'sent', 'up/stable')
+    item = f'prep:linux:{made.branch}'
+    sent = {
+        'revision': 2,
+        'sent': ('v1',),
+        'change-id': 'c',
+        'history': {'v1': ['<cover-v1@example.org>']},
+    }
+    monkeypatch.setattr(branches, 'prep_tracking', lambda repo, branch: sent)
+    note = service.record_sent(workspace, item, ())
+    assert 'tracked' in note
+    pending = json.loads((project.parent.parent / 'var' / 'pending-track.json').read_text())
+    assert pending == [
+        {'project': 'linux', 'msgid': 'cover-v1@example.org', 'subject': pending[0]['subject']}
+    ]
+    assert service.record_sent(workspace, item, ('v1',)) == ''  # Nothing new (a dry run).

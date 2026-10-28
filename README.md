@@ -233,9 +233,16 @@ Python 3.11 or newer.
   summaries) in a sparse worktree under `var/branches/`; on it, `t` adds recipients,
   `c` checks, `e` edits the cover letter, `s` adds your Signed-off-by (you certify the
   DCO), `o` previews exactly what would be sent (`b4 send -o`), `u` collects trailers
-  from the list, `d` compares with the last sent revision, and `S` runs `b4 send` in the
-  terminal, where b4 shows its summary and asks before anything goes out
-  (`--email-dry-run` and `--no-sign` pass through). All by running b4. `m` on a commit
+  from the list, `d` compares with the last sent revision, and `S` sends it: first one
+  summary (revision, To/Cc, checks run then, commits without your Signed-off-by, the
+  cover letter), refused until fixed when it has no recipients, an EDITME cover letter,
+  a commit without your Signed-off-by, or failing checks; then send signed (first when a
+  key is set up), send unsigned (`--no-sign`), or not now. `b4 send` then runs in the
+  terminal, where b4 shows its own summary and asks before anything goes out
+  (`--email-dry-run` and `--no-sign` pass through); once sent, the series is tracked in
+  b4 when lore has it (on the next `F5`). A tagged project's prep branch carries its tag
+  before PATCH (`[ndctl PATCH v2 1/3]`), and one b4 cannot address (no get_maintainer)
+  gets its first list as To on the cover letter. All by running b4. `m` on a commit
   mails it as one patch through b4 (as replies go: your identity, signing,
   `--email-dry-run`): a fixup as a reply to the series patch it fixes (its manifest's
   `fixes`, else the cover letter; To its author, Cc the rest), a pull-ahead as its own

@@ -1248,22 +1248,37 @@ class BranchesScreen(Screen[None]):
         self.run_worker(work, thread=True, group='branches-act')
 
     def _send(self, key: str, sign: bool = True) -> None:
+        before = tuple(self.data.preps.get(key, {}).get('sent', ()))
+
         def work() -> None:
             try:
                 worktree, branch, args = self.service.send_args(self.workspace, key, sign)
             except Exception as exc:
                 self.app.call_from_thread(self._status, f'Cannot send: {exc}')
                 return
-            self.app.call_from_thread(self._send_in_terminal, worktree, branch, args)
+            self.app.call_from_thread(self._send_in_terminal, worktree, branch, args, key, before)
 
         self.run_worker(work, thread=True, group='branches-act')
 
-    def _send_in_terminal(self, worktree: pathlib.Path, branch: str, args: tuple[str, ...]) -> None:
+    def _send_in_terminal(
+        self,
+        worktree: pathlib.Path,
+        branch: str,
+        args: tuple[str, ...],
+        key: str = '',
+        before: tuple[str, ...] = (),
+    ) -> None:
         with self.app.suspend():
             code, _out = run_b4(worktree, branch, *args, interactive=True)
             if code == 0:
                 input('Press Enter to return to b4-maintainer…')
         self._note = f'b4 send finished for {branch}' if code == 0 else f'b4 send stopped ({code})'
+        if code == 0 and key:
+            record: Any = getattr(self.service, 'record_sent', None)
+            try:
+                self._note += record(self.workspace, key, before) if record else ''
+            except Exception as exc:
+                self._note += f'; not tracked: {exc}'
         self.action_reload()
 
     def action_reap(self) -> None:

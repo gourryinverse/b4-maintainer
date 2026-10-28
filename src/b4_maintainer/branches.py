@@ -1266,6 +1266,34 @@ class BranchService:
             key,
         )
 
+    def record_sent(self, workspace: Workspace, item: str, before: Sequence[str]) -> str:
+        """After b4 send: each revision it recorded as newly sent goes on the list to track
+        (var/pending-track.json; refresh tracks it once lore has it). A dry run records
+        none."""
+        _kind, pid, branch = item.split(':', 2)
+        project = workspace.project(pid)
+        if project is None:
+            return ''
+        repo = self.root / project.path
+        tracking = prep_tracking(repo, branch)
+        new = [v for v in tracking['sent'] if v not in set(before)]
+        if not new:
+            return ''
+        path = self.root / 'var' / 'pending-track.json'
+        try:
+            pending = json.loads(path.read_text())
+        except (OSError, ValueError):
+            pending = []
+        subject = cover_text(repo, branch).split('\n', 1)[0]
+        for revision in new:
+            sent = tracking['history'].get(revision) or []
+            if sent:
+                msgid = str(sent[-1]).strip('<>')
+                pending.append({'project': pid, 'msgid': msgid, 'subject': f'{subject} {revision}'})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(pending, indent=1) + '\n')
+        return f'; {", ".join(new)} will be tracked once lore has it (F5)'
+
     def sign_off(self, workspace: Workspace, item: str, expected: str) -> SignResult:
         """The maintainer's Signed-off-by on each commit of the prep branch lacking it."""
         _kind, pid, branch = item.split(':', 2)

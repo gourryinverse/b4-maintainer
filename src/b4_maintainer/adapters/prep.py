@@ -373,6 +373,7 @@ def prep_tracking(repo: pathlib.Path, branch: str) -> dict[str, Any]:
         'revision': int(series.get('revision', 0) or 0),
         'sent': tuple(sorted(history, key=lambda v: int(str(v).lstrip('v') or 0))),
         'change-id': series.get('change-id', ''),
+        'history': history,  # Each sent revision: the message-ids b4 sent it as.
     }
 
 
