@@ -19,6 +19,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
 
+from .adapters.b4state import b4_repo, patatt_key_name
 from .adapters.bases import (
     BaseCommit,
     BaseStatus,
@@ -38,6 +39,7 @@ from .adapters.prep import (
     PrepError,
     SignResult,
     cleanup_prep,
+    cover_recipients,
     cover_text,
     cut_prep,
     ensure_recipient,
@@ -150,6 +152,23 @@ class DropChoices:
     commits: Mapping[str, tuple[BaseCommit, ...]] = field(default_factory=dict)
     tips: Mapping[str, str] = field(default_factory=dict)
     problem: str = ''
+
+
+@dataclass(frozen=True)
+class SendSummary:
+    """What `S` shows before b4 send: where the prep branch stands, and what blocks it."""
+
+    branch: str
+    revision: int
+    subject: str
+    commits: int
+    to: list[str]
+    cc: list[str]
+    unsigned: list[str]  # Subjects of commits without the maintainer's Signed-off-by.
+    editme: bool  # The cover letter still says EDITME.
+    checks: str  # b4 prep --check's summary line, or why there is none.
+    blockers: list[str]
+    signing_key: str  # '' when it would go unsigned.
 
 
 @dataclass(frozen=True)
@@ -1184,6 +1203,69 @@ class BranchService:
         ensure_worktree(repo, worktree, branch)
         return repo, worktree, branch
 
+    def send_summary(self, workspace: Workspace, item: str) -> SendSummary:
+        """Where prep branch *item* stands before sending (blocking: runs b4's checks).
+        Blocking: no recipients, EDITME in the cover, a commit without the maintainer's
+        Signed-off-by, failing checks."""
+        _kind, pid, branch = item.split(':', 2)
+        project = workspace.project(pid)
+        if project is None:
+            raise ValueError(f'no project {pid}')
+        repo = self.root / project.path
+        cover = cover_text(repo, branch)
+        tos, ccs = cover_recipients(cover)
+        with b4_repo(repo):
+            import b4
+
+            config = b4.get_main_config()
+            series_to = _config_addresses(config.get('send-series-to'))
+            series_cc = _config_addresses(config.get('send-series-cc'))
+            sign_wanted = b4state_send_default()
+        to = [a for _n, a in tos] + series_to
+        cc = [a for _n, a in ccs] + series_cc
+        name, email = _identity_parts(repo)
+        mine = f'Signed-off-by: {name} <{email}>'
+        rows = _prep_rows(repo, branch)
+        commits = [r for r in rows if is_commit(r)]
+        unsigned = []
+        for row in commits:
+            body = _git(repo, 'log', '-1', '--format=%B', row.key)
+            if mine not in body:
+                unsigned.append(row.text.strip().split('  ', 1)[-1])
+        code, out = self.prep_run(workspace, item, 'check')
+        line = next((x for x in out.splitlines() if x.startswith('Success:')), '')
+        found = re.search(r'Error: (\d+)', line)
+        errors = int(found.group(1)) if found else 0
+        checks = line or (out.strip().splitlines() or ['no checks ran'])[-1]
+        blockers = []
+        if not to and not cc:
+            blockers.append('no recipients: t adds them (or put To: in the cover letter)')
+        if 'EDITME' in cover:
+            blockers.append('the cover letter still says EDITME: e edits it')
+        if unsigned:
+            blockers.append(
+                f'{_count(len(unsigned), "commit")} without your Signed-off-by: s adds it'
+            )
+        if code != 0 or errors:
+            blockers.append(f'checks fail ({checks}): c shows them')
+        tracking = prep_tracking(repo, branch)
+        key = ''
+        if sign_wanted and not self.no_sign:
+            key = patatt_key_name(repo)
+        return SendSummary(
+            branch,
+            int(tracking['revision']),
+            cover.split('\n', 1)[0],
+            len(commits),
+            to,
+            cc,
+            unsigned,
+            'EDITME' in cover,
+            checks,
+            blockers,
+            key,
+        )
+
     def sign_off(self, workspace: Workspace, item: str, expected: str) -> SignResult:
         """The maintainer's Signed-off-by on each commit of the prep branch lacking it."""
         _kind, pid, branch = item.split(':', 2)
@@ -1210,15 +1292,15 @@ class BranchService:
         return 0, outgoing_summary(messages) + '\n\n--- b4 send -o\n' + text
 
     def send_args(
-        self, workspace: Workspace, item: str
+        self, workspace: Workspace, item: str, sign: bool = True
     ) -> tuple[pathlib.Path, str, tuple[str, ...]]:
         """(worktree, branch, b4 arguments) for sending the prep branch interactively: b4
-        shows its summary and asks before anything goes out."""
+        shows its summary and asks before anything goes out (*sign*: patatt-signed)."""
         _repo, worktree, branch = self._prep(workspace, item)
         args = (
             'send',
             *(('-d',) if self.email_dryrun else ()),
-            *(('--no-sign',) if self.no_sign else ()),
+            *(('--no-sign',) if self.no_sign or not sign else ()),
         )
         return worktree, branch, args
 
@@ -1796,3 +1878,17 @@ def _addresses_itself(repo: pathlib.Path) -> bool:
         if run.returncode == 0 and run.stdout.strip():
             return True
     return False
+
+
+def _config_addresses(value: Any) -> list[str]:
+    """Addresses of a b4 setting (one value or several, each possibly a list)."""
+    import email.utils
+
+    values = value if isinstance(value, list) else [value] if value else []
+    return [addr for _name, addr in email.utils.getaddresses([str(v) for v in values]) if addr]
+
+
+def b4state_send_default() -> bool:
+    from .adapters.b4state import patatt_send_default
+
+    return patatt_send_default()

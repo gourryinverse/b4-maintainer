@@ -35,6 +35,7 @@ from .branches import (
     DetailRow,
     DropChoices,
     FoldPlan,
+    SendSummary,
     is_commit,
 )
 from .launchdialog import Derived
@@ -113,8 +114,10 @@ class Branches(Protocol):
     def preview(self, workspace: Workspace, item: str) -> tuple[int, str]: ...
 
     def send_args(
-        self, workspace: Workspace, item: str
+        self, workspace: Workspace, item: str, sign: bool = True
     ) -> tuple[pathlib.Path, str, tuple[str, ...]]: ...
+
+    def send_summary(self, workspace: Workspace, item: str) -> SendSummary: ...
 
     def reapable(self, data: BranchesSnapshot, item: str) -> bool: ...
 
@@ -1198,29 +1201,56 @@ class BranchesScreen(Screen[None]):
             self._status(f'b4 cannot prepare them: {last}')
 
     def action_send(self) -> None:
-        """S: send through b4 send in the terminal; b4 shows its summary and asks first."""
-        from .app import Confirm
-
+        """S: one summary of the prep branch (recipients, checks, sign-offs, cover), then
+        send signed, send unsigned, or not now; what blocks it is said and refused. b4
+        send then runs in the terminal, showing its own summary and asking first."""
         key = self.selected_item()
         if key is None or not key.startswith('prep:'):
             return
-        branch = key.split(':', 2)[2]
-        tracking = self.data.preps.get(key, {})
-        prompt = (
-            f'Send {branch} v{tracking.get("revision", "?")} with b4 send? The app steps aside: '
-            'b4 shows what it will send and asks you to press Enter (Ctrl-C aborts). [y|N]'
-        )
 
-        def answered(confirmed: Optional[bool]) -> None:
-            if confirmed:
-                self._send(key)
-
-        self.app.push_screen(Confirm(prompt), answered)
-
-    def _send(self, key: str) -> None:
         def work() -> None:
             try:
-                worktree, branch, args = self.service.send_args(self.workspace, key)
+                summary = self.service.send_summary(self.workspace, key)
+            except Exception as exc:
+                self.app.call_from_thread(self._status, f'Cannot send: {exc}')
+                return
+            self.app.call_from_thread(offer, summary)
+
+        def offer(summary: Any) -> None:
+            self._status('')
+            lines = [
+                f'Send {summary.branch} v{summary.revision}: {summary.subject}',
+                f'{summary.commits} patch{"es" if summary.commits != 1 else ""}',
+                f'To: {", ".join(summary.to) or "(nobody)"}',
+                *([f'Cc: {", ".join(summary.cc)}'] if summary.cc else []),
+                f'Checks: {summary.checks}',
+            ]
+            if summary.blockers:
+                lines += ['Blocked until fixed:', *(f'  {b}' for b in summary.blockers)]
+                choices = [('later', 'Not now: fix it first')]
+            else:
+                lines.append('It goes as you (you certify the DCO for each Signed-off-by).')
+                choices = [('unsigned', 'Send unsigned (--no-sign)'), ('later', 'Not now')]
+                if summary.signing_key:
+                    choices.insert(
+                        0, ('signed', f'Send signed with patatt ({summary.signing_key})')
+                    )
+                else:
+                    lines.append('No signing key: F6 Settings sets one up for every project.')
+
+            def answered(way: Optional[str]) -> None:
+                if way in ('signed', 'unsigned'):
+                    self._send(key, way == 'signed')
+
+            self.app.push_screen(Pick('\n'.join(lines), choices), answered)
+
+        self._status('Checking the branch before sending (b4 prep --check)…')
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _send(self, key: str, sign: bool = True) -> None:
+        def work() -> None:
+            try:
+                worktree, branch, args = self.service.send_args(self.workspace, key, sign)
             except Exception as exc:
                 self.app.call_from_thread(self._status, f'Cannot send: {exc}')
                 return

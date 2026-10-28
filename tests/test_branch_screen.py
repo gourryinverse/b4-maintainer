@@ -5,7 +5,7 @@ from b4_maintainer.adapters.bases import BaseCommit, BaseStatus, RebaseResult
 from b4_maintainer.adapters.fixture import FixtureSource
 from b4_maintainer.app import Confirm, MaintainerApp
 from b4_maintainer.branches import BranchesSnapshot, BranchItem, DetailRow
-from b4_maintainer.branchscreen import BranchesScreen
+from b4_maintainer.branchscreen import BranchesScreen, Pick
 from b4_maintainer.workspace import MaintainerBase
 
 BASE = MaintainerBase('me/base', 'up/stable')
@@ -41,6 +41,8 @@ class FakeBranches:
         self.sent = ()  # Revisions b4 has sent.
         self.targets = {'tree:s1': ('base:linux:me/base',)}
         self.trees_asked = []
+        self.blockers = []  # What send_summary says blocks sending.
+        self.key = 'openpgp:ABCD'  # The key it would be signed with.
 
     def snapshot(self, workspace, trees=True):
         self.loads += 1
@@ -124,8 +126,26 @@ class FakeBranches:
         self.previews.append(item)
         return 0, 'Subject: [PATCH] mm: fix p\nTo: sub@example.org'
 
-    def send_args(self, workspace, item):
-        return __import__('pathlib').Path('/w/prep'), 'b4/pa', ('send', '-d')
+    def send_args(self, workspace, item, sign=True):
+        args = ('send', '-d') if sign else ('send', '-d', '--no-sign')
+        return __import__('pathlib').Path('/w/prep'), 'b4/pa', args
+
+    def send_summary(self, workspace, item):
+        from b4_maintainer.branches import SendSummary
+
+        return SendSummary(
+            'b4/pa',
+            1,
+            'mm: fix p',
+            1,
+            ['sub@example.org'],
+            [],
+            [],
+            False,
+            'Success: 1, Warning: 0, Error: 0',
+            list(self.blockers),
+            self.key,
+        )
 
     def reapable(self, data, item):
         return item.split(':', 1)[0] in ('prep', 'tree')
@@ -528,16 +548,46 @@ async def test_capital_s_sends_through_b4_in_the_terminal_after_a_confirmation(
         await open_prep(pilot)
         await pilot.press('S')
         await settle(pilot)
-        assert isinstance(app.screen, Confirm) and 'press Enter' in app.screen.prompt
-        await pilot.press('n')
+        summary = app.screen
+        assert isinstance(summary, Pick) and 'b4/pa v1' in summary.title_text
+        assert 'To: sub@example.org' in summary.title_text and 'Success: 1' in summary.title_text
+        assert [k for k, _label in summary.choices] == ['signed', 'unsigned', 'later']
+        await pilot.press('escape')
         await settle(pilot)
         assert calls == []  # Declined: b4 never ran.
         await pilot.press('S')
         await settle(pilot)
-        await pilot.press('y')
+        await pilot.press('enter')  # Signed.
         await settle(pilot)
         assert calls == [('b4/pa', ('send', '-d'), True)]
         assert 'b4 send finished for b4/pa' in app.screen.status_text()
+        await pilot.press('S')
+        await settle(pilot)
+        await pilot.press('down', 'enter')  # Unsigned.
+        await settle(pilot)
+        assert calls[-1] == ('b4/pa', ('send', '-d', '--no-sign'), True)
+
+
+async def test_capital_s_refuses_while_something_blocks_the_send(demo_root, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        'b4_maintainer.branchscreen.run_b4',
+        lambda wt, branch, *args, interactive=False: calls.append(args) or (0, ''),
+    )
+    service = FakeBranches()
+    service.blockers = ['the cover letter still says EDITME: e edits it']
+    service.key = ''
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_prep(pilot)
+        await pilot.press('S')
+        await settle(pilot)
+        pick = app.screen
+        assert 'EDITME' in pick.title_text and 'Blocked' in pick.title_text
+        assert [k for k, _label in pick.choices] == ['later']
+        await pilot.press('enter')
+        await settle(pilot)
+        assert calls == []
 
 
 async def test_u_collects_trailers_and_d_compares_once_something_was_sent(demo_root):

@@ -866,3 +866,35 @@ def test_a_name_already_taken_leaves_that_prep_branch_alone(ws):
     again = service.cut_prep(workspace, key, rows, 'taken', 'up/stable')
     assert not again.ok and 'exists' in again.error
     assert git('rev-parse', first.branch, cwd=project) == tip
+
+
+def test_the_send_summary_says_what_blocks_a_prep_branch(ws, monkeypatch):
+    service, _workspace, project = ws
+    workspace = tagged_ws()
+    data = service.snapshot(workspace, trees=False)
+    key = 'work:s1:b4m/pull-ahead/leak'
+    rows = [r for r in data.details[key] if is_commit(r)]
+    made = service.cut_prep(workspace, key, rows, 'tosend', 'up/stable')
+    item = f'prep:linux:{made.branch}'
+    monkeypatch.setattr(
+        service, 'prep_run', lambda w, i, a: (0, 'Success: 1, Warning: 0, Error: 0')
+    )
+    summary = service.send_summary(workspace, item)
+    assert summary.revision == 1 and summary.commits == 1
+    assert summary.to == ['nvdimm@lists.linux.dev']
+    assert summary.unsigned == ['mm: fix the leak']  # Plucked: no Signed-off-by yet.
+    assert any('Signed-off-by' in b for b in summary.blockers)
+    assert summary.editme and any('EDITME' in b for b in summary.blockers)  # Drafted.
+    from b4_maintainer.adapters.prep import cover_text, run_b4
+
+    cover = cover_text(project, made.branch).replace('EDITME: ', '', 1)
+    worktree = project.parent.parent / 'var' / 'branches' / 'linux' / 'tosend'
+    run_b4(worktree, made.branch, 'prep', '--cover-from-file', '-', stdin=cover)  # As e does.
+    tip = git('rev-parse', made.branch, cwd=project)
+    assert service.sign_off(workspace, item, tip).ok
+    summary = service.send_summary(workspace, item)
+    assert summary.unsigned == [] and summary.blockers == []
+    monkeypatch.setattr(
+        service, 'prep_run', lambda w, i, a: (0, 'Success: 0, Warning: 1, Error: 2')
+    )
+    assert any('checks' in b for b in service.send_summary(workspace, item).blockers)
