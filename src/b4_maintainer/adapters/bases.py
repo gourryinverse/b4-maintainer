@@ -306,6 +306,7 @@ class PluckResult:
     failed: str = ''  # The subject of the commit that did not apply.
     detail: str = ''  # Why: git merge-tree's conflict messages.
     error: str = ''
+    checked_out: str = ''  # Refused: the worktree the branch is checked out in.
 
 
 def _env(**values: str) -> dict[str, str]:
@@ -404,10 +405,13 @@ def pluck_onto(
     expected: str,
     agent_email: str,
     assisted: str,
+    into_checkout: bool = False,
 ) -> PluckResult:
     """Copy *shas* (oldest first) from *source* (a session tree, or the project itself)
     onto *branch* (a maintainer base, a prep branch), which must still be at *expected*
-    and not checked out.
+    and not checked out; with *into_checkout*, a checked-out branch moves by
+    fast-forwarding its checkout (git merge --ff-only: it refuses rather than overwrite
+    local changes, and keeps the others).
 
     Each commit's change is merged onto the branch's tip with git merge-tree (no
     worktree, no index) and committed with git commit-tree: commits by *agent_email*
@@ -420,8 +424,10 @@ def pluck_onto(
     if tip0 is None:
         return PluckResult(False, error=f'{branch} does not exist')
     checked_out = _checked_out(repo, branch)
-    if checked_out:
-        return PluckResult(False, error=f'{branch} is checked out in {checked_out}')
+    if checked_out and not into_checkout:
+        return PluckResult(
+            False, error=f'{branch} is checked out in {checked_out}', checked_out=checked_out
+        )
     if tip0 != expected:
         return PluckResult(False, error=f'{branch} moved since it was shown')
     incoming = f'{INCOMING_REF}/pluck'
@@ -440,7 +446,16 @@ def pluck_onto(
         if not replayed.ok:
             return replayed
         tip, picked = replayed.tip, replayed.picked
-        if tip != tip0:
+        if tip != tip0 and checked_out:
+            merged = _git(
+                pathlib.Path(checked_out), 'merge', '--ff-only', '--quiet', tip, check=False
+            )
+            if merged.returncode != 0:
+                why = (merged.stderr or merged.stdout).strip().splitlines()
+                return PluckResult(
+                    False, error=f'{branch} stays: {" ".join(why[:2]) or "git merge failed"}'
+                )
+        elif tip != tip0:
             moved = _git(
                 repo,
                 'update-ref',

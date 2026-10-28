@@ -258,3 +258,44 @@ def test_accepting_is_refused_when_anything_moved(project, tmp_path):
     assert not stale.ok and 'up/stable' in stale.error  # The result predates the upstream.
     assert git('rev-parse', 'me/base', cwd=project) == old
     assert git('for-each-ref', 'refs/b4m', cwd=project) == ''
+
+
+def test_a_checked_out_base_takes_plucked_commits_by_fast_forwarding_its_checkout(tmp_path, home):
+    from b4_maintainer.adapters.bases import pluck_onto
+
+    (home / '.gitconfig').write_text('[user]\n\tname = M\n\temail = m@example.org\n')
+    repo = tmp_path / 'p'
+    repo.mkdir()
+    git('init', '-q', '-b', 'me/base', cwd=repo)
+    commit(repo, 'a.c', 'a\n', 'start')
+    git('switch', '-q', '-c', 'side', cwd=repo)
+    fix = commit(repo, 'fix.c', 'fixed\n', 'mm: a fix')
+    git('switch', '-q', 'me/base', cwd=repo)  # The base is what the checkout has.
+    (repo / 'notes.txt').write_text('mine\n')  # Untracked, unrelated: kept.
+    tip = git('rev-parse', 'me/base', cwd=repo)
+    refused = pluck_onto(repo, 'me/base', repo, [fix], tip, 'agent@x.invalid', 'x')
+    assert not refused.ok and refused.checked_out == str(repo)
+    done = pluck_onto(repo, 'me/base', repo, [fix], tip, 'agent@x.invalid', 'x', into_checkout=True)
+    assert done.ok and git('rev-parse', 'HEAD', cwd=repo) == done.tip
+    assert (repo / 'fix.c').read_text() == 'fixed\n' and (repo / 'notes.txt').exists()
+
+
+def test_a_checkout_whose_changes_would_be_overwritten_is_left_alone(tmp_path, home):
+    from b4_maintainer.adapters.bases import pluck_onto
+
+    (home / '.gitconfig').write_text('[user]\n\tname = M\n\temail = m@example.org\n')
+    repo = tmp_path / 'p'
+    repo.mkdir()
+    git('init', '-q', '-b', 'me/base', cwd=repo)
+    commit(repo, 'a.c', 'a\n', 'start')
+    git('switch', '-q', '-c', 'side', cwd=repo)
+    fix = commit(repo, 'a.c', 'fixed\n', 'mm: a fix')
+    git('switch', '-q', 'me/base', cwd=repo)
+    (repo / 'a.c').write_text('local edit\n')  # Uncommitted, where the fix goes.
+    tip = git('rev-parse', 'me/base', cwd=repo)
+    result = pluck_onto(
+        repo, 'me/base', repo, [fix], tip, 'agent@x.invalid', 'x', into_checkout=True
+    )
+    assert not result.ok and 'local changes' in result.error.lower()
+    assert git('rev-parse', 'me/base', cwd=repo) == tip
+    assert (repo / 'a.c').read_text() == 'local edit\n'

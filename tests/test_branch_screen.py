@@ -42,6 +42,8 @@ class FakeBranches:
         self.targets = {'tree:s1': ('base:linux:me/base',)}
         self.trees_asked = []
         self.blockers = []  # What send_summary says blocks sending.
+        self.checked_out = ''  # Where the pluck target is checked out (git refuses it).
+        self.into_checkout = False
         self.key = 'openpgp:ABCD'  # The key it would be signed with.
 
     def snapshot(self, workspace, trees=True):
@@ -161,10 +163,14 @@ class FakeBranches:
         self.worktrees.append(item)
         return __import__('pathlib').Path('/w/prep')
 
-    def pluck(self, workspace, item, rows, target, expected):
+    def pluck(self, workspace, item, rows, target, expected, into_checkout=False):
         from b4_maintainer.adapters.bases import PluckResult
 
+        if self.checked_out and not into_checkout:  # As git refuses a checked-out branch.
+            return PluckResult(False, error='checked out', checked_out=self.checked_out)
         self.plucked.append((item, [r.key for r in rows], target, expected))
+        if into_checkout:
+            self.into_checkout = True
         return PluckResult(True, 'e' * 40, tuple((r.key, 'n') for r in rows))
 
 
@@ -741,3 +747,22 @@ async def act(pilot, method, *args):
     method(*args)
     for _ in range(3):
         await pilot.pause()
+
+
+async def test_p_onto_a_checked_out_base_offers_to_move_its_checkout(demo_root):
+    service = FakeBranches()
+    service.checked_out = '/w/projects/linux'
+    app = make_app(demo_root, service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await open_tree_rows(pilot)
+        screen = app.screen
+        await pilot.press('p')
+        await settle(pilot)
+        await pilot.press('y')  # Pluck onto me/base.
+        await settle(pilot)
+        offer = app.screen
+        assert isinstance(offer, Confirm) and '/w/projects/linux' in offer.prompt
+        assert 'fast-forward' in offer.prompt and 'local changes' in offer.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.into_checkout and 'Plucked 1 onto me/base' in screen.status_text()

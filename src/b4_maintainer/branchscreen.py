@@ -71,6 +71,7 @@ class Branches(Protocol):
         rows: Sequence[DetailRow],
         target: str,
         expected: str,
+        into_checkout: bool = False,
     ) -> PluckResult: ...
 
     def fork_points(self, workspace: Workspace, item: str) -> list[str]: ...
@@ -849,15 +850,44 @@ class BranchesScreen(Screen[None]):
 
         self.app.push_screen(Confirm(prompt), answered)
 
-    def _pluck(self, key: str, rows: list[DetailRow], target: str, expected: str) -> None:
+    def _pluck(
+        self,
+        key: str,
+        rows: list[DetailRow],
+        target: str,
+        expected: str,
+        into_checkout: bool = False,
+    ) -> None:
         self._status('Plucking…')
         branch = _target_label(target)
 
+        def offer(checkout: str) -> None:
+            from .app import Confirm
+
+            def answered(yes: Optional[bool]) -> None:
+                if yes:
+                    self._pluck(key, rows, target, expected, into_checkout=True)
+                else:
+                    self._status(f'Not plucked: {branch} is checked out in {checkout}')
+
+            self.app.push_screen(
+                Confirm(
+                    f'{branch} is checked out in {checkout}. Pluck there, fast-forwarding that '
+                    'checkout (git merge --ff-only: its local changes stay, and it refuses if '
+                    'they would be overwritten)? [y|N]'
+                ),
+                answered,
+            )
+
         def work() -> None:
             try:
-                result = self.service.pluck(self.workspace, key, rows, target, expected)
+                kwargs = {'into_checkout': True} if into_checkout else {}
+                result = self.service.pluck(self.workspace, key, rows, target, expected, **kwargs)
             except Exception as exc:
                 result = PluckResult(False, error=str(exc))
+            if result.checked_out and not into_checkout:
+                self.app.call_from_thread(offer, result.checked_out)
+                return
             if result.ok:
                 dropped = f'; already there: {", ".join(result.dropped)}' if result.dropped else ''
                 note = f'Plucked {len(result.picked)} onto {branch}{dropped}'

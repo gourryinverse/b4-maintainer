@@ -751,9 +751,12 @@ class BranchService:
         rows: Sequence[DetailRow],
         target: str,
         expected: str,
+        into_checkout: bool = False,
     ) -> PluckResult:
         """Copy the commits of *rows* (shown under *item*) onto *target* (a base or a prep
-        branch, remembering where each came from; or another session tree)."""
+        branch, remembering where each came from; or another session tree). A target
+        checked out somewhere is refused (saying where) unless *into_checkout*: then its
+        checkout is fast-forwarded."""
         if target.startswith('tree:'):
             return self._copy_to_tree(workspace, item, rows, target.removeprefix('tree:'))
         try:
@@ -775,6 +778,7 @@ class BranchService:
             expected,
             workspace.agent_email,
             workspace.assisted_by.replace('{model}', self._model(item)),
+            into_checkout,
         )
         if result.ok:
             self._remember(project, item, commits, result)
