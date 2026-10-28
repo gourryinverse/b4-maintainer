@@ -766,3 +766,14 @@ def test_refresh_fetches_and_tracks_the_configured_remote_branches(tmp_path):
     assert git('rev-parse', 'scratch/me/try', cwd=checkout) == git(
         'rev-parse', 'scratch/me/try', cwd=remote
     )
+
+
+def test_a_written_message_goes_through_b4_honouring_dry_run(live, home):
+    source, _fakes, _root = live
+    (home / '.gitconfig').write_text('[user]\n\tname = M\n\temail = m@example.org\n')
+    source.email_dryrun, source.no_sign = True, True
+    text = (
+        'From: M <m@example.org>\nTo: Sub <sub@example.org>\nSubject: [PATCH] mm: x\n'
+        'Message-ID: <x@example.org>\n\nA fix.\n'
+    )
+    assert source.send_message('demo', text) == 'Dry-run: [PATCH] mm: x logged, not sent'

@@ -67,6 +67,7 @@ from .workspace import MaintainerBase, Project, Workspace
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult, SeriesPatch
     from .model import Series
+    from .patchmail import ReplyTo
 
 SHOW_LINES = 4000  # A commit or file is cut here.
 LIST_LIMIT = 200  # Commits listed per branch or worktree.
@@ -412,6 +413,45 @@ class BranchService:
             found.append((item, tuple(rows)))
         return found
 
+    def fixup_target(
+        self, workspace: Workspace, item: str, branch: str
+    ) -> tuple[str, Optional[int]]:
+        """(the series a session's commit belongs to, the patch number its manifest says
+        it fixes, if any). A workbench session's series is its workbench (workbench:<id>)."""
+        if not item.startswith('work:'):
+            return '', None
+        record = self._record(item.split(':', 2)[1])
+        if record is None:
+            return '', None
+        artifacts = load_artifacts(self._out(record.id) / 'work' / 'out', {branch})[0]
+        fixes = next((a.fixes for a in artifacts if a.branch == branch and a.fixes), '')
+        number = fixes.split('/', 1)[0].strip()
+        return record.series, int(number) if number.isdigit() else None
+
+    def patch_message(
+        self, workspace: Workspace, item: str, row: DetailRow, reply: Optional['ReplyTo']
+    ) -> str:
+        """Commit *row* as a patch email from the maintainer (blocking): a reply when
+        *reply* is given, else a new thread addressed as b4 addresses a new patch."""
+        from .patchmail import auto_recipients, patch_mail
+
+        project = self._project_of(workspace, item)
+        if project is None:
+            raise ValueError(f'no project for {item}')
+        repo = self.root / project.path
+        me = _identity_parts(repo)
+        if not all(me):
+            raise ValueError('no user.name and user.email for this checkout')
+        assisted = workspace.assisted_by.replace('{model}', self._model(item))
+        commit_repo = pathlib.Path(row.repo or repo)
+        msg = patch_mail(commit_repo, row.key, me, workspace.agent_email, assisted, reply)
+        if reply is None:
+            to, cc = auto_recipients(repo, msg)
+            msg = patch_mail(
+                commit_repo, row.key, me, workspace.agent_email, assisted, None, (to, cc)
+            )
+        return msg.as_string()
+
     def branch_starts(self, workspace: Workspace, project_id: str) -> list[str]:
         """Where a new branch may start: the project's bases, their upstreams, then its
         prep branches (any other ref may be typed)."""
@@ -656,8 +696,9 @@ class BranchService:
         return targets, tips
 
     def _project_of(self, workspace: Workspace, item: str) -> Optional[Project]:
-        if item.startswith('tree:'):
-            record = self._record(item.removeprefix('tree:'))
+        if item.startswith(('tree:', 'work:')):
+            where = item.split(':', 2)[1] if item.startswith('work:') else item[5:]
+            record = self._record(where)
             return workspace.project(record.project) if record else None
         parts = item.split(':', 2)
         return workspace.project(parts[1]) if len(parts) == 3 else None

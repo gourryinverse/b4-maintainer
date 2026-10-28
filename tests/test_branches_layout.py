@@ -185,3 +185,130 @@ async def test_details_sit_under_the_list_and_a_star_marks_special_conditions(de
         await settle(pilot)
         assert 'Checked out' not in screen.details_text()
         assert 'b4/pa' in screen.details_text()
+
+
+class MailBranches(SectionBranches):
+    """A fixup and a pull-ahead in session s2's tree; messages built from scripted text."""
+
+    def __init__(self):
+        super().__init__()
+        self.built = []
+
+    def snapshot(self, workspace, trees=True):
+        import dataclasses
+
+        data = super().snapshot(workspace, trees)
+        pull = BranchItem('work:s2:b4m/pull-ahead/old', 'work', 'linux', 's2 pull-ahead/old · 1')
+        details = {
+            **data.details,
+            'work:s2:b4m/fixup/lock': (
+                DetailRow('fixup b4m/fixup/lock'),
+                DetailRow('  f1  mm: lock', 'f1', '/t', branch='b4m/fixup/lock'),
+            ),
+            pull.key: (
+                DetailRow('pull-ahead b4m/pull-ahead/old'),
+                DetailRow('  o1  mm: old bug', 'o1', '/t', branch='b4m/pull-ahead/old'),
+            ),
+        }
+        return dataclasses.replace(data, items=(*data.items, pull), details=details)
+
+    def fixup_target(self, workspace, item, branch):
+        return 'change-id:foo', 3
+
+    def patch_message(self, workspace, item, row, reply):
+        self.built.append((row.key, reply))
+        where = f'In-Reply-To: {reply.msgid}\n' if reply else ''
+        to = 'Contributor <c@example.org>' if reply else 'Maintainer <sub@example.org>'
+        return f'From: Me <me@example.org>\nTo: {to}\nSubject: [PATCH] mm: x\n{where}\nbody\n'
+
+
+def mail_app(demo_root, service, edited=None):
+    from b4_maintainer.patchmail import ReplyTo
+
+    app = make_app(demo_root, service)
+    sent = []
+    app.branch_mail_reply = lambda identity, counter: ReplyTo(
+        '<p3@example.org>', '<p3@example.org>', (('C', 'c@example.org'),), ()
+    )
+    app.edit_message = lambda text: edited if edited is not None else text
+    app.send_message = lambda project, text: sent.append((project, text)) or 'Sent'
+    return app, sent
+
+
+async def test_m_sends_a_fixup_as_a_reply_after_editing_and_a_confirmation(demo_root):
+    from b4_maintainer.app import Confirm
+
+    service = MailBranches()
+    app, sent = mail_app(demo_root, service, edited=None)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        screen.select_item('work:s2:b4m/fixup/lock')
+        await settle(pilot)
+        assert 'm' in footer_keys(screen)
+        await pilot.press('m')
+        await settle(pilot)
+        confirm = app.screen
+        assert isinstance(confirm, Confirm)
+        assert 'In reply to <p3@example.org>' in confirm.prompt
+        assert 'To: Contributor <c@example.org>' in confirm.prompt
+        assert 'Signed-off-by' in confirm.prompt  # The DCO: said before it goes.
+        await pilot.press('y')
+        await settle(pilot)
+        assert [(p, 'In-Reply-To: <p3@example.org>' in t) for p, t in sent] == [('linux', True)]
+        assert service.built[0][0] == 'f1' and service.built[0][1].msgid == '<p3@example.org>'
+        assert 'Sent' in screen.status_text()
+
+
+async def test_m_sends_a_pull_ahead_as_its_own_thread(demo_root):
+    service = MailBranches()
+    edited = 'From: Me <me@example.org>\nTo: Maintainer <sub@example.org>\nSubject: [PATCH] mm: y\n\nedited\n'
+    app, sent = mail_app(demo_root, service, edited=edited)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        screen.select_item('work:s2:b4m/pull-ahead/old')
+        await settle(pilot)
+        await pilot.press('m')
+        await settle(pilot)
+        assert 'new thread' in app.screen.prompt and '[PATCH] mm: y' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert sent == [('linux', edited)]  # What was saved in the editor goes.
+        assert service.built == [('o1', None)]
+
+
+async def test_a_fixup_replies_to_its_patch_with_its_recipients(demo_root):
+    import email.message
+    from types import SimpleNamespace
+
+    from b4_maintainer.adapters.fixture import FixtureSource
+    from b4_maintainer.app import MaintainerApp
+
+    class Actions:
+        def __init__(self):
+            self.asked = []
+
+        def prepare_reply(self, item, msgid):
+            self.asked.append(msgid)
+            msg = email.message.EmailMessage()
+            msg['From'] = 'Contributor One <c1@example.org>'
+            msg['To'] = 'Linux MM <linux-mm@kvack.org>'
+            msg['Cc'] = 'Reviewer <r@example.org>, Contributor One <c1@example.org>'
+            msg['References'] = '<cover@example.org>'
+            return SimpleNamespace(lmsg=SimpleNamespace(msg=msg))
+
+    source = FixtureSource(demo_root)
+    actions = Actions()
+    app = MaintainerApp(source.load, actions=actions)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        item = next(i for i in app.snapshot.items if len(i.series.patches) >= 2)
+        third = item.series.patches[1]
+        reply = app.branch_mail_reply(item.identity, third.counter)
+        assert actions.asked == [third.msgid]
+        assert reply.msgid == f'<{third.msgid}>'
+        assert reply.references.split()[-1] == f'<{third.msgid}>'
+        assert reply.to == (('Contributor One', 'c1@example.org'),)
+        assert ('Reviewer', 'r@example.org') in reply.cc
+        assert all(a[1] != 'c1@example.org' for a in reply.cc)
+        cover = app.branch_mail_reply(item.identity, None)  # No patch named: the cover.
+        assert cover.msgid == f'<{item.series.msgids[0]}>'

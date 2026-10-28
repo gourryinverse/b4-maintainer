@@ -227,8 +227,17 @@ Python 3.11 or newer.
   DCO), `o` previews exactly what would be sent (`b4 send -o`), `u` collects trailers
   from the list, `d` compares with the last sent revision, and `S` runs `b4 send` in the
   terminal, where b4 shows its summary and asks before anything goes out
-  (`--email-dry-run` and `--no-sign` pass through). All by running b4. `x` removes a prep
-  branch (`b4 prep --cleanup`, which archives it), another local branch, or a session tree,
+  (`--email-dry-run` and `--no-sign` pass through). All by running b4. `m` on a commit
+  mails it as one patch through b4 (as replies go: your identity, signing,
+  `--email-dry-run`): a fixup as a reply to the series patch it fixes (its manifest's
+  `fixes`, else the cover letter; To its author, Cc the rest), a pull-ahead as its own
+  thread addressed as b4 addresses a new patch (`send-auto-to/cc-cmd`, else
+  get_maintainer); any other commit asks which. An agent's commit goes as yours, with
+  `Assisted-by:` and your `Signed-off-by:`. The whole `.eml` opens in your editor first,
+  and it goes after a last look at Subject, To, and Cc. `x` removes a prep
+  branch (`b4 prep --cleanup`, which archives it), another local branch, session work
+  (an agent branch, not while its session is live), a tracked branch (back on refresh
+  only once its remote moves), or a session tree,
   after saying what goes; rebasing a base moves the prep branches cut from it. `p` onto
   another session's tree copies commits there (same branch names, authors kept, a note in
   that session's `context/inbox.md`): a fix back to the session that found the bug, or

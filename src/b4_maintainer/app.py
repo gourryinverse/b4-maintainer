@@ -3,6 +3,7 @@
 
 import dataclasses
 import datetime
+import email.utils
 import pathlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Protocol, Sequence
@@ -90,6 +91,7 @@ from .workspace import Snapshot, Workspace
 
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult  # b4: only when applying.
+    from .patchmail import ReplyTo
     from .workbench import WorkbenchService
 
 SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
@@ -148,6 +150,8 @@ class SourceActions(Protocol):
     def prepare_reply(self, item: WorkItem, msgid: str) -> Any: ...
 
     def answered(self, item: WorkItem, msgid: str) -> str: ...
+
+    def send_message(self, project_id: str, text: str) -> str: ...
 
 
 class SeriesList(ScrollView, can_focus=True):
@@ -2899,6 +2903,60 @@ class MaintainerApp(App[None]):
         if self._branches is None or self.snapshot is None:
             raise SessionError('branches are not available here')
         return self._branches, self.snapshot.workspace
+
+    def branch_mail_reply(self, identity: str, counter: Optional[int]) -> Optional['ReplyTo']:
+        """Where a fixup of series *identity* replies (blocking): its patch *counter*, else
+        its cover letter (or first patch; the .eml can be changed before it goes). A
+        workbench session's series: its workbench's first."""
+        from .patchmail import ReplyTo
+
+        snapshot, actions = self.snapshot, self._actions
+        if snapshot is None or actions is None:
+            return None
+        if identity.startswith('workbench:') and self._workbenches is not None:
+            bench = self._workbenches.store.get(identity.removeprefix('workbench:'))
+            found = [
+                i.series for e in (bench.entries if bench else ()) for i in e.items if i.series
+            ]
+            identity = found[0] if found else ''
+        item = snapshot.item_by_identity(identity)
+        if item is None:
+            return None
+        series = item.series
+        patch = next((p for p in series.patches if p.counter == counter), None)
+        msgid = patch.msgid if patch is not None else (series.msgids[0] if series.msgids else '')
+        if not msgid:
+            return None
+        lmsg = actions.prepare_reply(item, msgid).lmsg
+        headers = lmsg.msg
+        refs = str(headers.get('References', '') or '').split()
+        mid = f'<{msgid.strip("<>")}>'
+        author = email.utils.parseaddr(str(headers.get('From', '')))
+        others = email.utils.getaddresses(
+            [str(v) for h in ('To', 'Cc') for v in headers.get_all(h, [])]
+        )
+        return ReplyTo(
+            mid,
+            ' '.join(dict.fromkeys([*refs, mid])),
+            (author,),
+            tuple(a for a in others if a[1] and a[1] != author[1]),
+        )
+
+    def edit_message(self, text: str) -> Optional[str]:
+        """The message in the maintainer's editor (the app suspended); None if it could
+        not run."""
+        from b4.tui._common import suspend_and_edit
+
+        saved = suspend_and_edit(self, text.encode(), 'patch.eml')
+        return saved.decode(errors='replace') if saved is not None else None
+
+    def send_message(self, project: str, text: str) -> str:
+        """Send *text* through b4, the terminal handed over while it runs."""
+        actions = self._actions
+        if actions is None:
+            raise RuntimeError('sending needs a live workspace')
+        with self.suspend():
+            return actions.send_message(project, text)
 
     def bench_fold_plan(self, item: str, folded: str) -> FoldPlan:
         branches, workspace = self._bench_branches()

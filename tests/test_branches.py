@@ -768,3 +768,27 @@ def test_session_work_stays_while_its_session_is_live(ws, tmp_path):
     assert not ok and 'live' in note
     tree = tmp_path / 'ws' / 'var' / 'worktrees' / 's1'
     assert 'b4m/pull-ahead/leak' in git('branch', '--format=%(refname:short)', cwd=tree)
+
+
+def test_a_fixups_target_and_message_come_from_its_session(ws, tmp_path):
+    from b4_maintainer.patchmail import ReplyTo
+
+    service, workspace, project = ws
+    record = service._record('s1')
+    folded_work(
+        tmp_path / 'ws' / 'var' / 'worktrees' / 's1', record.worktree.base, record.worktree.applied
+    )
+    out = tmp_path / 'ws' / 'var' / 'sessions' / 's1' / 'work' / 'out' / 'artifacts.toml'
+    out.write_text(out.read_text() + FOLDED_MANIFEST)
+    key = 'work:s1:b4m/fixup/foo'
+    assert service.fixup_target(workspace, key, 'b4m/fixup/foo') == (record.series, 1)
+    data = service.snapshot(workspace, trees=False)
+    row = next(r for r in data.details[key] if is_commit(r))
+    reply = ReplyTo('<p1@example.org>', '<p1@example.org>', (('C', 'c@example.org'),), ())
+    text = service.patch_message(workspace, key, row, reply)
+    assert 'In-Reply-To: <p1@example.org>' in text and 'To: C <c@example.org>' in text
+    assert 'Subject: [PATCH] mm/foo: fix the series patch' in text
+    assert 'Signed-off-by: Example Maintainer <m@example.org>' in text
+    leak = next(r for r in data.details['work:s1:b4m/pull-ahead/leak'] if is_commit(r))
+    alone = service.patch_message(workspace, 'work:s1:b4m/pull-ahead/leak', leak, None)
+    assert 'In-Reply-To' not in alone and 'Subject: [PATCH] mm: fix the leak' in alone

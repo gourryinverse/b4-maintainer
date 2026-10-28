@@ -13,9 +13,11 @@ removes a prep branch (b4 prep --cleanup), a local branch, or a session tree, af
 what goes. F5 reloads; F3 or Escape returns to the series list.
 """
 
+import email
+import email.policy
 import pathlib
 import re
-from typing import TYPE_CHECKING, Mapping, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Protocol, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -45,6 +47,7 @@ from .workspace import Workspace
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult
     from .model import Series
+    from .patchmail import ReplyTo
 
 
 class Branches(Protocol):
@@ -84,6 +87,14 @@ class Branches(Protocol):
     ) -> CutResult: ...
 
     def branch_starts(self, workspace: Workspace, project_id: str) -> list[str]: ...
+
+    def fixup_target(
+        self, workspace: Workspace, item: str, branch: str
+    ) -> tuple[str, Optional[int]]: ...
+
+    def patch_message(
+        self, workspace: Workspace, item: str, row: DetailRow, reply: Optional['ReplyTo']
+    ) -> str: ...
 
     def new_branch(
         self, workspace: Workspace, project_id: str, name: str, start: str
@@ -268,6 +279,7 @@ class BranchesScreen(Screen[None]):
         Binding('space', 'mark', 'mark'),
         Binding('p', 'pluck', 'pluck'),
         Binding('b', 'new_branch', 'new branch'),
+        Binding('m', 'mail_patch', 'mail patch'),
         Binding('n', 'new_prep', 'new prep branch'),
         Binding('t', 'prep_run("auto-to-cc")', 'to/cc', show=False),
         Binding('c', 'prep_run("check")', 'check', show=False),
@@ -628,6 +640,8 @@ class BranchesScreen(Screen[None]):
             return bool(self._chosen())
         if action == 'new_branch':
             return bool(self._project())
+        if action == 'mail_patch':
+            return self._is_commit(self.selected_row()) and len(self._chosen()) == 1
         if action in ('fold', 'unfold'):
             return self.focused is self.query_one('#branch-items')
         if action == 'reap':
@@ -844,6 +858,90 @@ class BranchesScreen(Screen[None]):
             self.app.call_from_thread(self._acted, note)
 
         self.run_worker(work, thread=True, group='branches-act')
+
+    def action_mail_patch(self) -> None:
+        """m: one commit as a patch email through b4. A fixup replies to the series patch
+        it fixes; a pull-ahead (or a fix chosen as one) is its own thread, addressed as b4
+        addresses a new patch. The .eml opens in the editor; it goes after a last look."""
+        key, row = self.selected_item(), self.selected_row()
+        if key is None or row is None or not self._is_commit(row):
+            return
+        project = self._project()
+        reply_to: Any = getattr(self.app, 'branch_mail_reply', None)
+
+        def build(as_reply: bool) -> None:
+            def work() -> None:
+                try:
+                    reply = None
+                    if as_reply:
+                        identity, counter = self.service.fixup_target(
+                            self.workspace, key, row.branch
+                        )
+                        if reply_to is None or not identity:
+                            raise ValueError('no series to reply to for this commit')
+                        reply = reply_to(identity, counter)
+                        if reply is None:
+                            raise ValueError('the patch it fixes is not in the cache')
+                    text = self.service.patch_message(self.workspace, key, row, reply)
+                except Exception as exc:
+                    self.app.call_from_thread(self._status, f'Not mailed: {exc}')
+                    return
+                self.app.call_from_thread(edit, text)
+
+            self._status('Building the patch email…')
+            self.run_worker(work, thread=True, group='branches-act')
+
+        def edit(text: str) -> None:
+            editor: Any = getattr(self.app, 'edit_message', None)
+            edited = editor(text) if editor is not None else text
+            if not edited:
+                self._status('Not mailed')
+                return
+            confirm(edited)
+
+        def confirm(text: str) -> None:
+            from .app import Confirm
+
+            msg = email.message_from_string(text, policy=email.policy.default)
+            where = f'In reply to {msg["In-Reply-To"]}' if msg['In-Reply-To'] else 'As a new thread'
+            lines = [
+                f'Send {msg["Subject"]}?',
+                where,
+                f'To: {msg["To"] or "(nobody)"}',
+                *([f'Cc: {msg["Cc"]}'] if msg['Cc'] else []),
+                'It goes as you, with your Signed-off-by (you certify the DCO). [y|N]',
+            ]
+
+            def answered(yes: Optional[bool]) -> None:
+                if yes:
+                    send(text)
+
+            self.app.push_screen(Confirm('\n'.join(lines)), answered)
+
+        def send(text: str) -> None:
+            sender: Any = getattr(self.app, 'send_message', None)
+            if sender is None:
+                self._status('Not mailed: sending is not available here')
+                return
+            try:
+                self._status(sender(project, text))
+            except Exception as exc:
+                self._status(f'Not sent: {exc}')
+
+        kind = row.branch.removeprefix('b4m/').split('/', 1)[0] if row.branch else ''
+        if kind == 'fixup':
+            build(True)
+        elif kind == 'pull-ahead':
+            build(False)
+        else:
+            choices = [
+                ('reply', 'A fixup: a reply to the series patch it fixes'),
+                ('thread', 'A fix of its own: a new thread, addressed as b4 does'),
+            ]
+            self.app.push_screen(
+                Pick('Send this commit as', choices),
+                lambda way: way and build(way == 'reply'),
+            )
 
     def action_new_branch(self) -> None:
         """b: a plain branch of the selected project, at a base, an upstream, a prep

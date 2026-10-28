@@ -676,6 +676,38 @@ class LiveSource:
         sign = not self.no_sign and b4state.patatt_sign_default()
         return ReplyTarget(lmsg, checkout, self.email_dryrun, sign)
 
+    def send_message(self, project_id: str, text: str) -> str:
+        """Send a message the maintainer wrote (e.g. a patch from Branches) through b4,
+        as replies go: the project's b4 identity and SMTP, signing, --email-dry-run."""
+        import email
+        import email.policy
+
+        import b4
+        from b4.review.messages import mark_outgoing_seen
+
+        project = self.workspace().project(project_id)
+        if project is None:
+            raise RuntimeError(f'no project {project_id}')
+        msg = email.message_from_string(text, policy=email.policy.default)
+        b4state.activate(self.checkout(project))
+        sign = not self.no_sign and b4state.patatt_sign_default()
+        smtp, fromaddr = b4.get_smtp(dryrun=self.email_dryrun)
+        sent = b4.send_mail(
+            smtp,
+            [msg],  # type: ignore[list-item]
+            fromaddr=fromaddr,
+            patatt_sign=sign,
+            dryrun=self.email_dryrun,
+            output_dir=None,
+            reflect=False,
+        )
+        if sent is None:
+            raise RuntimeError('b4 could not send it')
+        if self.email_dryrun:
+            return f'Dry-run: {msg["Subject"]} logged, not sent'
+        mark_outgoing_seen([msg])  # type: ignore[list-item]
+        return f'Sent {msg["Subject"]}'
+
     def answered(self, item: WorkItem, msgid: str) -> str:
         project = self.workspace().project(item.project)
         if project is not None:
