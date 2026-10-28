@@ -725,3 +725,44 @@ def test_an_untagged_series_goes_to_the_project_holding_its_files(tmp_path):
     assert {i.series.subject: i.project for i in source.load().items} == {
         k: v.project for k, v in items.items()
     }
+
+
+def test_refresh_fetches_and_tracks_the_configured_remote_branches(tmp_path):
+    from gitutil import git
+
+    root = tmp_path / 'ws'
+    remote = make_checkout(tmp_path / 'remote')
+    git('switch', '-q', '-c', 'scratch/me/try', cwd=remote)
+    (remote / 't.c').write_text('t\n')
+    git('add', '-A', cwd=remote)
+    git('-c', 'user.name=M', '-c', 'user.email=m@example.org', 'commit', '-qm', 't', cwd=remote)
+    git('switch', '-q', 'master', cwd=remote)
+    (root / 'projects').mkdir(parents=True)
+    git('clone', '-q', str(remote), str(root / 'projects' / 'demo'), cwd=tmp_path)
+    (root / 'workspace.toml').write_text(
+        CONFIG.replace(
+            'lists = ["linux-mm@kvack.org", "linux-cxl@vger.kernel.org"]',
+            'lists = ["linux-mm@kvack.org", "linux-cxl@vger.kernel.org"]\n'
+            'track_branches = ["origin/scratch/me/*"]',
+            1,
+        )
+    )
+    fakes = Fakes()
+    source = LiveSource(
+        root,
+        tracked_series=fakes.tracked_series,
+        search_for=fakes.search_for,
+        track=fakes.track,
+        b4_command=['b4'],
+        now=lambda: NOW,
+        identity=lambda checkout: None,
+    )
+    git('switch', '-q', 'scratch/me/try', cwd=remote)
+    (remote / 'u.c').write_text('u\n')
+    git('add', '-A', cwd=remote)
+    git('-c', 'user.name=M', '-c', 'user.email=m@example.org', 'commit', '-qm', 'u', cwd=remote)
+    source.refresh()
+    checkout = root / 'projects' / 'demo'
+    assert git('rev-parse', 'scratch/me/try', cwd=checkout) == git(
+        'rev-parse', 'scratch/me/try', cwd=remote
+    )

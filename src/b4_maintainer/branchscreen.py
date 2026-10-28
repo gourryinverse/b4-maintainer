@@ -216,14 +216,23 @@ class Pick(ModalScreen[Optional[str]]):
 
 # The sections of a project, in order: (item kind, heading).
 SECTIONS = (
-    ('base', 'Bases'),
-    ('tree', 'Rebase and apply sessions'),
-    ('prep', 'Prep'),
-    ('work', 'Session work'),
-    ('review', 'Review'),
-    ('branch', 'Other'),
-    ('worktree', 'Checkouts'),
+    (('base', 'baseref'), 'Bases'),
+    (('tree',), 'Rebase and apply sessions'),
+    (('prep',), 'Prep'),
+    (('work',), 'Session work'),
+    (('review',), 'Review'),
+    (('branch',), 'Other'),
+    (('worktree',), 'Checkouts'),
 )
+
+
+def _section(kind: str) -> str:
+    """The section an item kind is listed in, by its first kind (its heading's name)."""
+    return next((kinds[0] for kinds, _title in SECTIONS if kind in kinds), kind)
+
+
+def _kinds(section: str) -> tuple[str, ...]:
+    return next((kinds for kinds, _title in SECTIONS if kinds[0] == section), (section,))
 
 
 class BranchesScreen(Screen[None]):
@@ -286,8 +295,10 @@ class BranchesScreen(Screen[None]):
         self._marks: set[int] = set()  # Marked commit rows of the selected item.
         self._pinned = ''  # Shown on the right after the next reload instead of the row.
         self.stale = False  # Set when the app switches back to this tab.
-        # Folded headings: a project (its id) or a section (<project>:<kind>).
+        # Folded headings: a project (its id) or a section (<project>:<kind>). Every
+        # heading starts folded; those seen are in _known, so unfolding is kept.
         self._folded: set[str] = set()
+        self._known: set[str] = set()
         self._select = ''  # The item (or h:<heading>) to select after the next reload.
         self._details = ''  # The details pane's text.
 
@@ -346,8 +357,12 @@ class BranchesScreen(Screen[None]):
     def _fill(self, select: str) -> None:
         """The list: each project, its sections (folded ones closed), their branches;
         *select* (an item key, or h:<heading>) highlighted, else the heading folding it
-        away, else the first branch."""
+        away, else the first row."""
         items = self.query_one('#branch-items', OptionList)
+        headings = {i.project for i in self.data.items}
+        headings |= {f'{i.project}:{_section(i.kind)}' for i in self.data.items}
+        self._folded |= headings - self._known  # New headings start folded.
+        self._known |= headings
         ids: list[str] = []
         options: list[Option] = []
         projects = list(dict.fromkeys(i.project for i in self.data.items))
@@ -358,11 +373,11 @@ class BranchesScreen(Screen[None]):
             ids.append(f'h:{project}')
             if closed:
                 continue
-            for kind, title in SECTIONS:
-                group = [i for i in mine if i.kind == kind]
+            for kinds, title in SECTIONS:
+                group = [i for i in mine if i.kind in kinds]
                 if not group:
                     continue
-                heading = f'{project}:{kind}'
+                heading = f'{project}:{kinds[0]}'
                 shut = heading in self._folded
                 mark = '▸' if shut else '▾'
                 options.append(Option(f'  {mark} {title} ({len(group)})', id=f'h:{heading}'))
@@ -378,7 +393,7 @@ class BranchesScreen(Screen[None]):
             items.add_options(options)
             target = select if select in ids else self._folding(select)
             if target not in ids:
-                target = next((i for i in ids if not i.startswith('h:')), ids[0] if ids else '')
+                target = ids[0] if ids else ''
             items.highlighted = ids.index(target) if target in ids else None
         self._show_rows()
 
@@ -389,7 +404,7 @@ class BranchesScreen(Screen[None]):
             return ''
         if item.project in self._folded:
             return f'h:{item.project}'
-        return f'h:{item.project}:{item.kind}'
+        return f'h:{item.project}:{_section(item.kind)}'
 
     def _status(self, text: str) -> None:
         self._status_text = text
@@ -414,9 +429,18 @@ class BranchesScreen(Screen[None]):
         return current[2:] if current.startswith('h:') else None
 
     def select_item(self, key: str) -> None:
-        self._highlight(key)
+        """Select *key*, unfolding its project and section."""
+        item = next((i for i in self.data.items if i.key == key), None)
+        if item is not None:
+            self._folded -= {item.project, f'{item.project}:{_section(item.kind)}'}
+            self._fill(key)
 
     def select_heading(self, heading: str) -> None:
+        """Select *heading* (a project, or <project>:<kind>), unfolding its project."""
+        project = heading.split(':', 1)[0]
+        if project in self._folded and project != heading:
+            self._folded.discard(project)
+            self._fill(f'h:{heading}')
         self._highlight(f'h:{heading}')
 
     def _highlight(self, option_id: str) -> None:
@@ -451,7 +475,7 @@ class BranchesScreen(Screen[None]):
         key, heading = self.selected_item(), self.selected_heading()
         if key is not None:
             item = next(i for i in self.data.items if i.key == key)
-            heading = f'{item.project}:{item.kind}'
+            heading = f'{item.project}:{_section(item.kind)}'
         elif heading is not None and heading in self._folded and ':' in heading:
             heading = heading.split(':', 1)[0]
         if heading is None:
@@ -495,7 +519,9 @@ class BranchesScreen(Screen[None]):
         elif heading is not None:
             project, _, kind = heading.partition(':')
             group = [
-                i for i in self.data.items if i.project == project and (not kind or i.kind == kind)
+                i
+                for i in self.data.items
+                if i.project == project and (not kind or i.kind in _kinds(kind))
             ]
             flagged = sum(i.flagged for i in group)
             details = f'{len(group)} listed' + (

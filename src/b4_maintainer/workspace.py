@@ -88,6 +88,8 @@ PROJECT_KEYS = frozenset(
         'get_maintainer',
         'bases',
         'subject_tags',
+        'base_refs',
+        'track_branches',
     }
 )
 PROFILE_KEYS = frozenset({'id', 'label', 'project', 'lists', 'paths', 'enabled'})
@@ -186,6 +188,11 @@ class Project:
     # Subject prefix tags (e.g. "ndctl" for "[ndctl PATCH]"): a series carrying one is this
     # project's whatever its lists; a project with tags takes only tagged series.
     subject_tags: tuple[str, ...] = ()
+    # Ref globs (e.g. a remote's release branches) whose matches are read-only bases:
+    # starts for trees, prep branches, and new branches. Private: in var/workspace.toml.
+    base_refs: tuple[str, ...] = ()
+    # Remote branch globs (e.g. origin/scratch/<user>/*) each given a local branch.
+    track_branches: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -265,6 +272,8 @@ class Workspace:
                     MaintainerBase(str(b['branch']), str(b['upstream'])) for b in p.get('bases', [])
                 ),
                 subject_tags=tuple(str(tag).lower() for tag in p.get('subject_tags', [])),
+                base_refs=tuple(str(r) for r in p.get('base_refs', [])),
+                track_branches=tuple(str(r) for r in p.get('track_branches', [])),
             )
             for p in config.get('projects', [])
         )

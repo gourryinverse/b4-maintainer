@@ -165,6 +165,12 @@ Python 3.11 or newer.
   e.g. `[sessions] max_builds` or a checkout's `path`: tables merge key by key,
   `[[projects]]`, `[[profiles]]`, and `[[models]]` entries by `id` (a new `id` is added);
   any other value it sets replaces the shared one. `project add` writes the shared file.
+  Private settings go here: a project's `base_refs` (ref globs, e.g.
+  `["origin/v*-x"]`: each match is a read-only base, listed on F4 and offered as a
+  start for trees, prep branches, and new branches) and `track_branches` (remote branch
+  globs, e.g. `["origin/scratch/<you>/*"]`: `F5` fetches their remote and keeps a local
+  branch for each, fast-forwarded when not checked out, listed under Other; nothing is
+  pushed).
 - `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
 - `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
   existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
@@ -199,8 +205,8 @@ Python 3.11 or newer.
   conflict changes nothing). In the app, `F4` in a thread shows what its sessions
   produced (their initial prompts, commits, results, reproducers) in place of the content
   (`F4` or Escape returns), and elsewhere opens the Branches tab:
-  each project in folding sections (← folds, → unfolds, Enter toggles; folds stay
-  across reloads): Bases, Rebase and apply sessions, Prep, Session work (every session
+  each project in folding sections, starting folded (← folds, → unfolds, Enter
+  toggles; kept across reloads): Bases, Rebase and apply sessions, Prep, Session work (every session
   tree's agent branches: pull-ahead, fixup, folded, tests), Review, Other (local
   branches with work not on any remote, and those made with `b`), and Checkouts. Labels
   stay short; the Details pane under the list says the rest (upstream, how far behind,

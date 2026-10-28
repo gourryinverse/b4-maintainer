@@ -52,6 +52,8 @@ from .adapters.prep import (
     run_b4,
     sign_off,
 )
+from .adapters.scratch import base_refs as match_refs
+from .adapters.scratch import tracked_branches
 from .attachments import Attachment, preview
 from .sessions.artifacts import Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
@@ -220,6 +222,14 @@ class BranchService:
                     BranchItem(key, 'base', project.id, _base_label(status), info, flagged)
                 )
                 details[key] = _base_rows(status, repo)
+            for ref in base_refs(repo, project):
+                key = f'baseref:{project.id}:{ref}'
+                info = (
+                    f'{ref}: a read-only base (base_refs)',
+                    'Start trees, prep branches (P, n), and new branches (b) here',
+                )
+                items.append(BranchItem(key, 'baseref', project.id, ref, info))
+                details[key] = _recent_rows(repo, ref)
             checked_out = set()
             for path, branch in _worktrees(repo):
                 key = f'worktree:{project.id}:{path}'
@@ -261,6 +271,8 @@ class BranchService:
                 problems.append(f'{project.id}: {ex}')
                 continue
             made_here = _pluck_branches(repo)
+            tracked = tracked_branches(repo)
+            beyond = _own_bases(repo, project)
             names_list = names.split()
             prep = [n for n in names_list if n.startswith('b4/') and not n.startswith('b4/review/')]
             review = [n for n in names_list if n.startswith('b4/review/')]
@@ -273,6 +285,18 @@ class BranchService:
             for kind, group in (('prep', prep), ('review', review), ('branch', other)):
                 for name in group:
                     key = f'{kind}:{project.id}:{name}'
+                    if kind == 'branch' and name in tracked:
+                        rows = _beyond_rows(repo, name, beyond)
+                        commits = sum(1 for r in rows if r.key and not r.show_text)
+                        upstream = _upstream(repo, name)
+                        info = (
+                            f'Tracks {upstream or "a remote branch (gone)"} (track_branches)',
+                            f'{_count(commits, "commit")} beyond the bases and refs',
+                        )
+                        label = f'{name} · {_count(commits, "commit")}'
+                        items.append(BranchItem(key, kind, project.id, label, info, not upstream))
+                        details[key] = rows
+                        continue
                     rows = _prep_rows(repo, name) if kind == 'prep' else _unpushed_rows(repo, name)
                     commits = sum(1 for r in rows if r.key and not r.show_text)
                     if kind == 'branch' and not commits and name not in made_here:
@@ -395,6 +419,7 @@ class BranchService:
         if project is None:
             return []
         starts = [b.branch for b in project.bases] + [b.upstream for b in project.bases]
+        starts += base_refs(self.root / project.path, project)
         starts += _prep_branches(self.root / project.path)
         return list(dict.fromkeys(s for s in starts if s))
 
@@ -917,6 +942,7 @@ class BranchService:
             return []
         points = [b.upstream for b in project.bases] + [b.branch for b in project.bases]
         points += [r.name for r in project.refs]
+        points += base_refs(self.root / project.path, project)
         return list(dict.fromkeys(points))
 
     def _prep_worktree(self, project: Project, branch: str) -> pathlib.Path:
@@ -1568,3 +1594,55 @@ def _short_path(path: pathlib.Path, root: Optional[pathlib.Path]) -> str:
         return str(resolved.relative_to(root.resolve()))
     home = pathlib.Path.home()
     return f'~/{resolved.relative_to(home)}' if resolved.is_relative_to(home) else str(path)
+
+
+def base_refs(repo: pathlib.Path, project: Project) -> list[str]:
+    """The refs matching the project's base_refs globs (read-only bases), sorted."""
+    return match_refs(repo, project.base_refs)
+
+
+def _recent_rows(repo: pathlib.Path, ref: str, limit: int = 20) -> tuple[DetailRow, ...]:
+    """A read-only base: its latest commits."""
+    try:
+        log = _git(repo, 'log', f'-{limit}', '--format=%H%x00%s', ref)
+    except OSError as ex:
+        return (DetailRow(f'  ! {ex}'),)
+    rows = [DetailRow(f'Latest on {ref}')]
+    for line in log.splitlines():
+        sha, _, subject = line.partition('\x00')
+        rows.append(_commit_row(sha, subject, repo))
+    return tuple(rows)
+
+
+def _own_bases(repo: pathlib.Path, project: Project) -> list[str]:
+    """What a tracked branch's own commits are counted beyond: the bases, their
+    upstreams, the base refs, and the project's refs."""
+    found = [b.branch for b in project.bases] + [b.upstream for b in project.bases]
+    found += [r.name for r in project.refs] + base_refs(repo, project)
+    return [f for f in dict.fromkeys(found) if f]
+
+
+def _beyond_rows(repo: pathlib.Path, branch: str, beyond: Sequence[str]) -> tuple[DetailRow, ...]:
+    existing = []
+    for ref in beyond:
+        try:
+            _git(repo, 'rev-parse', '--verify', '--quiet', f'{ref}^{{commit}}')
+            existing.append(ref)
+        except OSError:
+            pass
+    try:
+        log = _git(repo, 'log', f'-{LIST_LIMIT}', '--format=%H%x00%s', branch, '--not', *existing)
+    except OSError as ex:
+        return (DetailRow(f'  ! {ex}'),)
+    rows = [DetailRow('Its own commits')]
+    for line in log.splitlines():
+        sha, _, subject = line.partition('\x00')
+        rows.append(_commit_row(sha, subject, repo))
+    return tuple(rows)
+
+
+def _upstream(repo: pathlib.Path, branch: str) -> str:
+    try:
+        return _git(repo, 'rev-parse', '--abbrev-ref', f'{branch}@{{upstream}}').strip()
+    except OSError:
+        return ''

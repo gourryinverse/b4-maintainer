@@ -424,6 +424,11 @@ class WorkbenchService:
             (b.branch, f'{b.branch}  (maintainer base on {b.upstream})') for b in found.bases
         ]
         choices += [(r.name, f'{r.name}  ({r.authority.name.lower()})') for r in found.refs]
+        repo = self._repo(workspace, project)
+        if repo is not None:
+            from .adapters.scratch import base_refs
+
+            choices += [(r, f'{r}  (read-only base)') for r in base_refs(repo, found.base_refs)]
         choices.append(('HEAD', "HEAD  (the checkout's)"))
         return list({v: (v, label) for v, label in choices}.values())
 

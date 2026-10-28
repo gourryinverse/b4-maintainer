@@ -661,3 +661,58 @@ def test_a_base_checked_out_somewhere_says_so_in_its_details(ws):
     base = service.snapshot(workspace, trees=False).items[0]
     assert base.label == 'me/base · 1 commit' and base.flagged
     assert any(line.startswith('Checked out in projects/linux') for line in base.info)
+
+
+def private_ws(project):
+    return Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': 'linux',
+                    'path': 'projects/linux',
+                    'bases': [{'branch': 'me/base', 'upstream': 'up/stable'}],
+                    'base_refs': ['up/v*-x'],
+                    'track_branches': ['up/scratch/me/*'],
+                }
+            ]
+        }
+    )
+
+
+def test_base_refs_are_read_only_bases_and_starts(ws):
+    service, _workspace, project = ws
+    for name in ('v1-x', 'v2-x', 'other'):
+        git('update-ref', f'refs/remotes/up/{name}', 'up/stable', cwd=project)
+    workspace = private_ws(project)
+    data = service.snapshot(workspace, trees=False)
+    refs = [i for i in data.items if i.kind == 'baseref']
+    assert [i.key for i in refs] == ['baseref:linux:up/v1-x', 'baseref:linux:up/v2-x']
+    assert any('read-only' in line for line in refs[0].info)
+    assert service.branch_starts(workspace, 'linux')[:4] == [
+        'me/base',
+        'up/stable',
+        'up/v1-x',
+        'up/v2-x',
+    ]
+    assert 'up/v2-x' in service.fork_points(workspace, 'base:linux:me/base')
+    assert not service.reapable(data, 'baseref:linux:up/v1-x')
+
+
+def test_tracked_branches_are_listed_with_their_own_commits(ws):
+    from b4_maintainer.adapters.scratch import track_branches
+
+    service, _workspace, project = ws
+    git('switch', '-q', '--detach', 'up/stable', cwd=project)
+    mine = commit(project, 's.c', 's\n', 'mm: scratch work')
+    git('switch', '-q', 'main', cwd=project)
+    git('update-ref', 'refs/remotes/up/scratch/me/try', mine, cwd=project)
+    git('remote', 'add', 'up', str(project), cwd=project)  # As a real checkout has.
+    assert track_branches(project, ['up/scratch/me/*']) == (['scratch/me/try'], [])
+    data = service.snapshot(private_ws(project), trees=False)
+    key = 'branch:linux:scratch/me/try'
+    item = {i.key: i for i in data.items}[key]
+    assert item.label == 'scratch/me/try · 1 commit'
+    assert any('Tracks up/scratch/me/try' in line for line in item.info)
+    assert [r.text.split('  ')[-1] for r in data.details[key] if is_commit(r)] == [
+        'mm: scratch work'
+    ]

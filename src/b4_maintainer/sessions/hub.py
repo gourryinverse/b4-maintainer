@@ -538,8 +538,17 @@ class SessionHub:
             worktree_bytes=overview.worktree_bytes,
             worktree_reason=reason,
             skills=tuple(skills),
-            bases=() if reason or not bases else tuple(self.bases(project)),
+            bases=() if reason or not bases else tuple(self._base_suggestions(workspace, project)),
         )
+
+    def _base_suggestions(self, workspace: Workspace, project: str) -> list[str]:
+        """b4's suggestions, then the project's base refs (read-only bases)."""
+        from ..adapters.scratch import base_refs
+
+        found = workspace.project(project)
+        checkout = self.worktrees.checkout(project)
+        extra = base_refs(pathlib.Path(checkout), found.base_refs) if found and checkout else []
+        return list(dict.fromkeys([*self.bases(project), *extra]))
 
     def bases(self, project: str) -> Sequence[str]:
         """Suggested bases for a worktree session of the project's series; none on error."""

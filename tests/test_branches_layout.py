@@ -60,18 +60,23 @@ async def test_projects_are_listed_in_titled_sections(demo_root):
     app = make_app(demo_root, SectionBranches())
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_branches(pilot)
+        assert [label.strip() for label in screen.item_labels()] == ['▸ linux']  # Folded.
+        await pilot.press('right')  # The project: its sections, still folded.
+        await settle(pilot)
         labels = [label.strip() for label in screen.item_labels()]
         assert labels[0] == '▾ linux'
         for heading in (
-            '▾ Bases (1)',
-            '▾ Rebase and apply sessions (1)',
-            '▾ Prep (1)',
-            '▾ Session work (1)',
-            '▾ Other (1)',
+            '▸ Bases (1)',
+            '▸ Rebase and apply sessions (1)',
+            '▸ Prep (1)',
+            '▸ Session work (1)',
+            '▸ Other (1)',
         ):
             assert heading in labels, heading
-        assert labels.index('▾ Prep (1)') < labels.index('▾ Session work (1)')
-        assert screen.selected_item() == 'base:linux:me/base'  # The first branch.
+        assert labels.index('▸ Prep (1)') < labels.index('▸ Session work (1)')
+        screen.select_item('base:linux:me/base')  # Selecting unfolds its section.
+        await settle(pilot)
+        assert '▾ Bases (1)' in [label.strip() for label in screen.item_labels()]
         titles = [str(screen.query_one(f'#{p}').border_title) for p in ('branch-items',)]
         assert titles == ['Branches']
         assert 'me/base' in str(screen.query_one('#branch-rows').border_title)
@@ -108,6 +113,8 @@ async def test_the_footer_shows_the_selected_kinds_keys(demo_root):
     app = make_app(demo_root, SectionBranches())
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_branches(pilot)
+        screen.select_item('base:linux:me/base')
+        await settle(pilot)
         keys = footer_keys(screen)
         assert 'r' in keys and 'S' not in keys  # A base: rebase, not send.
         screen.select_item('prep:linux:b4/pa')
@@ -167,6 +174,8 @@ async def test_details_sit_under_the_list_and_a_star_marks_special_conditions(de
     app = make_app(demo_root, FlaggedBranches())
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_branches(pilot)
+        screen.select_item('base:linux:me/base')
+        await settle(pilot)
         labels = [label.strip() for label in screen.item_labels()]
         assert 'me/base · 2 commits *' in labels  # Short, marked; no wrapping details.
         assert str(screen.query_one('#branch-info').border_title) == 'Details'

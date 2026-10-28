@@ -427,3 +427,21 @@ def test_a_profile_named_like_its_project_stands_in_for_the_project_view():
     labels = [v.label for v in ViewIndex(ws, ()).views]
     assert labels.count('ndctl') == 1 and 'profile:ndctl' in [v.id for v in ViewIndex(ws, ()).views]
     assert 'Linux' in labels and 'MM' in labels  # Different labels: both kept.
+
+
+def test_a_project_may_name_base_refs_and_branches_to_track():
+    ws = Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': 'linux',
+                    'base_refs': ['origin/v*-x'],
+                    'track_branches': ['origin/scratch/me/*'],
+                }
+            ]
+        }
+    )
+    project = ws.project('linux')
+    assert ws.warnings == ()
+    assert project.base_refs == ('origin/v*-x',)
+    assert project.track_branches == ('origin/scratch/me/*',)

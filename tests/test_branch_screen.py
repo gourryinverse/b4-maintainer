@@ -165,6 +165,8 @@ async def test_f3_opens_the_branches_screen_and_escape_returns(demo_root):
         await settle(pilot)
         await pilot.press('f4')
         await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
+        await settle(pilot)
         screen = app.screen
         assert isinstance(screen, BranchesScreen)
         assert screen.selected_item() == 'base:linux:me/base'
@@ -188,6 +190,8 @@ async def test_r_rebases_the_selected_base_after_a_confirmation(demo_root):
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         await pilot.press('f4')
+        await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
         await settle(pilot)
         await pilot.press('r')
         await settle(pilot)
@@ -216,6 +220,8 @@ async def test_a_failed_rebase_names_the_commit(demo_root):
         await settle(pilot)
         await pilot.press('f4')
         await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
+        await settle(pilot)
         await pilot.press('r')
         await settle(pilot)
         await pilot.press('y')
@@ -229,6 +235,8 @@ async def test_r_is_only_for_bases_and_f3_only_with_a_branch_service(demo_root):
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         await pilot.press('f4')
+        await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
         await settle(pilot)
         await pilot.press('down')
         await settle(pilot)
@@ -252,6 +260,8 @@ async def test_f3_toggles_back_and_b_does_not_open_it(demo_root):
         assert not isinstance(app.screen, BranchesScreen)
         await pilot.press('f4')
         await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
+        await settle(pilot)
         assert isinstance(app.screen, BranchesScreen)
         await pilot.press('f2')
         await settle(pilot)
@@ -265,6 +275,8 @@ async def test_a_failed_rebase_offers_a_rebase_session_after_a_confirmation(demo
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         await pilot.press('f4')
+        await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
         await settle(pilot)
         await pilot.press('a')  # Nothing failed yet: not offered.
         await settle(pilot)
@@ -295,6 +307,8 @@ async def test_a_on_a_rebase_sessions_tree_accepts_its_result(demo_root):
         await settle(pilot)
         await pilot.press('f4')
         await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
+        await settle(pilot)
         await pilot.press('A')  # A base, not a rebase session: nothing.
         await settle(pilot)
         assert not isinstance(app.screen, Confirm)
@@ -312,6 +326,8 @@ async def test_a_on_a_rebase_sessions_tree_accepts_its_result(demo_root):
 async def open_tree_rows(pilot):
     await settle(pilot)
     await pilot.press('f4')
+    await settle(pilot)
+    pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
     await settle(pilot)
     pilot.app.screen.select_item('tree:s1')
     await settle(pilot)
@@ -400,6 +416,8 @@ async def test_t_and_c_run_b4_on_a_prep_branch_and_show_its_output(demo_root):
         await settle(pilot)
         await pilot.press('f4')
         await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
+        await settle(pilot)
         await pilot.press('t')  # A base: not a prep branch.
         await settle(pilot)
         assert service.runs == []
@@ -434,6 +452,8 @@ async def test_e_edits_the_cover_with_b4_while_the_app_is_suspended(demo_root, m
         await settle(pilot)
         await pilot.press('f4')
         await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
+        await settle(pilot)
         app.screen.select_item('prep:linux:b4/pa')
         await settle(pilot)
         await pilot.press('e')
@@ -452,6 +472,8 @@ async def test_e_edits_the_cover_with_b4_while_the_app_is_suspended(demo_root, m
 async def open_prep(pilot):
     await settle(pilot)
     await pilot.press('f4')
+    await settle(pilot)
+    pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
     await settle(pilot)
     pilot.app.screen.select_item('prep:linux:b4/pa')
     await settle(pilot)
@@ -548,6 +570,8 @@ async def test_a_rebase_says_which_prep_branches_moved_and_which_stayed(demo_roo
         await settle(pilot)
         await pilot.press('f4')
         await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
+        await settle(pilot)
         await pilot.press('r')
         await settle(pilot)
         await pilot.press('y')
@@ -563,6 +587,8 @@ async def test_x_removes_after_saying_what_goes_and_asks_twice_for_changes(demo_
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         await pilot.press('f4')
+        await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
         await settle(pilot)
         await pilot.press('x')  # A base: not removable here.
         await settle(pilot)
@@ -635,6 +661,8 @@ async def test_d_derives_a_session_starting_where_chosen(demo_root, tmp_path):
             make_record('s1', series=item.identity, subject=item.series.subject), alive=False
         )
         await pilot.press('f4')
+        await settle(pilot)
+        pilot.app.screen.select_item('base:linux:me/base')  # F4 starts folded.
         await settle(pilot)
         app.screen.select_item('tree:s1')
         await settle(pilot)

@@ -33,6 +33,7 @@ from .drafts import DraftStore
 from .lorelist import MailCache, MessageInfo, Search
 from .maintainers import OwnerCache, author_roles
 from .sashiko import SashikoCache
+from .scratch import track_branches
 from .treematch import RefCache
 
 
@@ -398,11 +399,18 @@ class LiveSource:
         scanned = 0
         failures: list[str] = []
         for project in ws.projects:
-            if project.refs and self._enrolled(project):
+            wanted = project.refs or project.base_refs or project.track_branches
+            if wanted and self._enrolled(project):
                 if ws.fetch_refs:
                     failures += self._fetch_ref_remotes(project, progress)
-                progress(f'Checking refs for {project.id}…')
-                scanned += self.refs(project).update(project.refs, since)
+                if project.track_branches:
+                    _moved, problems = track_branches(
+                        self.checkout(project), project.track_branches
+                    )
+                    failures += [f'{project.id}: {p}' for p in problems]
+                if project.refs:
+                    progress(f'Checking refs for {project.id}…')
+                    scanned += self.refs(project).update(project.refs, since)
         result = f'; {scanned} refs scanned' if scanned else ''
         return result + ''.join(f'; {f}' for f in failures)
 
@@ -416,7 +424,8 @@ class LiveSource:
             ['git', '-C', str(checkout), 'remote'], capture_output=True, text=True, check=False
         )
         remotes = set(listed.stdout.split())
-        wanted = dict.fromkeys(r.name.split('/', 1)[0] for r in project.refs if '/' in r.name)
+        names = [r.name for r in project.refs] + [*project.base_refs, *project.track_branches]
+        wanted = dict.fromkeys(n.split('/', 1)[0] for n in names if '/' in n)
         failures = []
         for remote in (r for r in wanted if r in remotes):
             progress(f'Fetching {remote} for {project.id}…')
