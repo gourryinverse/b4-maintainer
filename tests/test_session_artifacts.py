@@ -49,6 +49,7 @@ def test_a_valid_manifest_loads(tmp_path):
         'reproducer',
         'analysis',
         'diff',
+        'folded',
     }
 
 
@@ -139,3 +140,78 @@ def test_every_session_learns_to_record_artifacts():
     assert 'out/artifacts.toml' in text and '`diff`' in text and 'analysis' in text
     branches = (SKILLS / 'b4m-branches' / 'SKILL.md').read_text()
     assert 'b4m-artifacts' in branches  # The branches skill points at it for the manifest.
+
+
+FOLDED = """
+[[artifact]]
+kind = "fixup"
+title = "mm/foo: keep the lock across the retry"
+summary = "Patch 3 drops the lock before retrying."
+branch = "b4m/fixup/foo-lock"
+fixes = "3"
+
+[[artifact]]
+kind = "pull-ahead"
+title = "mm: fix an old leak"
+summary = "Already upstream."
+branch = "b4m/pull-ahead/leak"
+
+[[artifact]]
+kind = "folded"
+title = "The series with its fixups folded in"
+summary = "Patch 3 takes the lock fix; the leak fix leads (patch 2 conflicts without it)."
+branch = "b4m/folded/v4"
+needs = ["b4m/pull-ahead/leak"]
+tested = "built; vng boot; selftests/mm pass"
+"""
+BRANCHES = {'b4m/fixup/foo-lock', 'b4m/pull-ahead/leak', 'b4m/folded/v4'}
+
+
+def test_a_folded_series_names_what_it_needs_and_fixups_name_their_patch(tmp_path):
+    out = write(tmp_path, FOLDED)
+    found, problems = load_artifacts(out, BRANCHES)
+    assert problems == []
+    fixup, _pull, folded = found
+    assert fixup.fixes == '3' and folded.needs == ('b4m/pull-ahead/leak',)
+    assert folded.branch == 'b4m/folded/v4' and folded.kind == 'folded'
+
+
+def test_needs_and_fixes_are_checked(tmp_path):
+    bad = FOLDED.replace('needs = ["b4m/pull-ahead/leak"]', 'needs = ["b4m/pull-ahead/gone"]')
+    bad += """
+[[artifact]]
+kind = "pull-ahead"
+title = "misplaced"
+summary = "x"
+branch = "b4m/pull-ahead/leak"
+fixes = "2"
+
+[[artifact]]
+kind = "fixup"
+title = "a list"
+summary = "x"
+branch = "b4m/fixup/foo-lock"
+needs = ["b4m/pull-ahead/leak"]
+
+[[artifact]]
+kind = "folded"
+title = "no branch"
+summary = "x"
+"""
+    found, problems = load_artifacts(write(tmp_path, bad), BRANCHES)
+    assert [a.title for a in found] == [
+        'mm/foo: keep the lock across the retry',
+        'mm: fix an old leak',
+    ]
+    assert len(problems) == 4
+    assert 'no branch b4m/pull-ahead/gone' in problems[0]
+    assert 'fixes is for fixups' in problems[1] and 'needs is for folded' in problems[2]
+    assert 'a folded needs a branch' in problems[3]
+
+
+def test_the_branches_skill_teaches_the_folded_series():
+    from b4_maintainer.sessions.skills import BUILTIN_DIR as SKILLS
+
+    text = (SKILLS / 'b4m-branches' / 'SKILL.md').read_text()
+    for needed in ('b4m/folded/', 'kind = "folded"', 'needs = [', 'fixes = "'):
+        assert needed in text, needed

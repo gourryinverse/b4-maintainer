@@ -20,11 +20,17 @@ from typing import Optional
 
 from .records import Worktree
 
-PREFIXES = (('b4m/pull-ahead/', 'pull-ahead'), ('b4m/fixup/', 'fixup'), ('b4m/tests/', 'test'))
+PREFIXES = (
+    ('b4m/pull-ahead/', 'pull-ahead'),
+    ('b4m/fixup/', 'fixup'),
+    ('b4m/tests/', 'test'),
+    ('b4m/folded/', 'folded'),
+)
 KIND_NAMES = (
     ('pull-ahead', 'pull-ahead', 'pull-aheads'),
     ('fixup', 'fixup', 'fixups'),
     ('test', 'test', 'tests'),
+    ('folded', 'folded commit', 'folded commits'),
     ('other', 'other commit', 'other commits'),
 )
 
@@ -173,6 +179,8 @@ def classify_tree(path: pathlib.Path, tree: Worktree) -> TreeCommits:
                 problem = 'contains the series: pull-aheads start from the base'
             elif kind in ('fixup', 'test') and not _contains(path, tree.applied, name):
                 problem = f'not on top of the series: {kind}s start from it'
+            elif kind == 'folded' and series and _contains(path, series[0].sha, name):
+                problem = 'contains the series as posted: a folded series starts from the base'
             branches.append(TreeBranch(name, kind, commits, problem))
     except OSError as ex:
         return TreeCommits(error=str(ex))

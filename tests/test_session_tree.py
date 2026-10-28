@@ -302,6 +302,33 @@ def test_tree_commits_are_classed_by_the_skills_branch_names(upstream, tmp_path)
     ]
 
 
+def test_a_folded_series_starts_from_the_base(upstream, tmp_path):
+    """b4m/folded/: the series rewritten with its fixups squashed in, from the base; one
+    built on top of the series as posted is misplaced."""
+    project, base, mbox = upstream
+    dest = tmp_path / 'wt'
+    tree = prepare_tree(project, dest, BRANCH, str(mbox), 2, identity=AGENT)
+    agent_work(dest, tree)
+    git('switch', '-q', '-c', 'b4m/folded/v3', tree.base, cwd=dest)
+    first, second = git('rev-list', '--reverse', f'{tree.base}..{tree.applied}', cwd=dest).split()
+    git('cherry-pick', first, cwd=dest)
+    git('cherry-pick', '-n', 'b4m/fixup/three', cwd=dest)  # Squashed into patch 1.
+    git('commit', '-q', '--amend', '--no-edit', cwd=dest)
+    git('cherry-pick', second, cwd=dest)
+    git('switch', '-q', '-c', 'b4m/folded/wrong', tree.applied, cwd=dest)
+    write(dest, 'x.c', 'x\n')
+    git('commit', '-q', '-m', 'demo: on the series as posted', cwd=dest)
+    git('switch', '-q', BRANCH, cwd=dest)
+    by_name = {b.name: b for b in classify_tree(dest, tree).branches}
+    folded = by_name['b4m/folded/v3']
+    assert folded.kind == 'folded' and folded.problem == ''
+    assert [c.subject for c in folded.commits] == [
+        'mm/foo: name line three',
+        'mm/bar: add bar',
+    ]
+    assert 'base' in by_name['b4m/folded/wrong'].problem
+
+
 def test_a_trees_losses_are_described_by_kind(upstream, tmp_path):
     project, base, mbox = upstream
     dest = tmp_path / 'wt'

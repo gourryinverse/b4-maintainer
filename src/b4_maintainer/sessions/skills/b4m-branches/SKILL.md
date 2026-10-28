@@ -25,6 +25,7 @@ One branch per piece of work, named by what it is. Names are local: they are nev
 | `b4m/pull-ahead/<slug>` | a bug that is already upstream (pre-existing, not caused by the series) | the **base**: `git switch -c b4m/pull-ahead/<slug> <base>` |
 | `b4m/fixup/<slug>` | a bug the series introduces | the **series' last commit**: `git switch -c b4m/fixup/<slug> <last>` |
 | `b4m/tests/<slug>` | an in-tree test for the series' behaviour (selftest, KUnit) | the series' last commit |
+| `b4m/folded/<slug>` | the series with its fixups squashed in: its next revision | the **base** (see below) |
 
 - One bug or one test per branch; `<slug>` is short and descriptive (`foo-refcount`).
 - A pull-ahead must not contain the series: if reproducing the bug needs the series,
@@ -32,6 +33,42 @@ One branch per piece of work, named by what it is. Names are local: they are nev
   branch you then delete, or a cherry-pick you do not keep).
 - Other branches, or commits on the session branch itself, show as "other": the
   maintainer will ask what they are.
+
+## The folded series (whenever you leave a fixup)
+
+With any fixup, also leave the series as its next revision would be, so the maintainer
+can send it: `b4m/folded/<slug>` (one per series), built from the **base**.
+
+1. `git switch -c b4m/folded/<slug> <base>`.
+2. First, only the pull-aheads the series or its fixups conflict or fail without
+   (`git cherry-pick` each). Leave out the ones that are independent: the maintainer
+   decides about those.
+3. Then each series patch in order (`git cherry-pick`), squashing each fixup into the
+   patch it fixes right after that patch: `git cherry-pick -n <fixup>` then `git commit
+   --amend --no-edit`. Resolve conflicts here; the patch keeps its author and message.
+4. Build and test the result as you tested the fixups.
+
+- Never touch the session branch or the fixup branches: the folded branch is a copy.
+- A fixup that cannot be squashed into one patch (it spans several) goes into the last
+  patch it touches; say so in the summary.
+
+```toml
+[[artifact]]
+kind = "fixup"
+title = "mm/foo: keep the lock across the retry"
+summary = "Patch 3 drops the lock before retrying; take it again."
+branch = "b4m/fixup/foo-lock"
+fixes = "3"            # the series patch it is squashed into, by number
+
+[[artifact]]
+kind = "folded"
+title = "mm/foo: the series with its fixups folded in"
+summary = """Patch 3 takes foo-lock. Leads with pull-ahead leak: patch 2 does not
+apply without it."""
+branch = "b4m/folded/foo"
+needs = ["b4m/pull-ahead/leak"]   # the pull-aheads it carries first; [] for none
+tested = "x86_64 defconfig build; vng boot; selftests/mm/foo: 12/12 pass"
+```
 
 ## Which kind of test
 
@@ -98,7 +135,9 @@ answers = "sashiko:p2/1"
 tested = "x86_64 defconfig build; vng boot; tools/testing/selftests/mm/foo: 12/12 pass"
 ```
 
-- `pull-ahead`, `fixup`, and `test` need `branch`: an existing branch of the tree.
+- `pull-ahead`, `fixup`, `test`, and `folded` need `branch`: an existing branch of the tree.
+- A `fixup` names the patch it is squashed into (`fixes`); a `folded` lists the
+  pull-aheads it carries (`needs`).
 
 ## Never
 

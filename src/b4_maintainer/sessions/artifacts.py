@@ -3,7 +3,8 @@
 b4m-branches skill), read strictly by the client.
 
 Each `[[artifact]]` names one thing the session produced: a finding, commits on a
-branch of its tree (pull-ahead, fixup, test), or a file under `out/` (results,
+branch of its tree (pull-ahead, fixup, test; folded: the series with its fixups
+squashed in, for its next revision), or a file under `out/` (results,
 reproducer, analysis, diff: a proposed change from a session without a tree). An entry that breaks a rule is reported with the reason and
 skipped; the others still load. Model output is data: nothing here runs it.
 """
@@ -14,10 +15,22 @@ from dataclasses import dataclass
 from typing import Any, Collection, Optional
 
 MANIFEST = 'artifacts.toml'
-KINDS = ('finding', 'pull-ahead', 'fixup', 'test', 'results', 'reproducer', 'analysis', 'diff')
+KINDS = (
+    'finding',
+    'pull-ahead',
+    'fixup',
+    'test',
+    'results',
+    'reproducer',
+    'analysis',
+    'diff',
+    'folded',
+)
 FILE_KINDS = frozenset({'diff'})  # A proposed change without a tree: a diff file.
-COMMIT_KINDS = frozenset({'pull-ahead', 'fixup', 'test'})
-KEYS = frozenset({'kind', 'title', 'summary', 'branch', 'path', 'answers', 'tested'})
+COMMIT_KINDS = frozenset({'pull-ahead', 'fixup', 'test', 'folded'})
+KEYS = frozenset(
+    {'kind', 'title', 'summary', 'branch', 'path', 'answers', 'tested', 'fixes', 'needs'}
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +42,8 @@ class Artifact:
     path: Optional[pathlib.Path] = None  # Files: under out/.
     answers: str = ''  # The finding it answers, if any.
     tested: str = ''  # How it was tested.
+    fixes: str = ''  # A fixup: the number of the series patch it is squashed into.
+    needs: tuple[str, ...] = ()  # A folded series: the pull-ahead branches it carries.
 
 
 def _artifact(raw: Any, out: pathlib.Path, branches: Collection[str]) -> Artifact:
@@ -38,11 +53,21 @@ def _artifact(raw: Any, out: pathlib.Path, branches: Collection[str]) -> Artifac
         if key not in KEYS:
             raise ValueError(f'unknown key {key!r}')
     for key, value in raw.items():
-        if not isinstance(value, str):
+        if key == 'needs':
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise ValueError('needs must be a list of branch names')
+        elif not isinstance(value, str):
             raise ValueError(f'{key} must be text')
     kind = raw.get('kind', '')
     if kind not in KINDS:
         raise ValueError(f'unknown kind {kind!r} (one of {", ".join(KINDS)})')
+    if 'fixes' in raw and kind != 'fixup':
+        raise ValueError('fixes is for fixups (the patch they are squashed into)')
+    if 'needs' in raw and kind != 'folded':
+        raise ValueError('needs is for folded series (the pull-aheads they carry)')
+    for needed in raw.get('needs', []):
+        if needed not in branches:
+            raise ValueError(f'no branch {needed} in the session tree')
     for key in ('title', 'summary'):
         if not raw.get(key, '').strip():
             raise ValueError(f'{key} is required')
@@ -68,6 +93,8 @@ def _artifact(raw: Any, out: pathlib.Path, branches: Collection[str]) -> Artifac
         path,
         raw.get('answers', ''),
         raw.get('tested', ''),
+        raw.get('fixes', '').strip(),
+        tuple(raw.get('needs', ())),
     )
 
 

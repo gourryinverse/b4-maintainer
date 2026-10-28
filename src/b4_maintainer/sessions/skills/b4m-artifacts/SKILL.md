@@ -38,7 +38,8 @@ path = "out/diffs/b1-on-a.diff"
 ```
 
 - `kind`: one of `finding`, `analysis`, `diff`, `results`, `reproducer`, and (in a
-  worktree, on a branch; see the b4m-branches skill) `pull-ahead`, `fixup`, `test`.
+  worktree, on a branch; see the b4m-branches skill) `pull-ahead`, `fixup`, `test`,
+  `folded`.
   - `finding`: one problem, with where it is; a `summary` alone may do.
   - `analysis`: a report: a review, a comparison of series, a root cause.
   - `diff`: a proposed change as a diff file (needs `path`).
