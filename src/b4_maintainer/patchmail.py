@@ -30,9 +30,17 @@ class ReplyTo:
     cc: tuple[Address, ...]  # Everyone else it went to.
 
 
-def _format_patch(repo: pathlib.Path, sha: str) -> EmailMessage:
+def _format_patch(repo: pathlib.Path, sha: str, prefix: str = 'PATCH') -> EmailMessage:
     run = subprocess.run(
-        ['git', 'format-patch', '-1', '--stdout', '--no-signature', '--subject-prefix=PATCH', sha],
+        [
+            'git',
+            'format-patch',
+            '-1',
+            '--stdout',
+            '--no-signature',
+            f'--subject-prefix={prefix}',
+            sha,
+        ],
         cwd=repo,
         capture_output=True,
         stdin=subprocess.DEVNULL,
@@ -58,6 +66,16 @@ def _with_trailers(message: str, trailers: Sequence[str]) -> str:
     return '\n'.join([*lines, *gap, *added]) + '\n'
 
 
+def _split_body(body: str) -> tuple[str, str, str]:
+    """(the commit message, the --- line, the diffstat and diff) of a format-patch body;
+    a message without a body leaves the first part empty."""
+    lines = body.split('\n')
+    cut = next((n for n, line in enumerate(lines) if line == '---'), None)
+    if cut is None:
+        return body, '', ''
+    return '\n'.join(lines[:cut]), '\n---\n', '\n'.join(lines[cut + 1 :])
+
+
 def _addresses(addrs: Sequence[Address]) -> str:
     return ', '.join(email.utils.formataddr(a) for a in addrs)
 
@@ -70,13 +88,13 @@ def patch_mail(
     assisted_by: str,
     reply: ReplyTo | None = None,
     recipients: tuple[Sequence[Address], Sequence[Address]] = ((), ()),
+    prefix: str = 'PATCH',
 ) -> EmailMessage:
     """Commit *sha* of *repo* as a patch email from *me*: a reply (*reply*), else a new
-    thread to *recipients* (to, cc)."""
-    made = _format_patch(repo, sha)
+    thread to *recipients* (to, cc); *prefix* in the subject's brackets."""
+    made = _format_patch(repo, sha, prefix)
     author_name, author_email = email.utils.parseaddr(str(made['From']))
-    body = made.get_content()
-    message, sep, rest = body.partition('\n---\n')
+    message, sep, rest = _split_body(made.get_content())
     mine = f'Signed-off-by: {email.utils.formataddr(me)}'
     prefix = ''
     if author_email.lower() == agent_email.lower():
@@ -113,6 +131,11 @@ msg = sys.stdin.buffer.read()
 tocmd, cccmd = b4.ez.get_auto_to_cc_cmds()
 to = b4.ez.get_addresses_from_cmd(tocmd, msg)
 cc = b4.ez.get_addresses_from_cmd(cccmd, msg)
+config = b4.get_main_config()  # As b4 send addresses a series: send-series-to and -cc.
+for key, found in (('send-series-to', to), ('send-series-cc', cc)):
+    value = config.get(key)
+    values = value if isinstance(value, list) else [value] if value else []
+    found += email.utils.getaddresses([str(v) for v in values])
 print(json.dumps({'to': to, 'cc': cc}))
 """
 

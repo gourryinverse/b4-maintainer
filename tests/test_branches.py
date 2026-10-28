@@ -798,3 +798,26 @@ def test_session_work_forks_where_its_project_does(ws):
     service, workspace, _project = ws
     points = service.fork_points(workspace, 'work:s1:b4m/pull-ahead/leak')
     assert points[:2] == ['up/stable', 'me/base']
+
+
+def test_without_maintainers_a_new_patch_goes_to_the_projects_first_list(ws):
+    service, _workspace, project = ws
+    workspace = Workspace.from_config(
+        {
+            'projects': [
+                {
+                    'id': 'linux',
+                    'path': 'projects/linux',
+                    'lists': ['nvdimm@lists.linux.dev', 'linux-cxl@vger.kernel.org'],
+                    'subject_tags': ['ndctl'],
+                    'bases': [{'branch': 'me/base', 'upstream': 'up/stable'}],
+                }
+            ]
+        }
+    )
+    data = service.snapshot(workspace, trees=False)
+    key = 'work:s1:b4m/pull-ahead/leak'
+    row = next(r for r in data.details[key] if is_commit(r))
+    text = service.patch_message(workspace, key, row, None)
+    assert 'To: nvdimm@lists.linux.dev' in text and 'Cc:' not in text
+    assert 'Subject: [ndctl PATCH] mm: fix the leak' in text

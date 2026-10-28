@@ -906,6 +906,9 @@ class BranchesScreen(Screen[None]):
             from .app import Confirm
 
             msg = email.message_from_string(text, policy=email.policy.default)
+            if not msg['To'] and not msg['Cc']:
+                self._status('Not mailed: no recipients (add To: in the .eml next time)')
+                return
             where = f'In reply to {msg["In-Reply-To"]}' if msg['In-Reply-To'] else 'As a new thread'
             lines = [
                 f'Send {msg["Subject"]}?',

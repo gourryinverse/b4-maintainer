@@ -232,7 +232,9 @@ Python 3.11 or newer.
   `--email-dry-run`): a fixup as a reply to the series patch it fixes (its manifest's
   `fixes`, else the cover letter; To its author, Cc the rest), a pull-ahead as its own
   thread addressed as b4 addresses a new patch (`send-auto-to/cc-cmd`, else
-  get_maintainer); any other commit asks which. An agent's commit goes as yours, with
+  get_maintainer, plus `send-series-to/cc`; with none of those, the project's first
+  list) and tagged with the project's first subject tag (`[ndctl PATCH]`); any other
+  commit asks which. A message with no recipients is not sent. An agent's commit goes as yours, with
   `Assisted-by:` and your `Signed-off-by:`. The whole `.eml` opens in your editor first,
   and it goes after a last look at Subject, To, and Cc. `x` removes a prep
   branch (`b4 prep --cleanup`, which archives it), another local branch, session work

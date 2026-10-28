@@ -345,3 +345,17 @@ async def test_n_offers_its_fork_points_and_any_ref_in_a_readable_picker(demo_ro
         keys = [k for k, _label in pick.choices]
         assert keys[:3] == ['up/stable', 'me/base', 'mm/mm-new'] and keys[-1] == '\0typed'
         assert pick.query_one('Vertical').size.width >= 40  # Not squeezed.
+
+
+async def test_a_message_without_recipients_is_not_sent(demo_root):
+    service = MailBranches()
+    edited = 'From: Me <me@example.org>\nSubject: [PATCH] mm: y\n\nedited\n'
+    app, sent = mail_app(demo_root, service, edited=edited)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_branches(pilot)
+        screen.select_item('work:s2:b4m/pull-ahead/old')
+        await settle(pilot)
+        await pilot.press('m')
+        await settle(pilot)
+        assert isinstance(app.screen, BranchesScreen) and sent == []
+        assert 'no recipients' in screen.status_text()

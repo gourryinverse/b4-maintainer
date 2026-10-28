@@ -92,3 +92,16 @@ def test_a_pull_ahead_is_addressed_as_b4_addresses_a_new_patch(repo):
     assert to == [('Subsystem Maintainer', 'sub@example.org')]
     msg = patch_mail(repo, sha, ME, AGENT[1], 'Claude:opus', recipients=(to, cc))
     assert msg['To'] == 'Subsystem Maintainer <sub@example.org>' and not msg['In-Reply-To']
+
+
+def test_b4s_series_recipients_are_used_too(repo):
+    git('config', 'b4.send-series-to', 'Some List <list@example.org>', cwd=repo)
+    sha = commit(repo, AGENT, 'mm: fix more')
+    to, _cc = auto_recipients(repo, patch_mail(repo, sha, ME, AGENT[1], 'x'))
+    assert ('Some List', 'list@example.org') in to
+
+
+def test_a_projects_prefix_tags_the_subject(repo):
+    sha = commit(repo, AGENT, 'daxctl: fix it')
+    msg = patch_mail(repo, sha, ME, AGENT[1], 'x', prefix='ndctl PATCH')
+    assert msg['Subject'] == '[ndctl PATCH] daxctl: fix it'

@@ -444,12 +444,15 @@ class BranchService:
             raise ValueError('no user.name and user.email for this checkout')
         assisted = workspace.assisted_by.replace('{model}', self._model(item))
         commit_repo = pathlib.Path(row.repo or repo)
-        msg = patch_mail(commit_repo, row.key, me, workspace.agent_email, assisted, reply)
+        # A project with subject tags is told apart by them: [ndctl PATCH].
+        prefix = f'{project.subject_tags[0]} PATCH' if project.subject_tags else 'PATCH'
+        agent = workspace.agent_email
+        msg = patch_mail(commit_repo, row.key, me, agent, assisted, reply, prefix=prefix)
         if reply is None:
             to, cc = auto_recipients(repo, msg)
-            msg = patch_mail(
-                commit_repo, row.key, me, workspace.agent_email, assisted, None, (to, cc)
-            )
+            if not to and not cc and project.lists:  # No maintainers file: its own list.
+                to = [('', project.lists[0].replace('.', '@', 1))]
+            msg = patch_mail(commit_repo, row.key, me, agent, assisted, None, (to, cc), prefix)
         return msg.as_string()
 
     def branch_starts(self, workspace: Workspace, project_id: str) -> list[str]:
