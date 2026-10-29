@@ -19,6 +19,7 @@ import pathlib
 from dataclasses import replace
 from typing import Any, Callable, Mapping, Optional, Sequence, TypeVar
 
+from b4._textwidth import pad_display
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -41,7 +42,7 @@ from .reader import (
     thread_replies,
     tree_rows,
 )
-from .widgets import Block, TabBar, TextPane
+from .widgets import Block, TabBar, TextPane, tree_width
 from .workbench import (
     ContentRow,
     Item,
@@ -552,13 +553,20 @@ class WorkbenchScreen(Screen[None]):
             thread, item, set(post_keys(thread)), bots=self.workspace.bots
         )
         tree = self.query_one('#thread-tree', OptionList)
-        with self.prevent(OptionList.OptionHighlighted):
-            tree.clear_options()
-            tree.add_options([Option(Text(r.label)) for r in self._thread_rows])
-            if self._thread_rows:
-                tree.highlighted = 0
         tree.border_title = f'{item.series.subject} v{item.series.revision}'[:60]
         self.add_class('-thread')
+        self.call_after_refresh(self._fill_thread_tree)  # Shown first: rows fit its width.
+
+    def _fill_thread_tree(self) -> None:
+        tree = self.query_one('#thread-tree', OptionList)
+        with self.prevent(OptionList.OptionHighlighted):
+            tree.clear_options()
+            width = tree_width(tree)
+            tree.add_options(
+                [Option(Text(pad_display(r.label, width).rstrip())) for r in self._thread_rows]
+            )
+            if self._thread_rows:
+                tree.highlighted = 0
         tree.focus()
         self._show_message()
         self._status('r replies to the selected message, R with session output; escape closes')

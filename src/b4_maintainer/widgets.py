@@ -148,6 +148,13 @@ def _style(style: LineStyle, line: str) -> Style:
     return style or Style()
 
 
+def tree_width(tree: Widget) -> int:
+    """How wide a thread tree's rows may be: a cell short of the pane, since a terminal
+    may draw a symbol a cell wider than counted, and a row reaching the last column
+    would then wrap."""
+    return max(20, (tree.scrollable_content_region.width or 54) - 1)
+
+
 KEY_STYLE = Style(bold=True, reverse=True)
 DISABLED_STYLE = Style(dim=True)
 

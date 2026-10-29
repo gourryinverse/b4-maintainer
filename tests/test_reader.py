@@ -758,3 +758,26 @@ async def test_arrow_keys_expand_and_collapse_in_the_tree():
         await pilot.press('right')
         await pilot.pause()
         assert names(app.tree_labels()) == ['1/1']
+
+
+async def test_thread_rows_leave_the_last_column_free(demo_root):
+    """A terminal may draw a symbol a cell wider than counted; a row reaching the pane's
+    last column would then wrap, so rows stop one cell short."""
+    from rich.cells import cell_len
+
+    from b4_maintainer.fixtures import PatchSpec, write_series_mbox
+
+    subject = 'mm: ' + ' '.join(['a rather long subject'] * 6)
+    write_series_mbox(
+        demo_root / 'mail' / 'long.mbx', subject, patches=[PatchSpec('mm/a.c'), PatchSpec('mm/b.c')]
+    )
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(120, 40)) as pilot:
+        series_list = await loaded(pilot)
+        series_list.select_identity(
+            next(i.identity for i in app.snapshot.items if i.series.subject == subject)
+        )
+        await open_reader(pilot)
+        width = app.query_one('#tree').scrollable_content_region.width
+        widest = max(cell_len(label) for label in app.tree_labels())
+        assert widest == width - 1  # Its long rows are cut, a cell short.

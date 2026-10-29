@@ -76,7 +76,7 @@ from .sessions.store import SessionView
 from .sessions.trees import TreeState
 from .settingsscreen import SettingsScreen
 from .views import ViewIndex
-from .widgets import Block, KeyBar, TabBar, TextPane, printable
+from .widgets import Block, KeyBar, TabBar, TextPane, printable, tree_width
 from .workbench import (
     ContentRow,
     Item,
@@ -1263,7 +1263,7 @@ class MaintainerApp(App[None]):
     def _render_tree(self, target: tuple[str, int]) -> None:
         """Rebuild the tree and highlight the row for *target* (or its posting)."""
         self._rows = self._tree_rows()
-        width = max(20, self._tree.scrollable_content_region.width or 54)
+        width = tree_width(self._tree)
         self._tree.clear_options()
         self._tree.add_options(
             Option(escape(pad_display(row.label, width).rstrip())) for row in self._rows
@@ -1276,7 +1276,7 @@ class MaintainerApp(App[None]):
 
     def _refresh_tree_labels(self) -> None:
         """Update labels in place (e.g. unread marks) without moving the cursor."""
-        width = max(20, self._tree.scrollable_content_region.width or 54)
+        width = tree_width(self._tree)
         for n, (old, new) in enumerate(zip(self._rows, self._tree_rows())):
             if old.label != new.label:
                 self._tree.replace_option_prompt_at_index(

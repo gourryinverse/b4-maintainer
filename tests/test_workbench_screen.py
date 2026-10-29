@@ -372,3 +372,28 @@ async def test_a_new_workbench_takes_the_projects_ticked_and_a_adds_another(demo
         await pilot.press('enter')
         await settle(pilot)
         assert [e.project for e in store.get('both').entries] == ['linux', 'qemu']
+
+
+async def test_a_thread_opened_on_the_tab_fits_its_rows_a_cell_short(demo_root, tmp_path):
+    from rich.cells import cell_len
+
+    from b4_maintainer.fixtures import PatchSpec, write_series_mbox
+
+    subject = 'mm: ' + ' '.join(['a rather long subject'] * 6)
+    write_series_mbox(
+        demo_root / 'mail' / 'long.mbx', subject, patches=[PatchSpec('mm/a.c'), PatchSpec('mm/b.c')]
+    )
+    app, store = make(demo_root, tmp_path, [])
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        long = next(i for i in app.snapshot.items if i.series.subject == subject)
+        item = Item(long.identity, long.series.revision, subject)
+        store.save(Workbench('w', 'W', (Entry('linux', '', (item,)),)))
+        screen = await open_screen(pilot)
+        screen.select_row('mailbox', 'linux')
+        await pilot.press('enter')
+        await settle(pilot)
+        tree = screen.query_one('#thread-tree')
+        width = tree.scrollable_content_region.width
+        labels = [str(tree.get_option_at_index(n).prompt) for n in range(tree.option_count)]
+        assert labels and max(cell_len(label) for label in labels) == width - 1
