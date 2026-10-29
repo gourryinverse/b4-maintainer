@@ -424,6 +424,8 @@ class WorkbenchScreen(Screen[None]):
 
     def refresh_sessions(self) -> None:
         """Reread the selected workbench's sessions (off the UI thread)."""
+        if not self.query('#bench-list'):
+            return  # Not composed yet (a session poll just after F3): it reads them then.
         bench = self.bench()
         rows = getattr(self.app, 'workbench_sessions', None)
         if bench is None or rows is None:
