@@ -575,3 +575,122 @@ def test_a_single_patch_and_a_single_commit_apply_alone(upstream, tmp_path):
     text = items_mbox(project, base, items).decode()
     assert 'mm/bar: add bar' in text and 'mm: other fix' in text
     assert 'name line three' not in text and 'mm: fix it' not in text
+
+
+# Workbench spaces: one shared repository per project, a checkout per session.
+
+
+def space_paths(tmp_path, project='demo'):
+    space = tmp_path / 'var' / 'workbenches' / 'w'
+    return space / 'repos' / f'{project}.git', space / 'sessions'
+
+
+def test_sessions_share_a_space_repo_and_the_space_branch_is_prepared_once(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, mbox = upstream
+    before = snapshot(project)
+    repo, sessions = space_paths(tmp_path)
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2),)
+    one = ('agent (one)', AGENT[1])
+    tree, prepared = prepare_space_tree(
+        project, repo, sessions / 's1' / 'demo', 'b4m/session/s1', 'b4m/bench/w', base, items, one
+    )
+    assert prepared and (tree.base, tree.branch) == (base, 'b4m/session/s1')
+    dest1 = pathlib.Path(tree.path)
+    assert subjects(dest1, f'{base}..HEAD') == ['mm/foo: name line three', 'mm/bar: add bar']
+    assert git('rev-parse', 'b4m/bench/w', cwd=repo) == tree.applied
+    assert snapshot(project) == before  # The project is never touched.
+    assert git('for-each-ref', '--format=%(refname:short)', 'refs/heads', cwd=repo).split() == [
+        'b4m/bench/w',
+        'b4m/session/s1',
+    ]  # The project's own branches are not copied in.
+
+    two = ('agent (two)', AGENT[1])
+    tree2, prepared = prepare_space_tree(
+        project, repo, sessions / 's2' / 'demo', 'b4m/session/s2', 'b4m/bench/w', base, items, two
+    )
+    assert not prepared and (tree2.base, tree2.applied) == (base, tree.applied)
+    dest2 = pathlib.Path(tree2.path)
+    assert git('config', 'user.name', cwd=dest1) == 'agent (one)'  # Each its own identity.
+    assert git('config', 'user.name', cwd=dest2) == 'agent (two)'
+
+    git('switch', '-q', '-c', 'b4m/fixup/x', cwd=dest1)
+    write(dest1, 'mm/x.c', 'x\n')
+    commit(dest1, 'mm: x')
+    assert git('branch', '--list', 'b4m/fixup/x', cwd=dest2).strip()  # Shared at once.
+
+
+def test_removing_a_session_checkout_keeps_every_branch(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree, remove_space_tree
+    from b4_maintainer.sessions.trees import TreeItem, inspect_tree
+
+    project, base, mbox = upstream
+    repo, sessions = space_paths(tmp_path)
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2),)
+    trees = [
+        prepare_space_tree(
+            project,
+            repo,
+            sessions / s / 'demo',
+            f'b4m/session/{s}',
+            'b4m/bench/w',
+            base,
+            items,
+            AGENT,
+        )[0]
+        for s in ('s1', 's2')
+    ]
+    dest1 = pathlib.Path(trees[0].path)
+    git('switch', '-q', '-c', 'b4m/fixup/x', cwd=dest1)
+    write(dest1, 'mm/x.c', 'x\n')
+    commit(dest1, 'mm: x')
+    write(dest1, 'mm/y.c', 'uncommitted\n')
+    state = inspect_tree(dest1, trees[0].applied, trees[0])
+    assert state.changed and not state.commits  # Commits stay in the space: nothing lost.
+    remove_space_tree(dest1)
+    assert not dest1.exists() and pathlib.Path(trees[1].path).is_dir()  # Only its own.
+    heads = git('for-each-ref', '--format=%(refname:short)', 'refs/heads', cwd=repo).split()
+    assert {'b4m/fixup/x', 'b4m/session/s1', 'b4m/session/s2', 'b4m/bench/w'} <= set(heads)
+
+
+def test_a_space_tree_that_does_not_apply_leaves_no_branch_and_no_checkout(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, mbox = upstream
+    fix_branch(project, base, path='mm/foo.c')  # Rewrites the file the series changes.
+    repo, sessions = space_paths(tmp_path)
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2), TreeItem('me/fix', branch='me/fix'))
+    dest = sessions / 's1' / 'demo'
+    with pytest.raises(PrepareError) as raised:
+        prepare_space_tree(project, repo, dest, 'b4m/session/s1', 'b4m/bench/w', base, items, AGENT)
+    assert raised.value.base == base and not dest.exists()
+    assert git('for-each-ref', 'refs/heads', cwd=repo) == ''
+
+
+def test_a_space_tree_for_the_agent_has_its_mbox_where_the_prompt_says(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree
+    from b4_maintainer.sessions.trees import TreeItem, agent_mbox
+
+    project, base, mbox = upstream
+    repo, sessions = space_paths(tmp_path)
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2),)
+    tree, _prepared = prepare_space_tree(
+        project,
+        repo,
+        sessions / 's1' / 'demo',
+        'b4m/session/s1',
+        'b4m/bench/w',
+        base,
+        items,
+        AGENT,
+        use='deliver',
+    )
+    assert tree.agent_applies and git('rev-parse', 'HEAD', cwd=tree.path) == base
+    assert 'mm/foo: name line three' in agent_mbox(pathlib.Path(tree.path)).read_text()
+    assert git('status', '--porcelain', cwd=tree.path) == ''  # Not in the tree's files.
+    assert git('for-each-ref', '--format=%(refname:short)', 'refs/heads', cwd=repo).split() == [
+        'b4m/session/s1'
+    ]  # The space branch is only made from items applied.

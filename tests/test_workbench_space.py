@@ -177,3 +177,48 @@ def _slug(item):
 
     label = f'{item.series.subject} v{item.series.revision}'
     return re.sub(r'[^a-z0-9]+', '-', label.lower()).strip('-')
+
+
+def test_workbench_sessions_check_out_the_spaces_repos_and_leave_branches_behind(tmp_path, home):
+    from gitutil import git
+    from test_session_workbench import project
+
+    from b4_maintainer.sessions.hub import RecordWorktrees, TreePlan
+    from b4_maintainer.sessions.sandbox import policy_for
+    from b4_maintainer.sessions.store import SessionStore
+
+    linux = project(tmp_path / 'projects' / 'linux', 'linux')
+    trees = RecordWorktrees(
+        tmp_path / 'var' / 'worktrees', {'linux': str(tmp_path / 'projects' / 'linux')}
+    )
+    space = space_dir(tmp_path, 'cmp')
+    one = make_record('w1', scope='workbench', workbench='cmp', space=str(space), model='dry-run')
+    two = make_record('w2', scope='workbench', workbench='cmp', space=str(space), model='dry-run')
+    first = trees.prepare_entry(one, TreePlan('linux', 'main'))
+    second = trees.prepare_entry(two, TreePlan('linux', 'main'))
+    assert first.worktree.path == str(space / 'sessions' / 'w1' / 'linux')
+    assert (first.worktree.base, second.worktree.applied) == (linux, linux)
+    repo = space / 'repos' / 'linux.git'
+    git('switch', '-q', '-c', 'b4m/fixup/x', cwd=first.worktree.path)
+    git('commit', '-q', '--allow-empty', '-m', 'x', cwd=first.worktree.path)
+    trees.remove(first.worktree.path)
+    assert not (space / 'sessions' / 'w1').exists()
+    heads = git('for-each-ref', '--format=%(refname:short)', 'refs/heads', cwd=repo).split()
+    assert 'b4m/fixup/x' in heads and 'b4m/session/w1' in heads  # Kept in the space.
+
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    record = two.replace(
+        trees=(second,), home=str(space / 'sessions' / 'w2'), permissions='execute'
+    )
+    store.create(record)
+    from b4_maintainer.sessions.pi import LaunchSpec, Site, pi_command
+    from b4_maintainer.sessions.profiles import Request
+
+    spec = LaunchSpec(Request('Task.', 'Sys.', 'worktree', ()), sandboxed=True)
+    command = pi_command(store, record, spec, Site(tmp_path, 'b4-maintainer'))
+    (store.directory('w2') / 'launch.json').write_text(
+        json.dumps({'argv': command.argv, 'cwd': command.cwd, 'env': command.env})
+    )
+    policy = policy_for(store, 'w2')
+    assert str(space / 'repos') in policy.writable  # Its commits land in the space.
+    assert command.cwd == str(space / 'sessions' / 'w2')

@@ -18,7 +18,7 @@ from .policy import ContextItem
 from .profiles import Request
 from .records import SessionRecord, session_home, session_label, session_trees
 from .store import EVENTS, SessionStore
-from .trees import AGENT_MBOX
+from .trees import AGENT_MBOX, agent_mbox
 
 EXTENSION = pathlib.Path(__file__).parent / 'extension' / 'b4m.ts'
 # The agent's own directory (its working directory in lightweight sessions): context/ and
@@ -114,6 +114,8 @@ def pi_command(
         'B4M_EVENTS': str(directory / EVENTS),
         'B4M_OUT': str(work / 'out'),
         'B4M_WORKTREE': worktree,
+        # A space checkout commits into its space's repositories (shared by the workbench).
+        **({'B4M_WRITABLE': str(pathlib.Path(record.space) / 'repos')} if record.space else {}),
         'B4M_READABLE': '\n'.join(r for r in readable if r),
         # git must not find a repository around the session (e.g. the workspace's own).
         'GIT_CEILING_DIRECTORIES': str(directory),
@@ -179,16 +181,24 @@ def _trees_text(record: SessionRecord) -> str:
         if t.delivered:
             line += (
                 '. Its items are for you to use as the task directs: each series is in the '
-                f'context, and all of them, in order, in {t.worktree.path}/{AGENT_MBOX} '
+                f'context, and all of them, in order, in {_mbox(t.worktree.path)} '
                 '(git am -3 applies them)'
             )
         elif t.worktree.agent_applies:
             line += (
-                f'. b4 could not apply its series: apply {t.worktree.path}/{AGENT_MBOX} with '
+                f'. b4 could not apply its series: apply {_mbox(t.worktree.path)} with '
                 'git am -3 first, resolving each conflict, as for a single tree'
             )
         lines.append(line)
     return '\n'.join(lines)
+
+
+def _mbox(tree: str) -> str:
+    """Where *tree* keeps its agent's mbox (as the prompt names it)."""
+    try:
+        return str(agent_mbox(pathlib.Path(tree)))
+    except OSError:  # Not a repository (yet): where a tree of its own keeps it.
+        return f'{tree}/{AGENT_MBOX}'
 
 
 def system_prompt(
@@ -234,7 +244,7 @@ def system_prompt(
             + '.'
         )
     elif tree is not None and writable and tree.agent_applies:
-        mbox = f'{tree.path}/{AGENT_MBOX}'
+        mbox = _mbox(tree.path)
         facts.append(
             APPLY_TREE_TEXT.format(
                 path=tree.path, branch=tree.branch, base=tree.base[:12], mbox=mbox

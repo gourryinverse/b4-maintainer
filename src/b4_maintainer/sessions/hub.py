@@ -33,7 +33,7 @@ from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
 from .store import SessionStore, SessionView
-from .trees import TreeItem, TreeState, inspect_tree, remove_tree, series_tip
+from .trees import TreeItem, TreeState, in_space, inspect_tree, remove_tree, series_tip
 
 RESUMABLE = frozenset({'stopped', 'gone'})
 COUNTED_LIVE = LIVE | {'preparing'}  # Limits count a session from its preparation.
@@ -311,6 +311,8 @@ class RecordWorktrees:
         from ..adapters.sessiontree import items_mbox, prepare_items_tree, prepare_unapplied_tree
 
         checkout, directory = self.checkouts.get(plan.project), self.directory
+        if checkout and record.space:
+            return self._prepare_in_space(record, plan, pathlib.Path(checkout))
         if not checkout or directory is None:
             raise TreeError(self.reason(plan.project))
         home = directory / record.id
@@ -333,7 +335,43 @@ class RecordWorktrees:
             tree = prepare_items_tree(project, dest, branch, plan.base, plan.items, identity)
         return ProjectTree(plan.project, tree, labels)
 
+    def _prepare_in_space(
+        self, record: SessionRecord, plan: TreePlan, project: pathlib.Path
+    ) -> ProjectTree:
+        """The session's checkout of its workbench space's repository for the project
+        (the space's branch prepared first if it has none)."""
+        from ..adapters.sessiontree import prepare_space_tree
+
+        space = pathlib.Path(record.space)
+        name = self.agent[0].format(model=record.model or record.preset)
+        tree, _prepared = prepare_space_tree(
+            project,
+            space / 'repos' / f'{plan.project}.git',
+            space / 'sessions' / record.id / plan.project,
+            f'b4m/session/{record.id}',
+            f'b4m/bench/{record.workbench}',
+            plan.base,
+            plan.items,
+            (name, self.agent[1]),
+            plan.use,
+            plan.agent_apply,
+        )
+        labels = tuple(i.label for i in plan.items if i.apply)
+        if plan.use == 'deliver':
+            return ProjectTree(plan.project, tree, (), labels)
+        return ProjectTree(plan.project, tree, labels)
+
     def remove_home(self, record: SessionRecord) -> None:
+        if record.space:  # Checkouts that never got going: their branches go too.
+            from ..adapters.sessiontree import remove_space_tree
+
+            home = pathlib.Path(record.space) / 'sessions' / record.id
+            for tree in sorted(home.iterdir()) if home.is_dir() else []:
+                if tree.is_dir():
+                    remove_space_tree(tree, keep_branch=False)
+            if home.is_dir() and not any(home.iterdir()):
+                home.rmdir()
+            return
         if self.directory is None:
             return
         home = self.directory / record.id
@@ -411,7 +449,14 @@ class RecordWorktrees:
 
     def remove(self, path: str) -> None:
         """A tree directly under the directory, or in a workbench session's folder there
-        (the folder goes with its last tree)."""
+        (the folder goes with its last tree); a session's checkout of a workbench space,
+        whose branches stay in the space."""
+        if in_space(pathlib.Path(path)):
+            from ..adapters.sessiontree import remove_space_tree
+
+            remove_space_tree(pathlib.Path(path))
+            self._sizes.pop(path, None)
+            return
         if self.directory is None:
             raise OSError(f'{path} is not a session tree')
         where, directory = pathlib.Path(path).resolve(), self.directory.resolve()
@@ -623,13 +668,19 @@ class SessionHub:
         read = tuple((p, c) for p in reads if (c := self.worktrees.checkout(p)))
         record = record.replace(reads=read)
         extra = [p for p, u in others if u == 'base']
-        if planned.mode == 'worktree' and (extra or own == 'deliver'):
+        # In its workbench's space (not a session derived from another's tree): trees are
+        # checkouts of the space's repositories, like a workbench session's.
+        spaced = bool(record.space) and not choice.start
+        if planned.mode == 'worktree' and (extra or own == 'deliver' or spaced):
             bases = dict(choice.bases)
             plans = [TreePlan(p, bases.get(p, ''), ()) for p in extra]
-            if own in ('apply', 'deliver'):
+            if own in ('apply', 'deliver', ''):
                 label = f'{target.subject} v{target.revision}'
-                item = TreeItem(label, target.source, target.revision)
-                mine = TreePlan(target.project, choice.base, (item,), choice.agent_apply, own)
+                held = (TreeItem(label, target.source, target.revision),) + tuple(
+                    TreeItem(f'{what} v{rev}', source, rev) for source, rev, what in choice.also
+                )
+                use = own or 'apply'
+                mine = TreePlan(target.project, choice.base, held, choice.agent_apply, use)
                 plans.insert(0, mine)
             return self._start(
                 record,

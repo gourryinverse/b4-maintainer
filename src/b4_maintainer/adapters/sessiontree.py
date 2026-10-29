@@ -20,6 +20,7 @@ import io
 import logging
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 from typing import Generator, Optional, Sequence
@@ -309,6 +310,54 @@ def prepare_unapplied_tree(
     return dataclasses.replace(tree, agent_applies=True)
 
 
+def _apply_items(
+    project: pathlib.Path, dest: pathlib.Path, base: str, items: Sequence[TreeItem]
+) -> tuple[str, str]:
+    """(start, tip): *items* applied in order in *dest* (a repository sharing the project's
+    objects), from *base* (empty: b4 chooses for a first series, else the project's HEAD).
+    Moves no branch; an item that does not apply fails it all, saying where an agent would
+    start."""
+    from .bases import _replay  # The same replay as plucking.
+
+    start = _commit(project, base) if base else None
+    if base and start is None:
+        raise PrepareError(f'base {base!r} is not a commit in {project.name}')
+    tip = start
+    for item in (i for i in items if i.apply):  # Read-only items stay out of trees.
+        try:
+            if item.source and tip is None:
+                start, tip = _apply(project, dest, item.source, item.revision, None, item.patches)
+            elif item.source:
+                tip = _apply_more(
+                    project, dest, item.source, item.revision, tip or '', item.patches
+                )
+            else:
+                if start is None:
+                    start = tip = _git(project, 'rev-parse', 'HEAD')
+                where = pathlib.Path(item.repo) if item.repo else project
+                head = _commit(where, item.branch)
+                if head is None:
+                    raise PrepareError(f'{item.branch} is not a branch in {where}')
+                if item.repo:
+                    _git(dest, 'fetch', '--quiet', '--no-tags', str(where), head)
+                if item.single:  # Only this commit.
+                    shas = head
+                else:
+                    shas = _git(dest, 'rev-list', '--reverse', '--no-merges', f'{start}..{head}')
+                replayed = _replay(dest, tip or start, shas.split())
+                if not replayed.ok:
+                    raise PrepareError(
+                        f'{item.label} does not apply on top of the items before it',
+                        replayed.detail or replayed.error,
+                    )
+                tip = replayed.tip
+        except PrepareError as ex:
+            raise PrepareError(str(ex), ex.output, ex.base or start or '') from ex
+    if start is None or tip is None:
+        start = tip = _git(project, 'rev-parse', 'HEAD')
+    return start, tip
+
+
 def prepare_items_tree(
     project: pathlib.Path,
     dest: pathlib.Path,
@@ -323,52 +372,11 @@ def prepare_items_tree(
     base replayed (only the one commit of a single item; authors kept). An
     item that does not apply fails it all, saying where an agent would start; nothing is
     left behind."""
-    from .bases import _replay  # The same replay as plucking.
-
     if os.path.lexists(dest):
         raise PrepareError(f'{dest} exists')
     try:
         _clone(project, dest)
-        start = _commit(project, base) if base else None
-        if base and start is None:
-            raise PrepareError(f'base {base!r} is not a commit in {project.name}')
-        tip = start
-        for item in (i for i in items if i.apply):  # Read-only items stay out of trees.
-            try:
-                if item.source and tip is None:
-                    start, tip = _apply(
-                        project, dest, item.source, item.revision, None, item.patches
-                    )
-                elif item.source:
-                    tip = _apply_more(
-                        project, dest, item.source, item.revision, tip or '', item.patches
-                    )
-                else:
-                    if start is None:
-                        start = tip = _git(project, 'rev-parse', 'HEAD')
-                    where = pathlib.Path(item.repo) if item.repo else project
-                    head = _commit(where, item.branch)
-                    if head is None:
-                        raise PrepareError(f'{item.branch} is not a branch in {where}')
-                    if item.repo:
-                        _git(dest, 'fetch', '--quiet', '--no-tags', str(where), head)
-                    if item.single:  # Only this commit.
-                        shas = head
-                    else:
-                        shas = _git(
-                            dest, 'rev-list', '--reverse', '--no-merges', f'{start}..{head}'
-                        )
-                    replayed = _replay(dest, tip or start, shas.split())
-                    if not replayed.ok:
-                        raise PrepareError(
-                            f'{item.label} does not apply on top of the items before it',
-                            replayed.detail or replayed.error,
-                        )
-                    tip = replayed.tip
-            except PrepareError as ex:
-                raise PrepareError(str(ex), ex.output, ex.base or start or '') from ex
-        if start is None or tip is None:
-            start = tip = _git(project, 'rev-parse', 'HEAD')
+        start, tip = _apply_items(project, dest, base, items)
         _git(dest, 'checkout', '--quiet', '-b', branch, tip)
         for other in _git(dest, 'branch', '--format=%(refname:short)').splitlines():
             if other != branch:
@@ -378,6 +386,132 @@ def prepare_items_tree(
         shutil.rmtree(dest, ignore_errors=True)
         raise
     return Worktree(str(dest), branch, start, tip)
+
+
+# Workbench spaces: one bare repository per project (var/workbenches/<id>/repos/), sharing
+# the project's objects; each session works in a linked worktree of it on its own branch,
+# so every branch any session makes is the workspace's at once and outlives the checkout.
+
+
+def _space_repo(project: pathlib.Path, repo: pathlib.Path) -> None:
+    """The space's repository for *project*, made once: a bare shared clone without the
+    project's branches (they stay the project's), each checkout with its own config."""
+    if (repo / 'HEAD').is_file():
+        return
+    try:
+        clone_project(project, repo, bare=True)
+        for ref in _git(repo, 'for-each-ref', '--format=%(refname)', 'refs/heads/').split():
+            _git(repo, 'update-ref', '-d', ref)
+        # Per-checkout config (each its agent identity); core.bare must then be the main
+        # repository's own, or every checkout would count as bare too.
+        _git(repo, 'config', 'extensions.worktreeConfig', 'true')
+        _git(repo, 'config', '--unset', 'core.bare')
+        _git(repo, 'config', '--file', str(repo / 'config.worktree'), 'core.bare', 'true')
+    except (OSError, PrepareError) as ex:
+        shutil.rmtree(repo, ignore_errors=True)
+        raise PrepareError(f'cannot make the space repository for {project.name}: {ex}') from ex
+
+
+def _space_agent(dest: pathlib.Path, identity: tuple[str, str]) -> None:
+    """The checkout's own agent identity (other sessions' checkouts have theirs), and the
+    commit-msg hook all of them share."""
+    _git(dest, 'config', '--worktree', 'user.name', identity[0])
+    _git(dest, 'config', '--worktree', 'user.email', identity[1])
+    hook = pathlib.Path(_git(dest, 'rev-parse', '--git-common-dir')) / 'hooks' / 'commit-msg'
+    hook = hook if hook.is_absolute() else dest / hook
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(COMMIT_MSG)
+    hook.chmod(0o755)
+
+
+def prepare_space_tree(
+    project: pathlib.Path,
+    repo: pathlib.Path,
+    dest: pathlib.Path,
+    branch: str,
+    space_branch: str,
+    base: str,
+    items: Sequence[TreeItem],
+    identity: tuple[str, str],
+    use: str = 'apply',
+    agent_apply: str = '',
+) -> tuple[Worktree, bool]:
+    """A session's checkout at *dest* of the space's repository *repo* for *project*, on
+    *branch*, and whether the space's branch was prepared for it. *use* apply: from the
+    space's branch (*space_branch*: base and items applied), prepared now from *base* and
+    *items* if there is none yet; deliver (or *agent_apply*: they did not apply from
+    there): at that start with the items' mbox for the agent. On failure the checkout and
+    anything made for it are gone; the space's branch is made only from items applied."""
+    from ..sessions.trees import agent_mbox
+
+    if os.path.lexists(dest):
+        raise PrepareError(f'{dest} exists')
+    _space_repo(project, repo)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    made = False
+    try:
+        if use == 'deliver' or agent_apply:
+            start = _commit(project, agent_apply or base or 'HEAD')
+            if start is None:
+                raise PrepareError(
+                    f'base {agent_apply or base!r} is not a commit in {project.name}'
+                )
+            ambytes = items_mbox(project, start, items)
+            _git(repo, 'worktree', 'add', '--quiet', '-b', branch, str(dest), start)
+            made = True
+            _space_agent(dest, identity)
+            mbox = agent_mbox(dest)
+            mbox.parent.mkdir(parents=True, exist_ok=True)
+            mbox.write_bytes(ambytes)
+            tree = Worktree(str(dest), branch, start, start, agent_applies=True)
+            return tree, False
+        tip = _commit(repo, f'refs/heads/{space_branch}')
+        if tip is not None:
+            start = _git(repo, 'config', '--default', '', f'b4m.space.{_key(space_branch)}.base')
+            _git(repo, 'worktree', 'add', '--quiet', '-b', branch, str(dest), tip)
+            made = True
+            _space_agent(dest, identity)
+            return Worktree(str(dest), branch, start or tip, tip), False
+        at = _commit(project, base) if base else _commit(project, 'HEAD')
+        if at is None:
+            raise PrepareError(f'base {base!r} is not a commit in {project.name}')
+        _git(repo, 'worktree', 'add', '--quiet', '--detach', '--no-checkout', str(dest), at)
+        made = True
+        start, tip = _apply_items(project, dest, base, items)
+        _git(dest, 'checkout', '--quiet', '-b', branch, tip)
+        _git(repo, 'update-ref', f'refs/heads/{space_branch}', tip)
+        _git(repo, 'config', f'b4m.space.{_key(space_branch)}.base', start)
+        _space_agent(dest, identity)
+        return Worktree(str(dest), branch, start, tip), True
+    except BaseException:
+        if made:
+            remove_space_tree(dest, keep_branch=False)
+        raise
+
+
+def _key(branch: str) -> str:
+    """A branch name as a git config subsection-free key part."""
+    return re.sub(r'[^A-Za-z0-9-]', '-', branch)
+
+
+def remove_space_tree(dest: pathlib.Path, keep_branch: bool = True) -> None:
+    """A session's checkout of a space repository, gone: its files and its worktree entry;
+    its branch (and every other) stays in the space unless *keep_branch* is False (a
+    checkout that never got going)."""
+    common = _git(dest, 'rev-parse', '--path-format=absolute', '--git-common-dir')
+    branch = subprocess.run(
+        ['git', 'symbolic-ref', '-q', '--short', 'HEAD'],
+        cwd=dest,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    ).stdout.strip()
+    repo = pathlib.Path(common)
+    _git(repo, 'worktree', 'remove', '--force', str(dest))
+    if not keep_branch and branch:
+        _git(repo, 'branch', '--quiet', '-D', branch)
+    if dest.parent.is_dir() and not any(dest.parent.iterdir()):
+        dest.parent.rmdir()
 
 
 def items_mbox(project: pathlib.Path, start: str, items: Sequence[TreeItem]) -> bytes:

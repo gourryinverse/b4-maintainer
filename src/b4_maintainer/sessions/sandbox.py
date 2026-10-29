@@ -77,6 +77,7 @@ def policy_for(store: SessionStore, sid: str) -> Policy:
     writable = [str(env.get('B4M_OUT', ''))]
     if execute:
         writable.append(str(env.get('B4M_WORKTREE', '')))
+        writable += [w for w in str(env.get('B4M_WRITABLE', '')).split('\n') if w]
     extra = {k: str(env[k]) for k in ('GIT_CEILING_DIRECTORIES',) if k in env}
     try:
         nice = int(env.get('B4M_NICE', NICE))

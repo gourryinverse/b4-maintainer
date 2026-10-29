@@ -152,6 +152,22 @@ class TreeItem:
 AGENT_MBOX = '.git/b4m/series.mbx'
 
 
+def agent_mbox(tree: pathlib.Path) -> pathlib.Path:
+    """Where a tree keeps the mbox its agent applies: in its git directory, never among
+    its files (a space checkout's .git is a file naming its own git directory)."""
+    if (tree / '.git').is_dir():
+        return tree / AGENT_MBOX
+    found = _run(tree, 'rev-parse', '--git-path', 'b4m/series.mbx')
+    path = pathlib.Path(found)
+    return path if path.is_absolute() else tree / path
+
+
+def in_space(tree: pathlib.Path) -> bool:
+    """Whether *tree* is a session's checkout of a workbench space's repository (its
+    commits stay in the space when it goes)."""
+    return (tree / '.git').is_file() and tree.parent.parent.name == 'sessions'
+
+
 def series_tip(path: pathlib.Path, tree: Worktree) -> str:
     """The series' last commit in the tree: as recorded, or (when the agent applies the
     series itself) the session branch's tip."""
@@ -214,11 +230,13 @@ def _promisors(project: pathlib.Path) -> list[str]:
     return names
 
 
-def clone_project(project: pathlib.Path, dest: pathlib.Path) -> None:
+def clone_project(project: pathlib.Path, dest: pathlib.Path, bare: bool = False) -> None:
     """A session tree's start: `git clone --shared --no-checkout` of the project (objects
-    borrowed, the project untouched), set up for the sandbox."""
+    borrowed, the project untouched), set up for the sandbox; *bare*: a workbench space's
+    repository, whose sessions check out linked worktrees."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    _run(dest.parent, 'clone', '--quiet', '--shared', '--no-checkout', str(project), str(dest))
+    how = '--bare' if bare else '--no-checkout'
+    _run(dest.parent, 'clone', '--quiet', '--shared', how, str(project), str(dest))
     # Blobs a blobless project lacks are fetched from its remotes into the clone.
     promisors = _promisors(project)
     for name in promisors:
@@ -278,6 +296,11 @@ def inspect_tree(
     """Changes in the tree; commits on its branches beyond the refs it was cloned with and
     *applied* (the series' last; without it the series counts too), classed when *tree*
     (the session's record of it) is known."""
+    if in_space(path):  # Its branches stay in the space's repository: only changes go.
+        try:
+            return TreeState(tuple(_git(path, 'status', '--porcelain')))
+        except OSError as ex:
+            return TreeState(error=str(ex))
     if not (path / '.git').is_dir():
         return TreeState(error='not a git tree')
     try:
