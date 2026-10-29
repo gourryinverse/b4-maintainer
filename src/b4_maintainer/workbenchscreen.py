@@ -1208,6 +1208,7 @@ class WorkbenchScreen(Screen[None]):
                 if sids and reap is not None:
                     reap(sids)
                 self.service.store.delete(bench.id)
+                self.service.remove_space(bench.id)
 
             self._act(work, removed, 'Removing…')
 

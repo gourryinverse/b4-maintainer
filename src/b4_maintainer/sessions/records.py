@@ -89,6 +89,8 @@ class SessionRecord:
     home: str = ''
     # Project checkouts it may read, besides its trees: (project, path).
     reads: tuple[tuple[str, str], ...] = ()
+    # Its workbench's space (var/workbenches/<id>), whose context/ it reads live.
+    space: str = ''
     # Its name, from the store's names.toml (never saved in session.json); not part of
     # what the record is, so a renamed record still equals itself.
     name: str = field(default='', compare=False)

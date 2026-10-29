@@ -158,6 +158,8 @@ def _sessions(
 
     overrides = dict(workspace.guidance) if workspace else {}
     cache = root / 'var' / 'guidance'
+    from .space import space_dir
+
     return SessionHub(
         store,
         TmuxRunner(store, site),
@@ -165,6 +167,7 @@ def _sessions(
         profiles_dir=root / 'state' / 'profiles' if private else None,
         skills_dir=root / 'state' / 'skills' if private else None,
         guidance=lambda: guidance_skills(sources(overrides, root), cache),
+        spaces=lambda wid: space_dir(root, wid),
     )
 
 

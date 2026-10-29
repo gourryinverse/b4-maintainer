@@ -104,6 +104,7 @@ def pi_command(
     projects = dict.fromkeys([record.project, *(p for p, _tree in session_trees(record))])
     readable = [str(work), worktree, *(site.checkouts.get(p, '') for p in projects)]
     readable += [path for _project, path in record.reads]
+    readable += [str(pathlib.Path(record.space) / 'context')] if record.space else []
     readable += [str(s) for s in spec.skills] + [str(r) for r in spec.readable]
     env = {
         'B4M_SESSION': record.id,
@@ -124,6 +125,14 @@ def pi_command(
     return PiCommand(argv, worktree or str(work), env)
 
 
+SPACE_TEXT = (
+    "This session's workbench keeps its material in {context}, read-only: items.md lists "
+    "each project, its base, and its items, with each series' and discussion's thread "
+    'under mail/ and each file under files/. It is live: when the maintainer adds, moves, '
+    'or removes items while you work, it changes, changes.md says what changed and when, '
+    'and a note arrives in your inbox. Look there for anything the maintainer refers to '
+    'that your own context does not have.'
+)
 SANDBOXED_TEXT = (
     "Shell commands run in a sandbox without network that sees only this session's "
     'directories (this one, the project checkout, the worktree), read-only except the '
@@ -201,6 +210,8 @@ def system_prompt(
         f'Write output files only under {work / "out"}.',
         f'Permissions: {permissions}.',
     ]
+    if record.space:
+        facts.append(SPACE_TEXT.format(context=pathlib.Path(record.space) / 'context'))
     if record.reads:
         facts.append(
             'Project checkouts to read (read-only; never write in them): '

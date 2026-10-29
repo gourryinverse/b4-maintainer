@@ -529,6 +529,8 @@ class MaintainerApp(App[None]):
         self._sessions = sessions
         self._branches = branches  # The Branches screen's data and actions (live only).
         self._workbenches = workbenches  # F3's workbenches (live only).
+        if workbenches is not None:  # Each save brings the workbench's space in line.
+            workbenches.store.saved = self._space_saved
         self._installed: set[str] = set()  # Tabs made so far (kept, with their place).
         self._overview = Overview()
         self._polling = False
@@ -675,6 +677,41 @@ class MaintainerApp(App[None]):
             self._sync_bindings()
         self._reload_reading = False
         self._refresh_tabs(snapshot)
+        self._sync_spaces()  # Threads may have new replies; series may be newly cached.
+
+    def _space_saved(self, bench: Workbench) -> None:
+        """A workbench was saved (on any thread): its space follows, in the background."""
+
+        def start() -> None:
+            self.run_worker(lambda: self._sync_space_now(bench), thread=True, group='spaces')
+
+        try:
+            self.call_from_thread(start)
+        except RuntimeError:  # Already on the app's thread.
+            start()
+
+    def _sync_space_now(self, bench: Workbench) -> list[str]:
+        """*bench*'s space brought in line with its recipe (blocking): what changed."""
+        service, snapshot = self._workbenches, self.snapshot
+        if service is None or snapshot is None:
+            return []
+        try:
+            return service.sync_space(snapshot.workspace, bench, series_map(snapshot.items))
+        except Exception as exc:  # The recipe stands; its space catches up next time.
+            self.log.error(f'workbench space sync failed: {exc!r}')
+            return []
+
+    def _sync_spaces(self) -> None:
+        """Every workbench's space brought in line (in the background)."""
+        service = self._workbenches
+        if service is None:
+            return
+
+        def work() -> None:
+            for bench in service.store.list()[0]:
+                self._sync_space_now(bench)
+
+        self.run_worker(work, thread=True, group='spaces')
 
     def _refresh_tabs(self, snapshot: Snapshot) -> None:
         """A new snapshot (e.g. after F5): the open Workbench or Branches tab rereads
@@ -2957,6 +2994,7 @@ class MaintainerApp(App[None]):
             plans = tuple(dataclasses.replace(p, use=uses.get(p.project, 'none')) for p in plans)
 
         def launch() -> Optional[str]:
+            self._sync_space_now(bench)  # Its context as the recipe stands now.
             skills = hub.skills()[0]
             situation = _bench_situation(hub, workspace, hub.overview(), skills, plans)
             mode = plan(result.profile, result.choice, situation, result.items).mode
@@ -3424,6 +3462,9 @@ class MaintainerApp(App[None]):
             choice = result.choice
             if target.scope == 'series' and not choice.workbench:
                 choice = dataclasses.replace(choice, workbench=self._file_in(target, choice))
+            filed = self._workbenches.store.get(choice.workbench) if self._workbenches else None
+            if filed is not None:
+                self._sync_space_now(filed)  # The series' workbench's context, current.
             if target.scope == 'series' and choice.trees:
                 choice = self._other_checkouts(target, choice)
             skills = hub.skills()[0]

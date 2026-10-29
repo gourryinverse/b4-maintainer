@@ -463,8 +463,10 @@ class SessionHub:
         catalog: Optional[Callable[[], Optional[str]]] = None,
         sandbox: Optional[Callable[[], Any]] = None,  # Truthy where the sandbox works.
         guidance: Optional[Callable[[], tuple[list[Skill], list[str]]]] = None,
+        spaces: Optional[Callable[[str], pathlib.Path]] = None,
     ) -> None:
         self.store = store
+        self._spaces = spaces  # A workbench's space, by its id.
         self.runner = runner
         self.worktrees = worktrees or RecordWorktrees()
         self.profiles_dir = profiles_dir  # The maintainer's own (state/profiles/).
@@ -594,7 +596,7 @@ class SessionHub:
         if not planned.ok:
             raise SessionError('; '.join(planned.blockers))
         now = now or datetime.datetime.now(datetime.timezone.utc)
-        record = new_record(target, profile, choice, planned, now)
+        record = self._in_space(new_record(target, profile, choice, planned, now))
         assert planned.request is not None and planned.model is not None
         installed = {s.id: s for s in situation.skills}
         chosen = [installed[s] for s in planned.skills if s in installed]
@@ -758,7 +760,9 @@ class SessionHub:
         assert planned.request is not None and planned.model is not None
         now = now or datetime.datetime.now(datetime.timezone.utc)
         target = Target('workbench', '', f'workbench:{bench}', 0, label)
-        record = new_record(target, profile, choice, planned, now).replace(workbench=bench)
+        record = self._in_space(
+            new_record(target, profile, choice, planned, now).replace(workbench=bench)
+        )
         installed = {s.id: s for s in situation.skills}
         chosen = [installed[s] for s in planned.skills if s in installed]
         spec = LaunchSpec(
@@ -785,10 +789,18 @@ class SessionHub:
             for item in entry.items
             if item.file
         ]
+        if record.space:  # Its space has them, kept up to date: read there, live.
+            threads, files = [], []
         package = [i for i in planned.included if i.id != 'mbox']  # One thread per series.
         tree_plans = [p for p in plans if p.use != 'none']
         prepare = trees if planned.mode == 'worktree' and tree_plans else None
         return self._start(record, spec, None, lambda r: (None, package), prepare, threads, files)
+
+    def _in_space(self, record: SessionRecord) -> SessionRecord:
+        """*record* in its workbench's space, if it has a workbench and spaces are kept."""
+        if not record.workbench or self._spaces is None:
+            return record
+        return record.replace(space=str(self._spaces(record.workbench)))
 
     def _preparer(self, plans: Sequence[TreePlan]) -> Callable[[SessionRecord], SessionRecord]:
         """Prepares a tree per plan (a 'none' plan has none) side by side in the session's

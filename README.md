@@ -163,6 +163,12 @@ Python 3.11 or newer.
   beside the app, `o` opens the workbench's live session from any pane, and one launched
   from the tab joins beside at once. The column follows the tab: back on LKML the
   workbench session returns to its own window.
+- Each workbench has a space, `var/workbenches/<id>/`, that its sessions work in. Its
+  `context/` follows the recipe as it is edited: `items.md` (each project, its base, and
+  its items, and where each is), `mail/` (each series' thread at the revision named, each
+  discussion's), `files/`, and `changes.md`. Sessions filed in the workbench read it live,
+  so a mailbox or file added after a session started reaches it, and a note in the
+  session's inbox says what changed. Removing the workbench removes its space.
 - Every session is filed in a workbench: F1 on a series makes that series' workbench the
   first time (named after it, the series on its base; `origin` in its file) and files
   the session there, so its sessions and their output are found in the Workbench tab; a

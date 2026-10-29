@@ -10,6 +10,7 @@ and writes the files. WorkbenchService gathers what the Workbench screen offers 
 previews (plain git; blocking: call from a worker). Preparing trees is the sessions'.
 """
 
+import datetime
 import json
 import os
 import pathlib
@@ -27,6 +28,7 @@ from .workspace import Workspace
 
 if TYPE_CHECKING:
     from .sessions.hub import TreePlan
+    from .space import SpaceEntry
 
 DIRECTORY = 'workbenches'  # Under state/.
 _TOP = frozenset({'label', 'origin', 'entry'})
@@ -179,6 +181,7 @@ class WorkbenchStore:
 
     def __init__(self, directory: pathlib.Path) -> None:
         self.directory = directory
+        self.saved: Optional[Callable[[Workbench], None]] = None  # Told of every save.
 
     def _path(self, wid: str) -> pathlib.Path:
         return self.directory / f'{wid}.toml'
@@ -205,6 +208,8 @@ class WorkbenchStore:
         tmp = self.directory / f'.{bench.id}.toml.tmp'  # Dotfiles are never exported.
         tmp.write_text(workbench_toml(bench))
         os.replace(tmp, self._path(bench.id))
+        if self.saved is not None:
+            self.saved(bench)  # Its space follows (the app syncs it in the background).
 
     def delete(self, wid: str) -> None:
         self._path(wid).unlink(missing_ok=True)
@@ -525,6 +530,75 @@ class WorkbenchService:
             return (tree.path if tree else ''), name
         repo = self._repo(workspace, project)
         return (str(repo) if repo else ''), branch
+
+    def space_entries(self, bench: Workbench, series: Mapping[str, Series]) -> list['SpaceEntry']:
+        """*bench*'s recipe as its space shows it: each item, where its mail or file is,
+        and how it reaches trees."""
+        from .space import SpaceEntry, SpaceItem
+
+        entries = []
+        for entry in bench.entries:
+            items = []
+            for item in entry.items:
+                if item.mail:
+                    talk = series.get(item.mail)
+                    items.append(
+                        SpaceItem(item.subject, 'discussion', talk.source, 'to read')
+                        if talk is not None
+                        else SpaceItem(item.subject, 'missing', note='not in the cache yet')
+                    )
+                elif item.file:
+                    items.append(SpaceItem(pathlib.Path(item.file).name, 'file', item.file))
+                elif item.series:
+                    known = posting(series, item.series, item.revision)
+                    how = 'applied in trees' + (
+                        f' (patches {", ".join(map(str, item.patches))} only)'
+                        if item.patches
+                        else ''
+                    )
+                    items.append(
+                        SpaceItem(item.label, 'series', known.source, how)
+                        if known is not None and known.source
+                        else SpaceItem(item.label, 'missing', note='not in the cache yet')
+                    )
+                else:
+                    what = 'that commit replayed in trees' if item.commit else 'replayed in trees'
+                    items.append(SpaceItem(item.label, 'branch', note=f'local branch: {what}'))
+            entries.append(SpaceEntry(entry.project, entry.base, tuple(items)))
+        return entries
+
+    def sync_space(
+        self, workspace: Workspace, bench: Workbench, series: Mapping[str, Series]
+    ) -> list[str]:
+        """*bench*'s space brought in line with its recipe (blocking): what changed; each
+        running session of the workbench gets a note of it in its inbox."""
+        from .space import space_dir, sync_context
+
+        space = space_dir(self.root, bench.id)
+        changes = sync_context(space, bench.label, self.space_entries(bench, series))
+        if changes and self._directory is not None:
+            when = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+            note = (
+                f'\n{when}: the maintainer changed the workbench; its context, '
+                f'{space / "context"}, now has:\n' + ''.join(f'- {c}\n' for c in changes)
+            )
+            for record in self._records():
+                if record.workbench != bench.id or record.state == 'ended':
+                    continue
+                inbox = self._directory(record.id) / 'work' / 'context' / 'inbox.md'
+                try:
+                    inbox.parent.mkdir(parents=True, exist_ok=True)
+                    with inbox.open('a') as f:
+                        f.write(note)
+                except OSError:
+                    continue  # A session being removed.
+        return changes
+
+    def remove_space(self, wid: str) -> None:
+        """Workbench *wid*'s space, gone with it (blocking)."""
+        from .space import remove_space, space_dir
+
+        remove_space(space_dir(self.root, wid))
 
     def plans(
         self, workspace: Workspace, bench: Workbench, series: Mapping[str, Series]

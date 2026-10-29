@@ -1,0 +1,179 @@
+"""Contract: a workbench has a space, var/workbenches/<id>/, whose context/ follows the
+recipe: items.md lists every project and item and where each is, mail/ holds each
+series' (at its revision) and discussion's thread, files/ each file item. A session
+started on the workbench reads that context live, so what is added after it started
+reaches it; changes.md, and each running session's inbox, say what changed."""
+
+import datetime
+import json
+
+from sessiondata import make_record
+
+from b4_maintainer.fixtures import EPOCH, PatchSpec, write_series_mbox
+from b4_maintainer.model import Series
+from b4_maintainer.space import space_dir
+from b4_maintainer.workbench import (
+    Workbench,
+    WorkbenchService,
+    WorkbenchStore,
+    add_file,
+    add_mail,
+    add_series,
+)
+from b4_maintainer.workspace import Workspace
+
+CHANGE_ID = '20261020-mm-foo-0123456789ab'
+
+
+def cached(tmp_path):
+    """Two revisions of a series and a discussion, as the workbench's series map has them."""
+    from b4_maintainer.adapters.b4mbox import parse_mbox
+
+    found = {}
+    for revision in (2, 3):
+        path = tmp_path / 'mail' / f'foo-v{revision}.mbx'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_series_mbox(
+            path,
+            'mm: foo',
+            revision=revision,
+            patches=[PatchSpec('mm/foo.c')],
+            change_id=CHANGE_ID,
+            date=EPOCH + datetime.timedelta(days=revision),
+        )
+        [series] = parse_mbox(path)
+        found[f'change-id:{CHANGE_ID}#v{revision}'] = series
+    found[f'change-id:{CHANGE_ID}'] = found[f'change-id:{CHANGE_ID}#v3']
+    talk = tmp_path / 'mail' / 'talk.mbx'
+    write_series_mbox(talk, 'mm: a question', patches=[PatchSpec('mm/x.c')])
+    [discussion] = parse_mbox(talk)
+    found['talk'] = Series(**{**discussion.__dict__, 'identity': 'talk', 'discussion': True})
+    return found
+
+
+def service_for(tmp_path, records=()):
+    store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
+    return WorkbenchService(tmp_path, store, lambda: list(records), lambda sid: tmp_path / sid)
+
+
+def test_the_space_follows_the_recipe_and_says_what_changed(tmp_path):
+    series = cached(tmp_path)
+    service = service_for(tmp_path)
+    identity = f'change-id:{CHANGE_ID}'
+    bench = add_series(Workbench('cmp', 'Compare', ()), 'linux', identity, 2, 'mm: foo')
+    service.sync_space(Workspace.from_config({}), bench, series)
+    context = space_dir(tmp_path, 'cmp') / 'context'
+    assert sorted(p.name for p in (context / 'mail').iterdir()) == ['linux-mm-foo-v2.mbx']
+    assert 'v2' in (context / 'mail' / 'linux-mm-foo-v2.mbx').read_text()
+    items = (context / 'items.md').read_text()
+    assert 'Compare' in items and 'mail/linux-mm-foo-v2.mbx' in items and 'live' in items
+
+    notes = tmp_path / 'notes.txt'
+    notes.write_text('notes\n')
+    bench = add_series(bench, 'linux', identity, 3, 'mm: foo')
+    bench = add_mail(bench, 'linux', 'talk', 'mm: a question')
+    bench = add_file(bench, 'linux', str(notes))
+    changes = service.sync_space(Workspace.from_config({}), bench, series)
+    assert changes == [
+        'added mail/linux-mm-foo-v3.mbx (mm: foo v3, linux)',
+        'added mail/linux-mm-a-question.mbx (mm: a question, linux)',
+        'added files/notes.txt (notes.txt, linux)',
+    ]
+    assert (context / 'files' / 'notes.txt').read_text() == 'notes\n'
+    log = (context / 'changes.md').read_text()
+    assert 'added mail/linux-mm-foo-v3.mbx' in log
+
+    bench = Workbench(bench.id, bench.label, (bench.entries[0].__class__('linux', '', ()),))
+    changes = service.sync_space(Workspace.from_config({}), bench, series)
+    assert 'removed mail/linux-mm-foo-v2.mbx (mm: foo v2, linux)' in changes
+    assert not (context / 'mail').exists() or not list((context / 'mail').iterdir())
+    assert service.sync_space(Workspace.from_config({}), bench, series) == []  # No change.
+
+
+def test_running_sessions_of_the_workbench_hear_of_changes(tmp_path):
+    series = cached(tmp_path)
+    mine = make_record('w1', scope='workbench', workbench='cmp')
+    other = make_record('w2', scope='workbench', workbench='else')
+    ended = make_record('w3', scope='workbench', workbench='cmp', state='ended')
+    service = service_for(tmp_path, [mine, other, ended])
+    bench = add_mail(Workbench('cmp', 'Compare', ()), 'linux', 'talk', 'mm: a question')
+    service.sync_space(Workspace.from_config({}), bench, series)
+    inbox = tmp_path / 'w1' / 'work' / 'context' / 'inbox.md'
+    assert 'added mail/linux-mm-a-question.mbx' in inbox.read_text()
+    assert str(space_dir(tmp_path, 'cmp') / 'context') in inbox.read_text()
+    assert not (tmp_path / 'w2' / 'work' / 'context' / 'inbox.md').exists()
+    assert not (tmp_path / 'w3' / 'work' / 'context' / 'inbox.md').exists()
+
+
+def test_a_workbench_session_reads_the_space_not_copies(tmp_path):
+    from sessiondata import FakeSessionRunner, FakeWorktrees
+    from test_session_workbench import launch
+
+    from b4_maintainer.sessions.hub import SessionHub, TreePlan
+    from b4_maintainer.sessions.launch import LaunchChoice
+    from b4_maintainer.sessions.pi import Site, pi_command
+    from b4_maintainer.sessions.store import SessionStore
+    from b4_maintainer.sessions.trees import TreeItem
+
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    runner = FakeSessionRunner(store)
+    hub = SessionHub(store, runner, FakeWorktrees(), spaces=lambda wid: space_dir(tmp_path, wid))
+    space = space_dir(tmp_path, 'cmp')
+    (space / 'context').mkdir(parents=True)
+    source = tmp_path / 'thread.mbx'
+    source.write_text('')
+    plans = (TreePlan('linux', items=(TreeItem('mm: foo v3', str(source), 3),), use='none'),)
+    light = LaunchChoice('series-test', {'goal': 'review'}, model='dry-run', mode='lightweight')
+    record = launch(hub, bench='cmp', plans=plans, choice=light)
+    assert record.space == str(space)
+    work = store.directory(record.id) / 'work'
+    assert not list((work / 'context').glob('*.mbx'))  # Not copied: read live.
+    system = (store.directory(record.id) / 'system.md').read_text()
+    assert str(space / 'context') in system and 'items.md' in system
+    [(_sid, spec)] = [(s, x) for s, x in zip([record.id], runner.specs)]
+    command = pi_command(store, record, spec, Site(tmp_path, 'b4-maintainer'))
+    assert str(space / 'context') in command.env['B4M_READABLE'].split('\n')
+    assert json.loads((store.directory(record.id) / 'session.json').read_text())['space']
+
+
+async def test_a_mailbox_added_while_a_session_runs_reaches_it(demo_root, tmp_path):
+    from sessiondata import FakeSessionRunner, FakeWorktrees
+    from test_workbench_screen import FakeService
+
+    from b4_maintainer.adapters.fixture import FixtureSource
+    from b4_maintainer.app import MaintainerApp
+    from b4_maintainer.sessions.hub import SessionHub
+    from b4_maintainer.sessions.store import SessionStore
+
+    sessions = SessionStore(tmp_path / 'var' / 'sessions')
+    runner = FakeSessionRunner(sessions)
+    hub = SessionHub(sessions, runner, FakeWorktrees(), spaces=lambda w: space_dir(tmp_path, w))
+    store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
+    store.save(Workbench('cmp', 'Compare', ()))
+    runner.add(make_record('w1', scope='workbench', workbench='cmp'))  # Already running.
+    service = FakeService(tmp_path, store, hub.records, sessions.directory)
+    app = MaintainerApp(FixtureSource(demo_root).load, sessions=hub, workbenches=service)
+    async with app.run_test(size=(180, 40)) as pilot:
+        for _ in range(3):
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        item = app.query_one('SeriesList').highlighted_item
+        await pilot.press('w')
+        for _ in range(3):
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        await pilot.press('enter')  # Onto Compare.
+        for _ in range(3):
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        mail = list((space_dir(tmp_path, 'cmp') / 'context' / 'mail').iterdir())
+        assert [p.name for p in mail] == [f'{item.project}-{_slug(item)}.mbx']
+        inbox = sessions.directory('w1') / 'work' / 'context' / 'inbox.md'
+        assert mail[0].name in inbox.read_text()
+
+
+def _slug(item):
+    import re
+
+    label = f'{item.series.subject} v{item.series.revision}'
+    return re.sub(r'[^a-z0-9]+', '-', label.lower()).strip('-')
