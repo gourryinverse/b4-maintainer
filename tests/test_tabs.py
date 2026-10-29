@@ -43,7 +43,9 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
     app = make(demo_root, tmp_path)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        assert tab_text(app) == ' F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Settings '
+        assert tab_text(app) == (
+            ' ? Help  F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Settings '
+        )
         assert app.screen.query_one(TabBar).current == 'lkml'
         await pilot.press('f3')
         await settle(pilot)
@@ -117,7 +119,7 @@ async def test_question_mark_lists_every_key_and_the_footer_only_common_ones(dem
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         shown = footer_keys(app)
-        assert {'enter', 'slash', 'question_mark', 'Q'} <= shown
+        assert {'enter', 'slash', 'Q'} <= shown and 'question_mark' not in shown  # A tab.
         assert 'w' in shown  # Adding to a workbench is a common move.
         assert not {'M', 'a', 'd', 'z', 'f2', 'f3', 'f4'} & shown  # In ? and the tabs.
         await pilot.press('question_mark')
@@ -141,6 +143,23 @@ async def test_a_click_on_a_tab_switches_to_it(demo_root, tmp_path):
         await pilot.click(TabBar, offset=(start + 1, 0))
         await settle(pilot)
         assert isinstance(app.screen, WorkbenchScreen)
+
+
+async def test_help_in_the_tab_bar_lists_the_open_tabs_keys(demo_root, tmp_path):
+    app = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('f4')
+        await settle(pilot)
+        assert tab_text(app).startswith(' ? Help ')
+        await pilot.click(TabBar, offset=(2, 0))
+        await settle(pilot)
+        assert isinstance(app.screen, Notice) and 'b  new branch' in app.screen.prompt
+        await pilot.press('escape', 'f2')
+        await settle(pilot)
+        await pilot.press('question_mark')  # The key too, on any tab.
+        await settle(pilot)
+        assert isinstance(app.screen, Notice) and 'w  to workbench' in app.screen.prompt
 
 
 async def test_f4_is_branches_without_session_trees(demo_root, tmp_path):

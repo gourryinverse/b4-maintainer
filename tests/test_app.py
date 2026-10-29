@@ -152,7 +152,7 @@ async def test_footer_shows_only_applicable_keys(demo_root):
         assert {'enter', 'grave_accent', 'tab', 'p', 'Q'} <= keys
         assert not {'v', 'escape'} & keys
         # The less common ones act but stay off the footer (? lists them).
-        assert {'enter', 'Q', 'question_mark'} <= footer_keys(app)
+        assert {'enter', 'Q'} <= footer_keys(app)  # ? is in the tab bar.
         assert not {'grave_accent', 'tab', 'p'} & footer_keys(app)
 
         await pilot.resize_terminal(130, 40)

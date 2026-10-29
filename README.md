@@ -77,7 +77,7 @@ Python 3.11 or newer.
   ed25519 key (`patatt genkey`; publish its public key), or no signing. Without a key,
   mail goes unsigned instead of failing; sending a patch from F4 ends with a choice of
   signed (first when a key is set up) or unsigned. The footer shows each
-  tab's common keys; `?` lists all of them.
+  tab's common keys; `?` (Help, first in the tab bar) lists all of them.
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
   live: `F5` fetches profile lists and your own mail from lore (in a thread, the thread reloads
   in place), `t` tracks the selected series

@@ -469,7 +469,7 @@ class MaintainerApp(App[None]):
         Binding('f3', "tab('workbench')", 'Workbench', key_display='F3', show=False),
         Binding('f4', 'artifacts', 'Branches', key_display='F4', show=False),
         Binding('f6', "tab('settings')", 'Settings', key_display='F6', show=False),
-        Binding('question_mark', 'keys', 'keys', key_display='?'),
+        Binding('question_mark', 'keys', 'help', key_display='?', show=False),  # In the tab bar.
         Binding('f1', 'launch_session', 'session', key_display='F1'),
         Binding('f12', 'focus_session', 'to session', key_display='F12', show=False),
         Binding('grave_accent', 'toggle_drawer', 'drawer', key_display='`', show=False),

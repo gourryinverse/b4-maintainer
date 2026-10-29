@@ -154,13 +154,17 @@ DISABLED_STYLE = Style(dim=True)
 
 # The major views and their keys, left to right.
 TABS = (
+    ('help', '?', 'Help'),  # Not a tab: the keys of whichever is open.
     ('lkml', 'F2', 'LKML'),
     ('workbench', 'F3', 'Workbench'),
     ('branches', 'F4', 'Branches'),
     ('refresh', 'F5', 'Refresh'),  # Not a tab: F5 runs the refresh from any of them.
     ('settings', 'F6', 'Settings'),
 )
-ACTIONS = {'refresh': 'refresh'}  # Entries that run an app action rather than switch.
+ACTIONS = {
+    'help': 'keys',
+    'refresh': 'refresh',
+}  # Entries that run an app action rather than switch.
 TAB_STYLE = Style(bold=True, reverse=True)
 
 
