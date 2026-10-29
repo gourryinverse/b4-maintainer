@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The prompt package: the public sources a series session may receive.
+"""The prompt package: the sources a series session may receive.
 
 Each source is offered with whether it is here, so the dialog can show it disabled with
-the reason. Sources are public only (list mail, Sashiko); never drafts or client state.
+the reason. Public sources (list mail, Sashiko) start ticked; the maintainer's unsent
+reply drafts on the thread are private and go only when ticked by hand. Client state
+never goes.
 """
 
 import pathlib
+from typing import Sequence
 
+from .adapters.drafts import SavedDraft
 from .model import Finding, SashikoReview, WorkItem
 from .sessions.policy import ContextItem
 
@@ -30,6 +34,31 @@ def series_context(item: WorkItem) -> tuple[ContextItem, ...]:
     else:
         sashiko = ContextItem('sashiko', SASHIKO, text=sashiko_text(review))
     return (mbox, sashiko)
+
+
+DRAFTS_NOTE = (
+    "Not sent: the maintainer's own replies in progress on this series' thread, private "
+    'until they send them. Read them to review what they say and what they may have '
+    'missed. Never quote them in anything meant for the list or anyone else.'
+)
+
+
+def drafts_context(drafts: Sequence[tuple[SavedDraft, str]]) -> ContextItem:
+    """The maintainer's unsent reply drafts on the thread, each with what it answers
+    (e.g. `Re: subject (Author)`, empty if unknown): a private source."""
+    if not drafts:
+        return ContextItem(
+            'drafts', 'Your unsent reply drafts', available=False, reason='no drafts on this thread'
+        )
+    n = len(drafts)
+    label = f'Your unsent reply drafts on this thread ({n}, private: not sent)'
+    lines = ["# The maintainer's unsent reply drafts", '', DRAFTS_NOTE]
+    for draft, answers in drafts:
+        lines += ['', f'## Draft reply to <{draft.msgid}>', '']
+        if answers:
+            lines.append(f'Answers: {answers}')
+        lines += [f'Saved: {draft.saved}', '', draft.text.rstrip()]
+    return ContextItem('drafts', label, text='\n'.join(lines) + '\n', private=True)
 
 
 def _finding(finding: Finding) -> list[str]:

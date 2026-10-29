@@ -79,7 +79,7 @@ class SessionRecord:
     worktree: Optional[Worktree] = None
     state: str = ''  # App-recorded: stopped, ended, failed; else derived from events.
     provenance: dict[str, str] = field(default_factory=dict)
-    context: tuple[str, ...] = ()  # Public context items given (ids).
+    context: tuple[str, ...] = ()  # Context items given (ids; drafts: private, opted in).
     skills: tuple[str, ...] = ()
     parent: str = ''  # The session this one was derived from.
     # A workbench session: its workbench, a tree per project (worktree stays None), and

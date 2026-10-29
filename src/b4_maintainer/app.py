@@ -41,7 +41,7 @@ from .drawer import drawer_line, session_label, session_rows, tabs_line, worktre
 from .launchdialog import OTHER_USES, SERIES_USES, Derived, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
-from .package import series_context
+from .package import drafts_context, series_context
 from .reader import (
     SASHIKO_PREFIX,
     SEVERITY_STYLES,
@@ -3289,10 +3289,11 @@ class MaintainerApp(App[None]):
                 project = item.project or '' if item is not None else ''
                 situation = _situation(hub, workspace, overview, skills, project)
                 problems += skill_problems
+                drafts = self._series_drafts(item) if item is not None else None
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot open the session dialog: {exc}')
                 return
-            self.call_from_thread(self._show_launch, item, profiles, problems, situation)
+            self.call_from_thread(self._show_launch, item, profiles, problems, situation, drafts)
 
         self.run_worker(work, thread=True, group='session-action')
 
@@ -3302,9 +3303,12 @@ class MaintainerApp(App[None]):
         profiles: list[Profile],
         problems: list[str],
         situation: Situation,
+        drafts: Optional[list[tuple[SavedDraft, str]]] = None,
     ) -> None:
         target = _target(item) if item is not None else None
         series = series_context(item) if item is not None else ()
+        if drafts is not None:  # Offered (private, unticked) wherever drafts are kept.
+            series += (drafts_context(drafts),)
         items: dict[str, tuple[ContextItem, ...]] = {'series': series, 'workspace': ()}
         projects, options, defaults = self._series_checkouts(item)
         dialog = LaunchDialog(
@@ -3319,6 +3323,32 @@ class MaintainerApp(App[None]):
             follow=item.project or '' if item is not None and projects else '',
         )
         self.push_screen(dialog, self._launch_chosen)
+
+    def _series_drafts(self, item: WorkItem) -> Optional[list[tuple[SavedDraft, str]]]:
+        """The maintainer's saved reply drafts on *item*'s thread, any revision's, each
+        with what it answers (blocking); None without a draft store."""
+        store = self._drafts
+        if store is None:
+            return None
+        drafted = store.msgids()
+        found: list[tuple[SavedDraft, str]] = []
+        if not drafted:
+            return found
+        family = self._latest_of(item)
+        for posting in (family.series, *reversed(family.older)):
+            try:
+                thread = self._thread_loader(posting)
+            except Exception:  # An uncached revision: its drafts cannot be placed.
+                continue
+            for key in post_keys(thread):
+                post = find_post(thread, key)
+                messages = [post.message] if post is not None else []
+                messages += [r.message for r in thread_replies(thread, key)]
+                for message in (m for m in messages if m.msgid in drafted):
+                    draft = store.get(message.msgid)
+                    if draft is not None and all(d.msgid != draft.msgid for d, _ in found):
+                        found.append((draft, f'{message.subject} ({message.author_name})'))
+        return found
 
     def _series_checkouts(
         self, item: Optional[WorkItem]

@@ -284,8 +284,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         return widgets
 
     def _package(self) -> list[Widget]:
-        """The prompt package: the scope's sources, available ones ticked, others disabled
-        with the reason."""
+        """The prompt package: the scope's sources, available public ones ticked (private
+        ones only by hand), others disabled with the reason."""
         items = self.items.get(self.scope, ())
         if not items:
             return []
@@ -293,7 +293,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             (i.id, i.label if i.available else f'{i.label} — {i.reason}', not i.available)
             for i in items
         ]
-        ticked = frozenset(i.id for i in items if i.available)
+        ticked = frozenset(i.id for i in items if i.available and not i.private)
         return self._checks('Prompt package', 'package', options, ticked)
 
     def _advanced(self) -> Collapsible:

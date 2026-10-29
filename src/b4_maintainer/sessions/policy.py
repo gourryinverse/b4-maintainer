@@ -11,14 +11,16 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True)
 class ContextItem:
-    """Public material a session may receive (the dialog's Prompt package), e.g. the
-    series mbox and thread, or Sashiko's review."""
+    """Material a session may receive (the dialog's Prompt package), e.g. the series
+    mbox and thread, or Sashiko's review; *private* material (the maintainer's unsent
+    drafts) goes only when ticked by hand."""
 
     id: str
     label: str
     text: str = ''  # Written as context/<id>.md; the mailbox is copied from the source.
     available: bool = True
     reason: str = ''  # Why it is not available.
+    private: bool = False  # Starts unticked.
 
 
 @dataclass(frozen=True)

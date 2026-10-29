@@ -88,6 +88,12 @@ Python 3.11 or newer.
   patches for `git am --scissors`, their results and reproducers as text), and `ctrl+s`
   sends it through b4
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
+  Drafts are kept in `var/drafts/` (`<hash>.eml`, the text; `<hash>.json`, the message it
+  answers) until sent or discarded.
+- F1 on a series offers, in its prompt package, your unsent reply drafts on that series'
+  thread (any revision) for the session to review: private, so never ticked unless you
+  tick them; then a copy at launch goes to its `context/drafts.md`, marked not sent and
+  never to be quoted. Drafts on other threads never go.
 - The series list is newest posting first; `l` orders it by latest activity (its newest
   message, a reply or a posting, from the cached mail) and back, keeping the selected
   series, in every view and search; a Last column then says how long ago (5m, 3h, 12d).
