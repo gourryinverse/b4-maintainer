@@ -44,7 +44,7 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         assert tab_text(app) == (
-            ' ? Help  F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Settings '
+            ' F1 Session  F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Settings  ? Help '
         )
         assert app.screen.query_one(TabBar).current == 'lkml'
         await pilot.press('f3')
@@ -151,8 +151,8 @@ async def test_help_in_the_tab_bar_lists_the_open_tabs_keys(demo_root, tmp_path)
         await settle(pilot)
         await pilot.press('f4')
         await settle(pilot)
-        assert tab_text(app).startswith(' ? Help ')
-        await pilot.click(TabBar, offset=(2, 0))
+        assert tab_text(app).endswith(' ? Help ')
+        await pilot.click(TabBar, offset=(tab_text(app).index('? Help'), 0))
         await settle(pilot)
         assert isinstance(app.screen, Notice) and 'b  new branch' in app.screen.prompt
         await pilot.press('escape', 'f2')
@@ -160,6 +160,21 @@ async def test_help_in_the_tab_bar_lists_the_open_tabs_keys(demo_root, tmp_path)
         await pilot.press('question_mark')  # The key too, on any tab.
         await settle(pilot)
         assert isinstance(app.screen, Notice) and 'w  to workbench' in app.screen.prompt
+
+
+async def test_f1_in_the_tab_bar_launches_as_f1_does_on_the_open_tab(demo_root, tmp_path):
+    app = make(demo_root, tmp_path)
+    launched = []
+    app.launch_workbench = launched.append
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        assert tab_text(app).startswith(' F1 Session ')
+        assert 'f1' not in footer_keys(app)  # In the tab bar instead.
+        await pilot.press('f3')
+        await settle(pilot)
+        await pilot.click(TabBar, offset=(2, 0))
+        await settle(pilot)
+        assert [b.id for b in launched] == [BENCH.id]  # The Workbench tab's own F1.
 
 
 async def test_f4_is_branches_without_session_trees(demo_root, tmp_path):

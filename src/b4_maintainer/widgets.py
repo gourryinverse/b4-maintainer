@@ -154,17 +154,17 @@ DISABLED_STYLE = Style(dim=True)
 
 # The major views and their keys, left to right.
 TABS = (
-    ('help', '?', 'Help'),  # Not a tab: the keys of whichever is open.
+    ('session', 'F1', 'Session'),  # Not a tab: F1 starts a session where it can.
     ('lkml', 'F2', 'LKML'),
     ('workbench', 'F3', 'Workbench'),
     ('branches', 'F4', 'Branches'),
     ('refresh', 'F5', 'Refresh'),  # Not a tab: F5 runs the refresh from any of them.
     ('settings', 'F6', 'Settings'),
+    ('help', '?', 'Help'),  # Not a tab: the keys of whichever is open.
 )
-ACTIONS = {
-    'help': 'keys',
-    'refresh': 'refresh',
-}  # Entries that run an app action rather than switch.
+# Entries that are keys rather than tabs: a click presses the key, so the open screen
+# does what it does with it (F1 on the Workbench tab launches over its workbench).
+PRESSES = {'session': 'f1', 'refresh': 'f5', 'help': 'question_mark'}
 TAB_STYLE = Style(bold=True, reverse=True)
 
 
@@ -194,8 +194,10 @@ class TabBar(Widget):
 
     async def on_click(self, event: events.Click) -> None:
         tab = next((t for start, end, t in self._spans if start <= event.x < end), None)
-        if tab is not None and tab != self.current:
-            await self.app.run_action(ACTIONS.get(tab, f"tab('{tab}')"))
+        if tab in PRESSES:
+            self.app.simulate_key(PRESSES[tab])
+        elif tab is not None and tab != self.current:
+            await self.app.run_action(f"tab('{tab}')")
 
 
 class KeyBar(Widget):

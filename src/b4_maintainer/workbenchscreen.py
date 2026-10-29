@@ -170,7 +170,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('shift+up', 'move(-1)', 'move up', key_display='⇧↑', show=False),
         Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓', show=False),
         Binding('v', 'reroll', 'newer revision'),
-        Binding('f1', 'launch', 'session', key_display='F1'),
+        Binding('f1', 'launch', 'session', key_display='F1', show=False),  # Tab bar.
         Binding('o', 'open_live', 'open session'),
         # On a session: beside the app; on a mailbox: its thread (before the lists' Enter).
         Binding('enter', 'open_session', 'open beside', priority=True),
