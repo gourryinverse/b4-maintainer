@@ -311,7 +311,11 @@ def prepare_unapplied_tree(
 
 
 def _apply_items(
-    project: pathlib.Path, dest: pathlib.Path, base: str, items: Sequence[TreeItem]
+    project: pathlib.Path,
+    dest: pathlib.Path,
+    base: str,
+    items: Sequence[TreeItem],
+    on: Optional[str] = None,
 ) -> tuple[str, str]:
     """(start, tip): *items* applied in order in *dest* (a repository sharing the project's
     objects), from *base* (empty: b4 chooses for a first series, else the project's HEAD).
@@ -322,7 +326,7 @@ def _apply_items(
     start = _commit(project, base) if base else None
     if base and start is None:
         raise PrepareError(f'base {base!r} is not a commit in {project.name}')
-    tip = start
+    tip = on or start  # *on*: items applied so far (from *base*); these go on top.
     for item in (i for i in items if i.apply):  # Read-only items stay out of trees.
         try:
             if item.source and tip is None:
@@ -489,6 +493,37 @@ def prepare_space_tree(
         if made:
             remove_space_tree(dest, keep_branch=False)
         raise
+
+
+def update_space_branch(
+    project: pathlib.Path,
+    repo: pathlib.Path,
+    space_branch: str,
+    base: str,
+    items: Sequence[TreeItem],
+    rebuild: bool = False,
+) -> str:
+    """The space's branch moved: *items* applied on top of it, or (*rebuild*) the branch
+    made anew from *base* with *items* (the whole recipe). The new tip. Done in a scratch
+    checkout that goes either way; the branch moves only if every item applies. Sessions'
+    own branches (and their commits) stay as they are."""
+    current = _commit(repo, f'refs/heads/{space_branch}')
+    if not rebuild and current is None:
+        raise PrepareError(f'{space_branch} is not prepared yet')
+    at = (_commit(project, base) if base else _commit(project, 'HEAD')) if rebuild else current
+    if at is None:
+        raise PrepareError(f'base {base!r} is not a commit in {project.name}')
+    scratch = repo.parent.parent / 'sessions' / f'.update-{repo.stem}-{os.getpid()}'
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, 'worktree', 'add', '--quiet', '--detach', '--no-checkout', str(scratch), at)
+    try:
+        start, tip = _apply_items(project, scratch, base, items, None if rebuild else current)
+    finally:
+        _git(repo, 'worktree', 'remove', '--force', str(scratch))
+    _git(repo, 'update-ref', f'refs/heads/{space_branch}', tip)
+    if rebuild:
+        _git(repo, 'config', f'b4m.space.{space_key(space_branch)}.base', start)
+    return tip
 
 
 def remove_space_tree(dest: pathlib.Path, keep_branch: bool = True) -> None:

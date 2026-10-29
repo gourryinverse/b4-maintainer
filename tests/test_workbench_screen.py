@@ -397,3 +397,26 @@ async def test_a_thread_opened_on_the_tab_fits_its_rows_a_cell_short(demo_root, 
         width = tree.scrollable_content_region.width
         labels = [str(tree.get_option_at_index(n).prompt) for n in range(tree.option_count)]
         assert labels and max(cell_len(label) for label in labels) == width - 1
+
+
+async def test_u_applies_added_items_at_once_and_asks_before_a_rebuild(demo_root, tmp_path):
+    app, store = make(demo_root, tmp_path, [BENCH])
+    service = app._workbenches
+    calls, status = [], {'linux': (('more',), False)}
+    service.space_status = lambda workspace, bench, series: status
+    service.update_space = lambda workspace, bench, series, project: (
+        calls.append(project) or f'{project} updated'
+    )
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_screen(pilot)
+        screen.select_row('entry', 'linux')
+        await pilot.press('u')
+        await settle(pilot)
+        assert calls == ['linux'] and 'linux updated' in screen.status_text()
+        status['linux'] = ((), True)
+        await pilot.press('u')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'Rebuild' in app.screen.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert calls == ['linux', 'linux']

@@ -172,7 +172,11 @@ Python 3.11 or newer.
   (`repos/<project>.git`, sharing the project's objects); a session's tree is its own
   checkout of it (`sessions/<id>/<project>`, on `b4m/session/<id>`), started from the
   space's branch `b4m/bench/<id>`, which the first session that needs it prepares (base
-  and items applied). Every branch an agent makes is the space's at once: listed under
+  and items applied). Items added to the workbench after that are marked "not in the
+  trees yet" (in Contents and in the space's `items.md`); `u` on the project applies them
+  to the space's branch, or, after an item was removed or moved, rebuilds it after a
+  confirmation. Running sessions keep their checkouts and are told; later ones start from
+  it. Every branch an agent makes is the space's at once: listed under
   the checkout that made it, and under the space itself (in the Workbench tab's Trees
   and in Branches) once that checkout is removed, so pluck, fold, and prep reach it
   either way. Removing a session's checkout loses only uncommitted changes. Removing the

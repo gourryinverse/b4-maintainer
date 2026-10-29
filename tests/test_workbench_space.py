@@ -276,3 +276,58 @@ def test_a_space_is_listed_as_a_tree_holding_what_its_checkouts_left(tmp_path, h
     assert result.ok  # Plucked straight from the space's repository.
     # Removing the workbench would delete it: its confirmation lists it.
     assert service.space_branches('cmp') == ['linux: b4m/fixup/x']
+
+
+def test_the_workbench_says_which_items_its_trees_lack_and_u_brings_them(tmp_path, home):
+    from gitutil import git
+    from test_session_workbench import project
+
+    from b4_maintainer.sessions.hub import RecordWorktrees
+    from b4_maintainer.workbench import Entry, Item
+
+    (home / '.gitconfig').write_text('[user]\n\tname = M\n\temail = m@example.org\n')
+    project(tmp_path / 'projects' / 'linux', 'linux')
+    checkout = tmp_path / 'projects' / 'linux'
+    for name in ('me/a', 'me/b'):
+        git('switch', '-q', '-c', name, 'main', cwd=checkout)
+        (checkout / f'{name[3:]}.c').write_text(name + '\n')
+        git('add', '-A', cwd=checkout)
+        git('commit', '-q', '-m', f'linux: {name}', cwd=checkout)
+    git('switch', '-q', 'main', cwd=checkout)
+    workspace = Workspace.from_config(
+        {'projects': [{'id': 'linux', 'path': 'projects/linux', 'lists': ['l.example.org']}]}
+    )
+    space = space_dir(tmp_path, 'cmp')
+    bench = Workbench('cmp', 'Compare', (Entry('linux', 'main', (Item(branch='me/a'),)),))
+    running = make_record('w9', scope='workbench', workbench='cmp')
+    service = service_for(tmp_path, [running])
+    [plan] = service.plans(workspace, bench, {})[0]
+    trees = RecordWorktrees(tmp_path / 'var' / 'worktrees', {'linux': str(checkout)})
+    record = make_record('w1', scope='workbench', workbench='cmp', space=str(space), model='x')
+    trees.prepare_entry(record, plan)
+    assert service.space_status(workspace, bench, {}) == {'linux': ((), False)}
+
+    bench = Workbench(
+        'cmp', 'Compare', (Entry('linux', 'main', (Item(branch='me/a'), Item(branch='me/b'))),)
+    )
+    assert service.space_status(workspace, bench, {}) == {'linux': (('me/b',), False)}
+    rows = service.contents(workspace, bench, {}, {})
+    assert any('me/b' in r.text and 'not in the trees yet' in r.text for r in rows)
+    service.sync_space(workspace, bench, {})
+    items = (space / 'context' / 'items.md').read_text()
+    assert 'me/b (branch) — local branch' not in items  # Says where it stands instead:
+    assert 'not in the space branch b4m/bench/cmp yet' in items
+    service.update_space(workspace, bench, {}, 'linux')
+    inbox = (tmp_path / 'w9' / 'work' / 'context' / 'inbox.md').read_text()
+    assert 'now also holds me/b' in inbox and 'rebase (or merge) onto b4m/bench/cmp' in inbox
+    assert 'in the space branch b4m/bench/cmp' in (space / 'context' / 'items.md').read_text()
+    assert service.space_status(workspace, bench, {}) == {'linux': ((), False)}
+    repo = space / 'repos' / 'linux.git'
+    assert git('log', '-1', '--format=%s', 'b4m/bench/cmp', cwd=repo) == 'linux: me/b'
+
+    bench = Workbench('cmp', 'Compare', (Entry('linux', 'main', (Item(branch='me/b'),)),))
+    assert service.space_status(workspace, bench, {}) == {'linux': ((), True)}  # Rebuild.
+    service.update_space(workspace, bench, {}, 'linux')
+    assert service.space_status(workspace, bench, {}) == {'linux': ((), False)}
+    main = git('rev-parse', 'main', cwd=checkout)  # The space carries no project branches.
+    assert git('log', '--format=%s', f'{main}..b4m/bench/cmp', cwd=repo) == 'linux: me/b'

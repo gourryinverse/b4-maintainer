@@ -352,7 +352,7 @@ class RecordWorktrees:
 
         space = pathlib.Path(record.space)
         name = self.agent[0].format(model=record.model or record.preset)
-        tree, _prepared = prepare_space_tree(
+        tree, prepared = prepare_space_tree(
             project,
             space / 'repos' / f'{plan.project}.git',
             space / 'sessions' / record.id / plan.project,
@@ -365,6 +365,10 @@ class RecordWorktrees:
             plan.agent_apply,
         )
         labels = tuple(i.label for i in plan.items if i.apply)
+        if prepared:  # What the space's branch holds, to tell what later items it lacks.
+            from ..space import record_space
+
+            record_space(space, plan.project, labels)
         if plan.use == 'deliver':
             return ProjectTree(plan.project, tree, (), labels)
         return ProjectTree(plan.project, tree, labels)

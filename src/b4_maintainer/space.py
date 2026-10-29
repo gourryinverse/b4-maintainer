@@ -178,6 +178,27 @@ def _items_text(
     return '\n'.join(lines) + '\n'
 
 
+def space_state(space: pathlib.Path) -> dict[str, list[str]]:
+    """What each project's space branch holds (its applied items' labels, in order), for
+    the projects whose branch was prepared."""
+    try:
+        data = json.loads((space / 'space.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    held = data.get('held', {}) if isinstance(data, dict) else {}
+    return {str(k): [str(x) for x in v] for k, v in held.items() if isinstance(v, list)}
+
+
+def record_space(space: pathlib.Path, project: str, labels: Sequence[str]) -> None:
+    """Note what *project*'s space branch now holds."""
+    space.mkdir(parents=True, exist_ok=True)
+    with open(space / '.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        held = space_state(space)
+        held[project] = list(labels)
+        _write(space / 'space.json', json.dumps({'held': held}, indent=1, sort_keys=True))
+
+
 def remove_space(space: pathlib.Path) -> None:
     """The space, gone (the workbench was removed)."""
     if space.is_dir() and not space.is_symlink():

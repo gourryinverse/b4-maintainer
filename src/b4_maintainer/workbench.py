@@ -531,10 +531,28 @@ class WorkbenchService:
         repo = self._repo(workspace, project)
         return (str(repo) if repo else ''), branch
 
-    def space_entries(self, bench: Workbench, series: Mapping[str, Series]) -> list['SpaceEntry']:
+    def space_entries(
+        self,
+        bench: Workbench,
+        series: Mapping[str, Series],
+        status: Optional[Mapping[str, tuple[tuple[str, ...], bool]]] = None,
+    ) -> list['SpaceEntry']:
         """*bench*'s recipe as its space shows it: each item, where its mail or file is,
-        and how it reaches trees."""
+        and how it reaches trees (*status*: what each project's space branch lacks)."""
         from .space import SpaceEntry, SpaceItem
+
+        status = status or {}
+        branch = f'b4m/bench/{bench.id}'
+
+        def reach(entry: Entry, item: Item, how: str) -> str:
+            if entry.project not in status:
+                return how
+            pending, rebuild = status[entry.project]
+            if rebuild:
+                return f'{how}; the space branch {branch} differs from these items for now'
+            if item.label in pending:
+                return f'not in the space branch {branch} yet (apply it yourself from its mail)'
+            return f'in the space branch {branch}'
 
         entries = []
         for entry in bench.entries:
@@ -557,13 +575,14 @@ class WorkbenchService:
                         else ''
                     )
                     items.append(
-                        SpaceItem(item.label, 'series', known.source, how)
+                        SpaceItem(item.label, 'series', known.source, reach(entry, item, how))
                         if known is not None and known.source
                         else SpaceItem(item.label, 'missing', note='not in the cache yet')
                     )
                 else:
                     what = 'that commit replayed in trees' if item.commit else 'replayed in trees'
-                    items.append(SpaceItem(item.label, 'branch', note=f'local branch: {what}'))
+                    note = reach(entry, item, f'local branch: {what}')
+                    items.append(SpaceItem(item.label, 'branch', note=note))
             entries.append(SpaceEntry(entry.project, entry.base, tuple(items)))
         return entries
 
@@ -575,7 +594,11 @@ class WorkbenchService:
         from .space import space_dir, sync_context
 
         space = space_dir(self.root, bench.id)
-        changes = sync_context(space, bench.label, self.space_entries(bench, series))
+        try:
+            status = self.space_status(workspace, bench, series)
+        except (OSError, WorkbenchError):
+            status = {}
+        changes = sync_context(space, bench.label, self.space_entries(bench, series, status))
         if changes and self._directory is not None:
             when = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
             note = (
@@ -593,6 +616,80 @@ class WorkbenchService:
                 except OSError:
                     continue  # A session being removed.
         return changes
+
+    def space_status(
+        self, workspace: Workspace, bench: Workbench, series: Mapping[str, Series]
+    ) -> dict[str, tuple[tuple[str, ...], bool]]:
+        """Per project whose space branch is prepared: (the items it lacks, added since;
+        whether it must be rebuilt instead: items removed, moved, or changed)."""
+        from .space import space_dir, space_state
+
+        held = space_state(space_dir(self.root, bench.id))
+        if not held:
+            return {}
+        status = {}
+        for plan in self.plans(workspace, bench, series)[0]:
+            if plan.project not in held:
+                continue
+            labels = tuple(i.label for i in plan.items if i.apply)
+            have = tuple(held[plan.project])
+            if labels[: len(have)] == have:
+                status[plan.project] = (labels[len(have) :], False)
+            else:
+                status[plan.project] = ((), True)
+        return status
+
+    def update_space(
+        self, workspace: Workspace, bench: Workbench, series: Mapping[str, Series], project: str
+    ) -> str:
+        """*project*'s space branch brought in line with the recipe (blocking): the items
+        it lacks applied on top, or rebuilt when that is not enough; running sessions of
+        the workbench are told. What happened."""
+        from .adapters.sessiontree import update_space_branch
+        from .space import record_space, space_dir
+
+        status = self.space_status(workspace, bench, series).get(project)
+        if status is None:
+            return f'{project} has no space branch yet: the first worktree launch prepares it'
+        pending, rebuild = status
+        if not pending and not rebuild:
+            return f"{project}'s space branch already holds every item"
+        plan = next(p for p in self.plans(workspace, bench, series)[0] if p.project == project)
+        checkout = self._repo(workspace, project)
+        if checkout is None:
+            raise WorkbenchError(f'{project} has no checkout')
+        space = space_dir(self.root, bench.id)
+        items = [i for i in plan.items if i.apply]
+        wanted = items if rebuild else [i for i in items if i.label in pending]
+        branch = f'b4m/bench/{bench.id}'
+        update_space_branch(
+            checkout, space / 'repos' / f'{project}.git', branch, plan.base, wanted, rebuild
+        )
+        record_space(space, project, [i.label for i in items])
+        what = 'rebuilt from the items' if rebuild else 'now also holds ' + ', '.join(pending)
+        self._tell(
+            bench,
+            f'the space branch {branch} for {project} {what}; to take it into your checkout, '
+            f'rebase (or merge) onto {branch} there.',
+        )
+        self.sync_space(workspace, bench, series)  # items.md: what the branch holds now.
+        return f"{project}'s space branch {what}"
+
+    def _tell(self, bench: Workbench, text: str) -> None:
+        """A note in each running session of *bench*'s inbox."""
+        if self._directory is None:
+            return
+        when = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+        for record in self._records():
+            if record.workbench != bench.id or record.state == 'ended':
+                continue
+            inbox = self._directory(record.id) / 'work' / 'context' / 'inbox.md'
+            try:
+                inbox.parent.mkdir(parents=True, exist_ok=True)
+                with inbox.open('a') as f:
+                    f.write(f'\n{when}: {text}\n')
+            except OSError:
+                continue  # A session being removed.
 
     def space_branches(self, wid: str) -> list[str]:
         """The branches agents left in workbench *wid*'s space (`project: branch`), which
@@ -700,16 +797,23 @@ class WorkbenchService:
         (each session's prompt, files, and findings)."""
         rows = [ContentRow('Items', 'heading')]
         newer = {(p, n): r for p, n, r in rerolls(bench, latest)}
+        status = self.space_status(workspace, bench, series)
         for entry in bench.entries:
             where = entry.base or 'the base b4 chooses'
             empty = '' if entry.items else ' (no items: a tree at its base)'
-            rows.append(ContentRow(f'  {entry.project} on {where}{empty}', 'entry', entry.project))
+            pending, rebuild = status.get(entry.project, ((), False))
+            stale = ' · its trees differ from these items (u rebuilds them)' if rebuild else ''
+            rows.append(
+                ContentRow(f'  {entry.project} on {where}{empty}{stale}', 'entry', entry.project)
+            )
             for n, item in enumerate(entry.items):
                 mark = (
                     f' · v{newer[(entry.project, n)]} available'
                     if (entry.project, n) in newer
                     else ''
                 )
+                if item.label in pending:
+                    mark += ' · not in the trees yet (u applies it)'
                 text = f'    {n + 1}. {item.label}{mark}'
                 rows.append(ContentRow(text, 'item', entry.project, n))
         mailboxes = [

@@ -735,3 +735,39 @@ def test_each_branch_is_listed_once_by_the_checkout_that_made_it_else_by_the_spa
     remove_space_tree(pathlib.Path(trees['s1'].path))
     # Its fixup moves to the space; its session branch held nothing of its own.
     assert listed(repo, space) == ['b4m/bench/w', 'b4m/fixup/a']
+
+
+def test_the_space_branch_takes_new_items_on_top_or_is_rebuilt(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree, update_space_branch
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, mbox = upstream
+    fix_branch(project, base)
+    repo, sessions = space_paths(tmp_path)
+    series = TreeItem('mm: foo and bar v2', str(mbox), 2)
+    fix = TreeItem('me/fix', branch='me/fix')
+    tree, _ = prepare_space_tree(
+        project,
+        repo,
+        sessions / 's1' / 'demo',
+        'b4m/session/s1',
+        'b4m/bench/w',
+        base,
+        (series,),
+        AGENT,
+    )
+    tip = update_space_branch(project, repo, 'b4m/bench/w', base, (fix,))  # Added: on top.
+    assert subjects(repo, f'{base}..{tip}') == [
+        'mm/foo: name line three',
+        'mm/bar: add bar',
+        'mm: fix it',
+    ]
+    assert git('rev-parse', 'b4m/bench/w', cwd=repo) == tip
+    assert git('rev-parse', 'HEAD', cwd=tree.path) == tree.applied  # A running one keeps its.
+    tip = update_space_branch(project, repo, 'b4m/bench/w', base, (fix, series), rebuild=True)
+    assert subjects(repo, f'{base}..{tip}') == [
+        'mm: fix it',
+        'mm/foo: name line three',
+        'mm/bar: add bar',
+    ]
+    assert not list((repo.parent.parent / 'sessions').glob('.update-*'))  # Nothing left.

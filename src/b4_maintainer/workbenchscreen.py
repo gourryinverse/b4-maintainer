@@ -171,6 +171,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('shift+up', 'move(-1)', 'move up', key_display='⇧↑', show=False),
         Binding('shift+down', 'move(1)', 'move down', key_display='⇧↓', show=False),
         Binding('v', 'reroll', 'newer revision'),
+        Binding('u', 'update_trees', 'update trees'),
         Binding('f1', 'launch', 'session', key_display='F1', show=False),  # Tab bar.
         Binding('o', 'open_live', 'open session'),
         # On a session: beside the app; on a mailbox: its thread (before the lists' Enter).
@@ -1024,6 +1025,8 @@ class WorkbenchScreen(Screen[None]):
             return False
         if action == 'rename':
             return pane == 'bench-list' and bench is not None and not self.thread_open()
+        if action == 'update_trees':
+            return pane == 'bench-contents' and bool(self._project()) and self._editable()
         if action == 'rename_session':
             return pane == 'bench-sessions' and bool(self.selected_session())
         if action == 'remove':
@@ -1125,6 +1128,50 @@ class WorkbenchScreen(Screen[None]):
                 self._save(replace(bench, label=label), note=f'Renamed to {label}')
 
         self.app.push_screen(Ask('Rename the workbench', bench.label), named)
+
+    def action_update_trees(self) -> None:
+        """u: the project's space branch brought in line with its items: those added
+        applied on top; after a removal or a move, rebuilt (after a confirmation)."""
+        from .app import Confirm
+
+        bench, project = self.bench(), self._project()
+        if bench is None or not project:
+            return
+        service, workspace, series = self.service, self.workspace, self.series
+
+        def update() -> None:
+            def done(note: str) -> None:
+                self._reload()
+                self._status(note)
+
+            self._act(
+                lambda: service.update_space(workspace, bench, series, project),
+                done,
+                f"Updating {project}'s space branch…",
+            )
+
+        def checked(status: dict[str, tuple[tuple[str, ...], bool]]) -> None:
+            pending, rebuild = status.get(project, ((), False))
+            if project not in status:
+                self._status(
+                    f'{project} has no space branch yet: the first worktree launch prepares it'
+                )
+            elif rebuild:
+                prompt = (
+                    f"Rebuild {project}'s space branch from its items? Sessions keep their own "
+                    'branches and checkouts; sessions launched after start from it. [y|N]'
+                )
+                self.app.push_screen(Confirm(prompt), lambda yes: update() if yes else None)
+            elif pending:
+                update()
+            else:
+                self._status(f"{project}'s space branch already holds every item")
+
+        self._act(
+            lambda: service.space_status(workspace, bench, series),
+            checked,
+            'Looking at the space branch…',
+        )
 
     def action_rename_session(self) -> None:
         """r on a session: named anew (the app asks and renames)."""
