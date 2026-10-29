@@ -28,6 +28,10 @@ class ViewIndex:
         active = tuple(
             i for i in items if not (i.state.mainline_complete or i.landed or i.series.discussion)
         )
+        # A branch view lists what its branch holds: linux-next carries the staging
+        # branches, so a series fully there has ended review but stays staged until
+        # mainline has it.
+        staged = tuple(i for i in items if not (i.state.mainline_complete or i.series.discussion))
         me = set(ws.me)
 
         specs: list[tuple[View, Callable[[WorkItem], bool], tuple[WorkItem, ...]]] = []
@@ -62,7 +66,7 @@ class ViewIndex:
                         (
                             View(f'ref:{p.id}:{ref.name}', ref.view, 'ref'),
                             lambda i, pid=p.id, name=ref.name: i.project == pid and i.stage == name,
-                            active,
+                            staged,
                         )
                     )
         specs += [

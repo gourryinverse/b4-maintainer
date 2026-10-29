@@ -277,6 +277,40 @@ def test_landed_series_leave_every_queue_but_cached_and_responses():
     assert landed in idx.items('responses')
 
 
+def test_a_staged_series_in_linux_next_stays_in_its_branch_view():
+    """linux-next carries the staging branches (e.g. mm-stable, mm-unstable): being fully
+    in it ends review in the queues, but a branch view still lists what the branch holds.
+    Merged into mainline, a series leaves the branch view too."""
+    import dataclasses
+
+    config = workspace_config(profiles=[{'id': 'mm', 'project': 'linux', 'lists': LINUX_LISTS}])
+    config['projects'][0]['refs'] = [
+        {'label': 'm', 'name': 'mainline/master', 'authority': 'mainline'},
+        {'label': 'n', 'name': 'next/master', 'authority': 'acceptance', 'ends_review': True},
+        {'label': 's', 'name': 'mm/mm-stable', 'authority': 'acceptance', 'view': 'MM-stable'},
+    ]
+    ws = Workspace.from_config(config)
+    staged, merged = build_items(
+        [
+            make_series('mm: staged', msgid='s@example.org', lists=LINUX_LISTS),
+            make_series('mm: merged', msgid='m@example.org', lists=LINUX_LISTS),
+        ],
+        {},
+        ws,
+    )
+    staged = dataclasses.replace(staged, stage='mm/mm-stable', landed=True)  # Also in next.
+    merged = dataclasses.replace(
+        merged,
+        stage='mm/mm-stable',
+        landed=True,
+        state=SeriesState(tree=(('m', Authority.MAINLINE, Coverage.FULL),)),
+    )
+    idx = ViewIndex(ws, [staged, merged])
+    assert idx.items('ref:linux:mm/mm-stable') == (staged,)
+    for view in ('all', 'profile:mm'):
+        assert staged not in idx.items(view), view
+
+
 def test_projects_carry_their_maintainer_bases():
     from b4_maintainer.workspace import MaintainerBase
 

@@ -97,6 +97,11 @@ Python 3.11 or newer.
 - The series list is newest posting first; `l` orders it by latest activity (its newest
   message, a reply or a posting, from the cached mail) and back, keeping the selected
   series, in every view and search; a Last column then says how long ago (5m, 3h, 12d).
+- A project ref with a `view` (e.g. `{ label = "s", name = "mm/mm-stable", authority =
+  "acceptance", view = "MM-stable" }`) lists the series that ref holds, each in the first
+  such view in config order, out of its profile's view. A series fully in a ref with
+  `ends_review` (e.g. linux-next) leaves the review queues but stays in its branch view,
+  since linux-next carries the staging branches; one merged into mainline leaves both.
 - Each series is listed at its latest revision; the older ones in the cache stay
   readable: `V` (in the list or a thread, when there are any) picks the revision to read,
   newest first, and the status line says when it is not the latest (it stays open across
