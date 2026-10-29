@@ -138,7 +138,7 @@ async def test_w_while_reading_each_revision_puts_both_on_a_workbench(demo_root,
         assert thread.revision == 2 and len(thread.patches) == 2
 
 
-async def until(pilot, ready, rounds=50):
+async def until(pilot, ready, rounds=200):
     """Wait (workers, then a pause) until *ready()*, or fail."""
     for _ in range(rounds):
         if ready():

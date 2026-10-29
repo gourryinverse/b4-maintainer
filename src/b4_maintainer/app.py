@@ -2259,6 +2259,8 @@ class MaintainerApp(App[None]):
         self._overview = overview
         if isinstance(self.screen, WorkbenchScreen):
             self.screen.refresh_sessions()  # Its sessions' states.
+        if not self.query('#drawer-tabs'):
+            return  # Between screens (built, or torn down): the next poll shows it.
         line = drawer_line(overview)
         if line != self._drawer:
             self._drawer = line
