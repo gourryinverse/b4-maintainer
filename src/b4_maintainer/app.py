@@ -70,7 +70,7 @@ from .sessions.launch import LaunchChoice, Situation, Target, plan
 from .sessions.pane import pane_for
 from .sessions.policy import ContextItem
 from .sessions.profiles import Profile
-from .sessions.records import SessionRecord
+from .sessions.records import SessionRecord, session_name
 from .sessions.skills import Skill
 from .sessions.store import SessionView
 from .sessions.trees import TreeState
@@ -97,7 +97,9 @@ if TYPE_CHECKING:
     from .patchmail import ReplyTo
     from .workbench import WorkbenchService
 
-SESSION_ACTIONS = frozenset({'open_session', 'stop_session', 'end_session', 'session_artifacts'})
+SESSION_ACTIONS = frozenset(
+    {'open_session', 'stop_session', 'end_session', 'session_artifacts', 'rename_session'}
+)
 WORKTREE_ACTIONS = frozenset({'mark_worktree', 'remove_worktrees'})
 DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit', 'focus_session'})
 LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
@@ -340,6 +342,7 @@ class DrawerList(OptionList):
         Binding('s', 'app.stop_session', 'stop'),
         Binding('o', 'app.session_artifacts', 'artifacts'),
         Binding('x', 'app.end_session', 'end'),
+        Binding('n', 'app.rename_session', 'name'),
     ]
 
 
@@ -840,7 +843,8 @@ class MaintainerApp(App[None]):
                 return action in ('open_session', 'end_session')
             view = self._selected_view()
             if view is not None and view.state == 'preparing':
-                return action == 'session_artifacts'  # Nothing to act on until it starts.
+                # Nothing to act on until it starts, but it can be named.
+                return action in ('session_artifacts', 'rename_session')
             return view is not None and (action != 'open_session' or view.state != 'ended')
         if self._drawer_focused():
             return action in DRAWER_ACTIONS  # Series keys wait until focus leaves the drawer.
@@ -2597,7 +2601,7 @@ class MaintainerApp(App[None]):
                 self.call_from_thread(self._after_launch, record)
                 self.call_from_thread(
                     self._set_notice,
-                    f'Launched apply session {record.id}: when it is done, A in F3 accepts its '
+                    f'Launched apply session {session_name(record)}: when it is done, A in F3 accepts its '
                     f'result onto {branch}',
                 )
 
@@ -2935,7 +2939,7 @@ class MaintainerApp(App[None]):
                 self.call_from_thread(self.push_screen, Notice(f'{exc}\n\n{exc.detail.strip()}'))
                 return None
             self.call_from_thread(self._bench_launched, record)
-            return f'Launched session {record.id}: workbench {bench.label}'
+            return f'Launched session {session_name(record)}: workbench {bench.label}'
 
         self._session_call(launch)
 
@@ -2961,7 +2965,7 @@ class MaintainerApp(App[None]):
             if filed != bench_id:
                 continue
             state = states.get(r.id, r.state or 'ended')
-            label = f'{r.id} · {r.mode} · {state} · {r.created[:16]}'
+            label = f'{session_name(r)} · {r.mode} · {state} · {r.created[:16]}'
             rows.append((r.id, label, state in LIVE_STATES))
         return rows
 
@@ -3357,7 +3361,7 @@ class MaintainerApp(App[None]):
                 self.call_from_thread(self.push_screen, Notice(text))
                 return None
             self.call_from_thread(self._after_launch, record)
-            return f'Launched session {record.id}: {label}'
+            return f'Launched session {session_name(record)}: {label}'
 
         self._session_call(launch)
 
@@ -3520,12 +3524,13 @@ class MaintainerApp(App[None]):
         if view is None or hub is None:
             return
         sid, label = view.record.id, session_label(view.record)
+        name = session_name(view.record)
 
         def answered(confirmed: Optional[bool]) -> None:
             if confirmed:
                 self._session_call(lambda: hub.stop(sid) or f'Stopped: {label}')
 
-        self.push_screen(Confirm(f'Stop session {sid} ({label})? [y|N]'), answered)
+        self.push_screen(Confirm(f'Stop session {name} ({label})? [y|N]'), answered)
 
     def action_end_session(self) -> None:
         if (msgid := self.selected_draft()) is not None:
@@ -3535,6 +3540,7 @@ class MaintainerApp(App[None]):
         if view is None or hub is None:
             return
         sid, label = view.record.id, session_label(view.record)
+        name = session_name(view.record)
         tree = view.record.worktree
         listed = tree is not None and any(w.path == tree.path for w in self._overview.worktrees)
 
@@ -3549,7 +3555,7 @@ class MaintainerApp(App[None]):
             if confirmed:
                 self._session_call(ended)
 
-        self.push_screen(Confirm(f'End session {sid} ({label})? [y|N]'), answered)
+        self.push_screen(Confirm(f'End session {name} ({label})? [y|N]'), answered)
 
     def _ask_remove_tree(self, path: str) -> None:
         """After ending a worktree session: remove its tree, or keep it (Worktrees tab)."""
@@ -3561,11 +3567,46 @@ class MaintainerApp(App[None]):
         prompt = f'Remove its worktree {path}? [y|N] (N keeps it in the Worktrees tab)'
         self.push_screen(Confirm(prompt), answered)
 
+    def action_rename_session(self) -> None:
+        """n in the drawer: the selected session named anew."""
+        view = self._selected_view()
+        if view is not None:
+            self.ask_session_name(view.record.id, session_name(view.record), self._set_notice)
+
+    def ask_session_name(self, sid: str, current: str, done: Callable[[str], None]) -> None:
+        """Ask a new name for session *sid* (*current* to edit), rename it off the UI
+        thread, then *done* with what to say."""
+        hub = self._sessions
+        if hub is None:
+            return
+
+        def named(name: Optional[str]) -> None:
+            if not name or name.strip() == current:
+                return
+
+            def work() -> None:
+                try:
+                    note = f'Renamed to {hub.rename(sid, name).name}'
+                except (ValueError, OSError) as exc:
+                    note = f'Not renamed: {exc}'
+                self.call_from_thread(done, note)
+                self.call_from_thread(self.poll_sessions)
+
+            self.run_worker(work, thread=True, group='session-rename')
+
+        self.push_screen(Ask('Name the session', current), named)
+
+    def session_name_of(self, sid: str) -> str:
+        """Session *sid*'s name (its id without one)."""
+        hub = self._sessions
+        return hub.store.names().get(sid, sid) if hub is not None else sid
+
     def action_session_artifacts(self) -> None:
         view, hub = self._selected_view(), self._sessions
         if view is None or hub is None:
             return
         sid, label = view.record.id, session_label(view.record)
+        name = session_name(view.record)
 
         def work() -> None:
             try:
@@ -3573,7 +3614,7 @@ class MaintainerApp(App[None]):
                 text = '\n'.join(f'  out/{f}' for f in files) or '  No artifacts yet.'
             except OSError as exc:
                 text = f'  Cannot list artifacts: {exc}'
-            self.call_from_thread(self.push_screen, Notice(f'Session {sid} ({label})\n{text}'))
+            self.call_from_thread(self.push_screen, Notice(f'Session {name} ({label})\n{text}'))
 
         self.run_worker(work, thread=True, group='session-action')
 

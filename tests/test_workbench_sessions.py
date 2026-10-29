@@ -83,7 +83,8 @@ async def test_the_tab_lists_a_workbenchs_sessions_and_what_they_produced(demo_r
         screen = app.screen
         labels = screen.session_labels()
         assert len(labels) == 2 and all('lightweight' in label for label in labels)
-        assert any(label.startswith('w1') and 'waiting' in label for label in labels)
+        name = runner.store.names()['w1']
+        assert any(label.startswith(name) and 'waiting' in label for label in labels)
         await screen.focus_sessions()
         while screen.selected_session() != 'w1':
             await pilot.press('down')
@@ -129,7 +130,8 @@ async def test_a_session_launched_from_the_tab_joins_beside(demo_root, tmp_path)
         assert runner.beside == sid
         app.poll_sessions()
         await settle(pilot)
-        assert any(label.startswith(sid) for label in screen.session_labels())
+        name = runner.store.names()[sid]
+        assert any(label.startswith(name) for label in screen.session_labels())
 
 
 async def test_the_column_follows_the_tab_and_o_opens_the_live_session(demo_root, tmp_path):
@@ -203,7 +205,8 @@ async def test_sessions_from_before_are_listed_as_unfiled(demo_root, tmp_path):
         ):
             await pilot.press('down')
         await settle(pilot)
-        assert any(label.startswith('old') for label in screen.session_labels())
+        name = runner.store.names()['old']  # Named when first polled.
+        assert any(label.startswith(name) for label in screen.session_labels())
         assert not screen.check_action('rename', ()) and not screen.check_action('launch', ())
 
 
@@ -247,3 +250,35 @@ async def test_contents_keep_their_place_through_session_polls(demo_root, tmp_pa
             app.poll_sessions()
             await settle(pilot)
         assert screen.row() == place
+
+
+async def test_r_on_a_session_renames_it_and_r_on_the_workbench_still_renames_that(
+    demo_root, tmp_path
+):
+    from b4_maintainer.branchscreen import Ask
+
+    app, runner = make(demo_root, tmp_path)
+    bench_session(runner, 'w1')
+    async with app.run_test(size=(220, 50)) as pilot:
+        app.poll_sessions()
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        screen = app.screen
+        await pilot.press('r')  # The workbench list: the workbench.
+        await settle(pilot)
+        assert isinstance(app.screen, Ask) and 'workbench' in app.screen.title_text
+        await pilot.press('escape')
+        await screen.focus_sessions()
+        await settle(pilot)
+        await pilot.press('r')
+        await settle(pilot)
+        assert isinstance(app.screen, Ask) and 'session' in app.screen.title_text
+        assert app.screen.query_one('Input').value == runner.store.names()['w1']
+        app.screen.query_one('Input').value = 'cxl compare'
+        await pilot.press('enter')
+        await settle(pilot)
+        await settle(pilot)
+        assert runner.store.names()['w1'] == 'cxl compare'
+        assert screen.session_labels()[0].startswith('cxl compare · ')
+        assert 'Renamed to cxl compare' in screen.status_text()

@@ -8,7 +8,7 @@ import datetime
 from typing import Iterable, Optional
 
 from .sessions.hub import Overview, WorktreeInfo
-from .sessions.records import SessionRecord, session_label
+from .sessions.records import SessionRecord, session_label, session_name
 from .sessions.store import SessionView
 
 STATE_LABELS = {
@@ -99,14 +99,14 @@ def _goal(record: SessionRecord) -> str:
 def session_row(view: SessionView, now: datetime.datetime) -> str:
     r = view.record
     return (
-        f'{mark(view.state)} {session_label(r)} · {state_text(view)} · {_goal(r)} · {r.mode} · '
+        f'{mark(view.state)} {session_name(r)} · {session_label(r)} · {state_text(view)} · {_goal(r)} · {r.mode} · '
         f'{_model(r)} · {age(r.created, now)}'
     )
 
 
 def worktree_row(info: WorktreeInfo, states: dict[str, str]) -> str:
     size = format_bytes(info.bytes) if info.bytes is not None else 'size unknown'
-    owner = f'session {info.session} ({states.get(info.session, "ended")})'
+    owner = f'session {info.name or info.session} ({states.get(info.session, "ended")})'
     owner = owner if info.session else 'orphan'
     tree = info.state.describe() if info.state is not None else 'not inspected'
     return f'{info.branch or "?"} · {size} · {owner} · {tree} · {info.path}'

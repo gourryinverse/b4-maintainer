@@ -178,6 +178,7 @@ class WorkbenchScreen(Screen[None]):
         # In a thread opened here: reply to the selected message (without, or with output).
         Binding('r', 'reply', 'reply'),
         Binding('R', 'reply_attach', 'reply + session output'),
+        Binding('r', 'rename_session', 'rename session'),  # On a session.
         # On Trees: what Branches did with session trees.
         Binding('space', 'mark', 'mark'),
         Binding('p', 'pluck', 'pluck'),
@@ -1013,6 +1014,8 @@ class WorkbenchScreen(Screen[None]):
             return False
         if action == 'rename':
             return pane == 'bench-list' and bench is not None and not self.thread_open()
+        if action == 'rename_session':
+            return pane == 'bench-sessions' and bool(self.selected_session())
         if action == 'remove':
             if pane == 'bench-contents':
                 row = self.row()
@@ -1112,6 +1115,20 @@ class WorkbenchScreen(Screen[None]):
                 self._save(replace(bench, label=label), note=f'Renamed to {label}')
 
         self.app.push_screen(Ask('Rename the workbench', bench.label), named)
+
+    def action_rename_session(self) -> None:
+        """r on a session: named anew (the app asks and renames)."""
+        sid = self.selected_session()
+        ask: Any = getattr(self.app, 'ask_session_name', None)
+        name_of: Any = getattr(self.app, 'session_name_of', None)
+        if not sid or ask is None or name_of is None:
+            return
+
+        def done(note: str) -> None:
+            self._status(note)
+            self.refresh_sessions()
+
+        ask(sid, name_of(sid), done)
 
     def action_remove(self) -> None:
         from .app import Confirm

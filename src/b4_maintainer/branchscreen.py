@@ -41,7 +41,7 @@ from .branches import (
 from .launchdialog import Derived
 from .sessions.launch import Target
 from .sessions.policy import ContextItem
-from .sessions.records import SessionRecord
+from .sessions.records import SessionRecord, session_name
 from .widgets import TabBar, TextPane
 from .workspace import Workspace
 
@@ -765,7 +765,7 @@ class BranchesScreen(Screen[None]):
         def work() -> None:
             try:
                 record = self.service.rebase_session(self.workspace, key, failed)
-                note = f'Launched rebase session {record.id}: its tree is listed here'
+                note = f'Launched rebase session {session_name(record)}: its tree is listed here'
             except Exception as exc:
                 note = f'Cannot launch the rebase session: {exc}'
             self.app.call_from_thread(self._acted, note)
@@ -799,7 +799,7 @@ class BranchesScreen(Screen[None]):
                 result = RebaseResult(False, error=str(exc))
             note = (
                 f'Accepted: the base is at {result.tip[:12]}{_moved(result)}; '
-                f'end session {sid} when done'
+                'end its session when done'
                 if result.ok
                 else f'Not accepted: {result.error}'
             )

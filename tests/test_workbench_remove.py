@@ -147,4 +147,5 @@ async def test_sessions_of_a_removed_workbench_are_unfiled(demo_root, tmp_path):
         while screen.bench().label != 'Unfiled sessions':
             await pilot.press('down')
         await settle(pilot)
-        assert any(label.startswith('o1') for label in screen.session_labels())
+        name = runner.store.names()['o1']
+        assert any(label.startswith(name) for label in screen.session_labels())

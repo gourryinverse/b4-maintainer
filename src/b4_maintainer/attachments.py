@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Sequence, Union
 
 from .sessions.artifacts import MANIFEST, load_artifacts
-from .sessions.records import SessionRecord, session_trees
+from .sessions.records import SessionRecord, session_name, session_trees
 from .sessions.trees import classify_tree
 
 MAX_FILES = 100  # Other files listed per session.
@@ -88,7 +88,7 @@ def _attachments(
 ) -> list[Attachment]:
     found: list[Attachment] = []
     sid = record.id
-    who = f'{sid}{tag}'
+    who = f'{session_name(record)}{tag}'
     task = directory(sid) / 'work' / 'context' / 'task.md'
     if task.is_file():
         try:

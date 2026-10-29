@@ -625,7 +625,8 @@ def test_session_work_is_listed_by_branch_and_plucks_like_any_commits(ws):
     data = service.snapshot(workspace, trees=False)
     work = [i for i in data.items if i.kind == 'work']
     assert [i.key for i in work] == ['work:s1:b4m/pull-ahead/leak']
-    assert 's1' in work[0].label and 'pull-ahead/leak' in work[0].label
+    # Named by its session's name (its subject's, by default), not its id.
+    assert work[0].label.startswith('mm-fix-foo-leak-v3 pull-ahead/leak')
     rows = [r for r in data.details[work[0].key] if is_commit(r)]
     assert [r.text.split('  ')[-1] for r in rows] == ['mm: fix the leak']
     assert 'base:linux:me/base' in data.targets[work[0].key]

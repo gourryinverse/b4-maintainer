@@ -28,7 +28,7 @@ from .pi import LaunchSpec, prepare_session
 from .policy import ContextItem, launch_check
 from .profiles import BUILTIN_DIR, Profile, load_profiles
 from .rebase import rebase_record, rebase_request
-from .records import ProjectTree, SessionRecord, Worktree, session_trees
+from .records import ProjectTree, SessionRecord, Worktree, session_name, session_trees
 from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
@@ -76,6 +76,10 @@ class SessionRunner(Protocol):
 
     def end(self, record: SessionRecord) -> None: ...
 
+    def retitle(self, record: SessionRecord) -> None:
+        """Its window named anew (after a rename)."""
+        ...
+
     # The column beside the app (tmux panes in phase 1).
     def joined(self, app_pane: str) -> Optional[str]: ...
 
@@ -116,6 +120,7 @@ class WorktreeInfo:
     session: str  # Empty: an orphan, named by no session.
     bytes: Optional[int] = None  # Not measured yet.
     state: Optional[TreeState] = None  # Not inspected yet.
+    name: str = ''  # Its session's name.
 
 
 class Worktrees(Protocol):
@@ -366,7 +371,7 @@ class RecordWorktrees:
                     continue
                 named.add(os.path.realpath(wt.path))
                 size, state = self._measure(wt.path, series_tip(pathlib.Path(wt.path), wt), wt)
-                infos.append(WorktreeInfo(wt.path, wt.branch, record.id, size, state))
+                infos.append(WorktreeInfo(wt.path, wt.branch, record.id, size, state, record.name))
         if self.directory is not None and self.directory.is_dir():
             for entry in sorted(self.directory.iterdir()):
                 if not entry.is_dir() or os.path.realpath(entry) in named:
@@ -663,7 +668,7 @@ class SessionHub:
         if prepare is not None:
             self._preparing.add(record.id)
             record = record.replace(state='preparing')
-        self.store.create(record)
+        record = self.store.create(record)  # Now named.
         try:
             if prepare is not None:
                 record = prepare(record).replace(state='')
@@ -678,12 +683,12 @@ class SessionHub:
             self._preparing.discard(record.id)
             self.store.set_state(record.id, 'failed')
             raise SessionError(
-                f'Session {record.id}: {exc}', exc.output, exc.base, exc.project
+                f'Session {session_name(record)}: {exc}', exc.output, exc.base, exc.project
             ) from exc
         except Exception as exc:
             self._preparing.discard(record.id)
             self.store.set_state(record.id, 'failed')
-            raise SessionError(f'Session {record.id} failed to start: {exc}') from exc
+            raise SessionError(f'Session {session_name(record)} failed to start: {exc}') from exc
         return record
 
     def launch_rebase(
@@ -904,6 +909,16 @@ class SessionHub:
     def stop(self, sid: str) -> None:
         self.runner.stop(self._ready(sid))
         self.store.set_state(sid, 'stopped')
+
+    def rename(self, sid: str, name: str) -> SessionRecord:
+        """Session *sid* called *name* (see SessionStore.rename), its window too."""
+        self.store.rename(sid, name)
+        record = self.store.record(sid)
+        try:
+            self.runner.retitle(record)
+        except SessionError:
+            pass  # The name stands; the window keeps its old one.
+        return record
 
     def end(self, sid: str) -> None:
         """Close the session for good; its worktree stays until removed."""

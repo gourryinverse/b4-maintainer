@@ -122,7 +122,7 @@ async def test_confirm_launches_once_with_the_composed_request(demo_root, store,
             'lightweight',
             'read-only',
         )
-        assert sid in app.status_text()
+        assert f'Launched session {store.names()[sid]}' in app.status_text()  # By its name.
         assert item.series.subject in app.drawer_text()
 
 

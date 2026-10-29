@@ -63,7 +63,7 @@ from .sessions.hub import SessionError, SessionHub
 from .sessions.launch import Target
 from .sessions.policy import ContextItem
 from .sessions.rebase import RESULT
-from .sessions.records import SessionRecord, session_label
+from .sessions.records import SessionRecord, session_label, session_name
 from .sessions.trees import TreeState, classify_tree, inspect_tree, series_tip, tree_worktrees
 from .workspace import MaintainerBase, Project, Workspace
 
@@ -411,9 +411,10 @@ class BranchService:
             if not branch.commits:
                 continue
             name = branch.name.removeprefix('b4m/')
-            label = f'{record.id} {name} · {_count(len(branch.commits), "commit")}'
+            label = f'{session_name(record)} {name} · {_count(len(branch.commits), "commit")}'
             info = (
-                f'{branch.kind} {branch.name} of session {record.id}: {session_label(record)}',
+                f'{branch.kind} {branch.name} of session {session_name(record)} ({record.id}): '
+                f'{session_label(record)}',
                 f'In its tree {tree}',
                 *((f'! {branch.problem}',) if branch.problem else ()),
             )
@@ -425,7 +426,7 @@ class BranchService:
                 info,
                 bool(branch.problem),
             )
-            rows = [DetailRow(f'{branch.kind} {branch.name} (session {record.id})')]
+            rows = [DetailRow(f'{branch.kind} {branch.name} (session {session_name(record)})')]
             if branch.problem:
                 rows.append(DetailRow(f'  ! {branch.problem}'))
             rows += [
@@ -552,11 +553,12 @@ class BranchService:
                 for n, a in enumerate(artifacts)
             ]
         rows += [DetailRow(f'  ! {p}') for p in problems]
-        parent = f' (from {record.parent})' if record.parent else ''
+        parent = f' (from {self._name_of(record.parent)})' if record.parent else ''
         which = f' ({record.project})' if record.trees else ''  # A workbench session's tree.
-        label = f'{session_label(record)}{which} · {record.id}{parent} · {state.describe()}'
+        name = session_name(record)
+        label = f'{session_label(record)}{which} · {name}{parent} · {state.describe()}'
         if classed.error:
-            problems = [*problems, f'{record.id}: {classed.error}']
+            problems = [*problems, f'{name}: {classed.error}']
         return tuple(rows), label, [f'{record.id}: {p}' for p in problems]
 
     def _rebase_tree(
@@ -606,8 +608,8 @@ class BranchService:
                 for n, a in enumerate(artifacts)
             ]
         rows += [DetailRow(f'  ! {p}') for p in problems]
-        label = f'{session_label(record)} · {record.id} · {state}'
-        return tuple(rows), label, [f'{record.id}: {p}' for p in problems]
+        label = f'{session_label(record)} · {session_name(record)} · {state}'
+        return tuple(rows), label, [f'{session_name(record)}: {p}' for p in problems]
 
     def rebase_session(self, workspace: Workspace, key: str, failed: RebaseResult) -> SessionRecord:
         """Launch a rebase session for the base named by *key*, after *failed*."""
@@ -1360,7 +1362,7 @@ class BranchService:
             subjects = _only_on(tree, branch)
             listed = '\n'.join(f'  {s}' for s in subjects[:20])
             return (
-                f"{branch} in session {record.id}'s tree: "
+                f"{branch} in session {session_name(record)}'s tree: "
                 f'{_count(len(subjects), "commit")} on no other branch:\n{listed}'
             )
         if kind == 'tree':
@@ -1437,7 +1439,7 @@ class BranchService:
         if record is None or record.worktree is None:
             return False, f'no session tree {where}'
         if self._sessions is not None and self._sessions.is_live(record.id):
-            return False, f'session {record.id} is live: {branch} stays (stop it first)'
+            return False, f'session {session_name(record)} is live: {branch} stays (stop it first)'
         run = subprocess.run(
             ['git', 'branch', '-D', branch],
             cwd=record.worktree.path,
@@ -1446,7 +1448,7 @@ class BranchService:
         )
         if run.returncode != 0:
             return False, f'{branch} stays: {run.stderr.strip()}'
-        return True, f"Removed {branch} from session {record.id}'s tree"
+        return True, f"Removed {branch} from session {session_name(record)}'s tree"
 
     # Deriving a session from another's output.
 
@@ -1464,10 +1466,14 @@ class BranchService:
         options = [(wt.base, '', f'the series base {wt.base[:12]} (pre-existing bugs)')]
         if row is not None and is_commit(row) and row.repo == wt.path:
             subject = row.text.strip().split('  ', 1)[-1]
-            options.append((row.key, sid, f"session {sid}'s tree at {row.key[:12]} {subject}"))
+            options.append(
+                (row.key, sid, f"session {self._name_of(sid)}'s tree at {row.key[:12]} {subject}")
+            )
         try:
             tip = _git(pathlib.Path(wt.path), 'rev-parse', wt.branch).strip()
-            options.append((tip, sid, f"session {sid}'s tree ({wt.branch}, series applied)"))
+            options.append(
+                (tip, sid, f"session {self._name_of(sid)}'s tree ({wt.branch}, series applied)")
+            )
         except OSError:
             pass
         project = workspace.project(record.project)
@@ -1482,7 +1488,8 @@ class BranchService:
         sid = where.partition('/')[0]
         if row is not None and row.artifact is not None:
             text = self.show(row)
-            return ContextItem('parent', f'From session {sid}: {row.artifact.title}', text=text)
+            title = f'From session {self._name_of(sid)}: {row.artifact.title}'
+            return ContextItem('parent', title, text=text)
         record = self._record(where)
         names: set[str] = set()
         if record is not None and record.worktree is not None:
@@ -1500,7 +1507,7 @@ class BranchService:
         if not artifacts:
             return None
         text = '\n\n'.join(f'{a.kind}: {a.title}\n\n{a.summary}' for a in artifacts)
-        return ContextItem('parent', f'From session {sid}: its findings', text=text)
+        return ContextItem('parent', f'From session {self._name_of(sid)}: its findings', text=text)
 
     def _prompt_rows(self, record: SessionRecord, tree: pathlib.Path) -> list[DetailRow]:
         """The session's initial prompt (and appended system prompt), as it was sent."""
@@ -1514,6 +1521,14 @@ class BranchService:
             system = ''
         prompt = Attachment('prompt', '', record.id, path=task, title='Initial prompt', text=system)
         return [DetailRow('Initial prompt', 'prompt', str(tree), show_text=preview(prompt))]
+
+    def _name_of(self, sid: str) -> str:
+        """Session *sid*'s name (`<sid>/<project>`: its session's), else the id."""
+        sid = sid.partition('/')[0]
+        store = getattr(self._sessions, 'store', None)
+        if store is not None:
+            return store.names().get(sid, sid)
+        return next((session_name(r) for r in self._records() if r.id == sid), sid)
 
     def _record(self, sid: str) -> Optional[SessionRecord]:
         """Session *sid*; `<sid>/<project>` names one tree of a workbench session, as a

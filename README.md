@@ -150,6 +150,14 @@ Python 3.11 or newer.
   the session there, so its sessions and their output are found in the Workbench tab; a
   derived session goes with its parent. Sessions from before (or whose workbench is
   gone) are listed under Unfiled sessions.
+- Sessions have names, shown wherever they appear (the drawer, the Workbench tab,
+  Branches, their tmux windows) in place of their ids. On disk a session's directory
+  (`var/sessions/<id>/`) and its trees (`var/worktrees/<id>/`) keep the timestamp id;
+  `var/sessions/names.toml` maps each id to its name. A new session is named after what
+  it is pinned to (`mm-fix-foo-leak-v3`, a workbench's label, `rebase-…`), with `-2`
+  and so on when taken; sessions from before get theirs the first time they are listed.
+  `n` in the drawer, or `r` on a session in the Workbench tab, renames it (one line, at
+  most 40 characters, no other session's name).
 - F1 on a series chooses each project's checkout in place of Mode: the series' own as a
   tree with the series applied, a tree at its base with the series for the agent, or its
   checkout to read (following the goal's suggestion until you pick); each other project

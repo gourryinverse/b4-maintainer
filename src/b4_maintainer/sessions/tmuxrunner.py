@@ -82,7 +82,7 @@ class TmuxRunner:
     def _open(
         self, record: SessionRecord, argv: Sequence[str], cwd: str, env: Mapping[str, str]
     ) -> None:
-        name = f'b4m:{session_label(record)}'[:40]
+        name = f'b4m:{record.name or session_label(record)}'[:40]
         args = ['new-window', '-d', '-n', name, '-c', cwd, '-P', '-F', '#{pane_id}']
         for key, value in env.items():
             args += ['-e', f'{key}={value}']
@@ -156,6 +156,15 @@ class TmuxRunner:
     def end(self, record: SessionRecord) -> None:
         self.stop(record)
 
+    def retitle(self, record: SessionRecord) -> None:
+        """Its own window named after it; beside the app, the app's window keeps its name."""
+        found = self._panes().get(record.id)
+        if found is None or found[1] == self._app_window():
+            return
+        self._tmux(
+            'rename-window', '-t', found[1], f'b4m:{record.name or session_label(record)}'[:40]
+        )
+
     # The session pane beside the app: one at a time, joined without taking focus.
 
     def _window_of(self, pane: str) -> str:
@@ -191,7 +200,8 @@ class TmuxRunner:
             return
         pane = self._panes()[sid][0]
         try:
-            name = f'b4m:{session_label(self.store.record(sid))}'[:40]
+            record = self.store.record(sid)
+            name = f'b4m:{record.name or session_label(record)}'[:40]
         except (OSError, ValueError):
             name = f'b4m:{sid}'
         self._tmux('break-pane', '-d', '-s', pane, '-n', name)

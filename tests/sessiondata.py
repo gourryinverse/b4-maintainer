@@ -96,6 +96,7 @@ class FakeSessionRunner:
         self.resumes = []
         self.switches = []
         self.ends = []
+        self.retitled = []  # (session id, name)
         self.windows = set()
         self.fail = None  # Message for launch to fail with.
         self.blocker_reason = None
@@ -143,6 +144,9 @@ class FakeSessionRunner:
     def resume(self, record):
         self.resumes.append(record.id)
         self.windows.add(record.id)
+
+    def retitle(self, record):
+        self.retitled.append((record.id, record.name))
 
     def end(self, record):
         self.ends.append(record.id)

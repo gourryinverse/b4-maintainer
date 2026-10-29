@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
 
 from .attachments import Attachment, gather, preview
 from .model import Series
-from .sessions.records import SessionRecord, session_trees
+from .sessions.records import SessionRecord, session_name, session_trees
 from .sessions.trees import TreeItem, classify_tree
 from .workspace import Workspace
 
@@ -483,7 +483,7 @@ class WorkbenchService:
                 where = f'{record.id}/{tree_project}' if record.trees else record.id
                 for branch in classify_tree(pathlib.Path(tree.path), tree).branches:
                     if branch.commits:
-                        label = f'{branch.name}  (session {record.id}, {len(branch.commits)})'
+                        label = f'{branch.name}  (session {session_name(record)}, {len(branch.commits)})'
                         choices.append((f'tree:{where}:{branch.name}', label))
         return choices
 
@@ -602,7 +602,7 @@ class WorkbenchService:
             found = gather([record], record.series, self._directory) if self._directory else []
             for project, tree in session_trees(record):
                 key = f'tree:{record.id}/{project}' if record.trees else f'tree:{record.id}'
-                label = f'  {record.id} · {project} · {tree.branch}'
+                label = f'  {session_name(record)} · {project} · {tree.branch}'
                 row = ContentRow(
                     label, 'tree', project, session=record.id, path=tree.path, item=key
                 )
@@ -620,7 +620,7 @@ class WorkbenchService:
                         )
                     )
             for a in (x for x in found if x.kind != 'patch'):
-                text = f'  {record.id}: {a.label.split("  (")[0]}'
+                text = f'  {session_name(record)}: {a.label.split("  (")[0]}'
                 artifacts.append(ContentRow(text, 'artifact', session=record.id, attachment=a))
         if trees:
             rows += [ContentRow('Trees', 'heading'), *trees]

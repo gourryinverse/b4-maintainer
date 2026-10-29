@@ -14,6 +14,7 @@ import dataclasses
 import json
 import os
 import pathlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Protocol
 
@@ -88,6 +89,9 @@ class SessionRecord:
     home: str = ''
     # Project checkouts it may read, besides its trees: (project, path).
     reads: tuple[tuple[str, str], ...] = ()
+    # Its name, from the store's names.toml (never saved in session.json); not part of
+    # what the record is, so a renamed record still equals itself.
+    name: str = field(default='', compare=False)
 
     def replace(self, **changes: Any) -> 'SessionRecord':
         return dataclasses.replace(self, **changes)
@@ -102,6 +106,7 @@ class SessionRecord:
             for t in data['trees']
         ]
         data['reads'] = [list(r) for r in self.reads]
+        del data['name']  # The store's names.toml has it.
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f'.{path.name}.tmp')
         tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + '\n')
@@ -115,7 +120,7 @@ class SessionRecord:
         data['context'] = tuple(data.get('context', ()))
         data['skills'] = tuple(data.get('skills', ()))
         names = {f.name for f in dataclasses.fields(cls)}
-        known = {k: v for k, v in data.items() if k in names}
+        known = {k: v for k, v in data.items() if k in names and k != 'name'}
         known['trees'] = tuple(
             ProjectTree(
                 t['project'],
@@ -146,6 +151,31 @@ class Pinned(Protocol):
 
     @property
     def revision(self) -> int: ...
+
+
+def session_name(record: SessionRecord) -> str:
+    """What the UI calls a session: its name, else its id."""
+    return record.name or record.id
+
+
+def _slug(text: str, limit: int = 30) -> str:
+    slug = re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
+    if len(slug) > limit:  # Cut at a word.
+        slug = slug[:limit].rsplit('-', 1)[0] if '-' in slug[:limit] else slug[:limit]
+    return slug
+
+
+def default_name(pinned: Pinned) -> str:
+    """A session's first name, from what it is pinned to: `<subject>-v<n>` for a series,
+    the workbench's label, `rebase-…` or `apply-…`, or `workspace`."""
+    if pinned.scope == 'workbench':
+        return _slug(pinned.subject) or 'workbench'
+    if pinned.scope in ('rebase', 'apply'):
+        what = _slug(pinned.subject.removeprefix(pinned.scope))
+        return f'{pinned.scope}-{what}' if what else pinned.scope
+    if pinned.scope == 'workspace' or not pinned.series:
+        return 'workspace'
+    return f'{_slug(pinned.subject) or "series"}-v{pinned.revision}'
 
 
 def session_label(pinned: Pinned) -> str:
