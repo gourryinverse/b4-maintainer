@@ -4,7 +4,7 @@
 import collections
 import datetime
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 
@@ -267,7 +267,20 @@ class WorkItem:
     watched: bool = False
     # Its newest message (a posting or a reply), from the mail cache; None if unknown.
     last_activity: Optional[datetime.datetime] = None
+    # Each other revision's posting (oldest first), to read or compare; .series is the
+    # latest.
+    older: tuple[Series, ...] = ()
 
     @property
     def identity(self) -> str:
         return self.series.identity
+
+    def at_revision(self, revision: int) -> Optional['WorkItem']:
+        """This series as posted at *revision* (itself at the latest; None if unknown).
+        Sashiko's review is of the latest posting, so an older one has none."""
+        if revision == self.series.revision:
+            return self
+        posting = next((s for s in self.older if s.revision == revision), None)
+        if posting is None:
+            return None
+        return replace(self, series=posting, sashiko=None)

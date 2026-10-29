@@ -111,6 +111,8 @@ class TreePlan:
     # apply: its items applied; deliver: a tree at its base, its items for the agent to use
     # as the task directs; none: no tree, its mail only.
     use: str = 'apply'
+    # Series it holds at several revisions (to compare): never applied together.
+    compare: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

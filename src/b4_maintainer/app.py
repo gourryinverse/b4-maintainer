@@ -88,6 +88,7 @@ from .workbench import (
     add_series,
     artifact_item,
     series_bench,
+    series_map,
 )
 from .workbenchscreen import WorkbenchScreen
 from .workspace import Snapshot, Workspace
@@ -464,6 +465,7 @@ class MaintainerApp(App[None]):
         Binding('d', 'drop_series', 'drop', show=False),
         Binding('M', 'mark_read', 'read all', show=False),
         Binding('w', 'add_to_workbench', 'to workbench'),
+        Binding('V', 'versions', 'revisions'),  # Only with older revisions.
         # One key: newest posting first (the default), or latest activity first.
         Binding('l', 'sort_latest', 'by latest'),
         Binding('l', 'sort_posted', 'by posting'),
@@ -554,6 +556,7 @@ class MaintainerApp(App[None]):
         self._preview = False
         self._item: Optional[WorkItem] = None
         self._reading: Optional[WorkItem] = None
+        self._pinned = 0  # Reading an older revision (V): its number; 0 follows the latest.
         self._thread: Optional[SeriesThread] = None
         self._post_key = ''
         self._node = 0
@@ -663,6 +666,8 @@ class MaintainerApp(App[None]):
         if self._reading is not None:
             # The open thread stays as it is; its item takes the reloaded state ($, unread).
             fresh = snapshot.item_by_identity(self._reading.identity)
+            if fresh is not None and self._pinned:  # An older revision stays open.
+                fresh = fresh.at_revision(self._pinned) or fresh
             if fresh is not None:
                 self._reading = fresh
             if self._reload_reading and self._draft is None:
@@ -678,7 +683,7 @@ class MaintainerApp(App[None]):
             target = self.get_screen(tab)
             if isinstance(target, WorkbenchScreen):
                 target.workspace = snapshot.workspace
-                target.series = {i.identity: i.series for i in snapshot.items}
+                target.series = series_map(snapshot.items)
                 target.latest = {i.identity: i.series.revision for i in snapshot.items}
             elif isinstance(target, BranchesScreen):
                 target.workspace = snapshot.workspace
@@ -883,6 +888,9 @@ class MaintainerApp(App[None]):
             if self._saved_draft is not None and reading:
                 return True
             return self._reply_msgid() is not None if reading else self._item is not None
+        if action == 'versions':
+            item = self._reading or self._item
+            return item is not None and bool(self._latest_of(item).older)
         if action == 'add_to_workbench':
             item = self._reading or self._item
             return self._workbenches is not None and item is not None
@@ -1095,10 +1103,13 @@ class MaintainerApp(App[None]):
     def action_open_reader(self) -> None:
         self._open_reader()
 
-    def _open_reader(self, pane: bool = True) -> None:
-        item = self._item
+    def _open_reader(self, pane: bool = True, item: Optional[WorkItem] = None) -> None:
+        """The reader on the selected series, or on *item* (e.g. an older revision)."""
+        item = item or self._item
         if item is None:
             return
+        latest = self._latest_of(item).series.revision
+        self._pinned = item.series.revision if item.series.revision != latest else 0
         self._reading, self._thread, self._post_key = item, None, ''
         self._reply_on_open = False
         self._saved_draft = None
@@ -1110,7 +1121,10 @@ class MaintainerApp(App[None]):
         self._shown = None
         self._content.border_title = ''
         self._content.set_text('Loading thread…')
-        self._set_status(f' b4-maintainer — Reading: {item.series.subject} v{item.series.revision}')
+        older = f' (older: v{latest} is the latest)' if self._pinned else ''
+        self._set_status(
+            f' b4-maintainer — Reading: {item.series.subject} v{item.series.revision}{older}'
+        )
         self._set_reader_pane('tree')
         self.run_worker(
             lambda: self._load_thread(item), thread=True, group='thread', exclusive=True
@@ -1369,9 +1383,12 @@ class MaintainerApp(App[None]):
             raise ValueError(f'lore has no thread for <{msgid}>')
         return found
 
-    def bench_thread(self, identity: str) -> tuple[WorkItem, SeriesThread]:
-        """A series' thread for the Workbench tab (blocking)."""
+    def bench_thread(self, identity: str, revision: int = 0) -> tuple[WorkItem, SeriesThread]:
+        """A series' thread for the Workbench tab, at *revision* (0: the latest)
+        (blocking)."""
         item = self.snapshot.item_by_identity(identity) if self.snapshot else None
+        if item is not None and revision:
+            item = item.at_revision(revision)
         if item is None:
             raise ValueError('not in the cache (F5 fetches it)')
         return item, self._with_sashiko(item, self._thread_loader(item.series))
@@ -2440,7 +2457,7 @@ class MaintainerApp(App[None]):
             target.stale = target.is_mounted  # Shown again: it rereads.
         if isinstance(target, WorkbenchScreen):
             target.workspace = snapshot.workspace
-            target.series = {i.identity: i.series for i in snapshot.items}
+            target.series = series_map(snapshot.items)
             target.latest = {i.identity: i.series.revision for i in snapshot.items}
         elif isinstance(target, BranchesScreen):
             target.workspace = snapshot.workspace
@@ -2744,6 +2761,34 @@ class MaintainerApp(App[None]):
             scoped,
         )
 
+    def _latest_of(self, item: WorkItem) -> WorkItem:
+        """*item*'s series as listed: its latest revision, with every older one."""
+        found = self.snapshot.item_by_identity(item.identity) if self.snapshot else None
+        return found or item
+
+    def action_versions(self) -> None:
+        """V: read another revision of the open or selected series (newest first)."""
+        item = self._reading or self._item
+        if item is None:
+            return
+        family = self._latest_of(item)
+        reading = self._reading.series.revision if self._reading is not None else 0
+        choices = []
+        for s in (family.series, *reversed(family.older)):
+            notes = ['latest'] if s is family.series else []
+            notes += ['reading'] if s.revision == reading else []
+            when = s.sent.strftime('%Y-%m-%d') if s.sent else 'undated'
+            count = len(s.patches)
+            words = [*notes, when, f'{count} patch{"es" if count != 1 else ""}']
+            choices.append((str(s.revision), f'v{s.revision} · ' + ' · '.join(words)))
+
+        def picked(revision: Optional[str]) -> None:
+            chosen = family.at_revision(int(revision)) if revision else None
+            if chosen is not None:
+                self._open_reader(item=chosen)
+
+        self.push_screen(Pick(f'Read which revision of {family.series.subject}?', choices), picked)
+
     def _pick_workbench(self, item: WorkItem, project: str, patches: tuple[int, ...] = ()) -> None:
         what = item.series.subject + (f' patch {patches[0]}' if patches else '')
         self._choose_workbench(what, lambda bench: self._add_to(bench, item, project, patches))
@@ -2853,7 +2898,7 @@ class MaintainerApp(App[None]):
             self._set_notice('Agent sessions are not available here')
             return
         workspace, overview = snapshot.workspace, self._overview
-        series = {i.identity: i.series for i in snapshot.items}
+        series = series_map(snapshot.items)
 
         def work() -> None:
             try:
@@ -2915,6 +2960,14 @@ class MaintainerApp(App[None]):
             skills = hub.skills()[0]
             situation = _bench_situation(hub, workspace, hub.overview(), skills, plans)
             mode = plan(result.profile, result.choice, situation, result.items).mode
+            doubled = [p for p in plans if p.use == 'apply' and p.compare]
+            if mode == 'worktree' and doubled:
+                p = doubled[0]
+                return (
+                    f'Not launched: {", ".join(p.compare)} is on {p.project} at several '
+                    'revisions, which one tree cannot hold applied; choose a tree at its base '
+                    'with its items for the agent, or no tree'
+                )
             if mode == 'worktree' and tree_problems:
                 return f'Cannot prepare the trees of {bench.label}: ' + '; '.join(tree_problems)
             if mode == 'worktree':

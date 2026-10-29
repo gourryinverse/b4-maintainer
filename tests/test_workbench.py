@@ -95,7 +95,9 @@ def test_series_and_branches_go_under_their_project_in_order():
         Entry('ndctl', '', (DAX,)),
     )
     with pytest.raises(WorkbenchError, match='already'):
-        add_series(bench, 'linux', CXL.series, 4, CXL.subject)
+        add_series(bench, 'linux', CXL.series, 3, CXL.subject)
+    # Another revision may join it, to compare.
+    assert add_series(bench, 'linux', CXL.series, 4, CXL.subject).entries[0].items[-1].revision == 4
     # The base given for a new project's entry; an existing entry keeps its own.
     assert add_branch(bench, 'linux', 'more', base='other').entries[0].base == 'gourry/base'
 
@@ -263,7 +265,7 @@ def test_a_workbench_becomes_tree_plans_from_the_cache_and_branches(tmp_path):
     )
     stale = Workbench('w', 'W', (Entry('linux', '', (Item(cxl.identity, 2, cxl.subject),)),))
     _plans, problems, _tree = service.plans(workspace, stale, {cxl.identity: cxl})
-    assert problems == ['cxl: region mode v2: only v3 is cached (v on F4 takes it)']
+    assert problems == ['cxl: region mode v2: v2 is not in the cache (v takes v3)']
     _plans, problems, _tree = service.plans(workspace, stale, {})
     assert problems == ['cxl: region mode v2: not in the cache (F5 fetches it)']
     _plans, problems, _tree = service.plans(workspace, Workbench('e', 'E'), {})

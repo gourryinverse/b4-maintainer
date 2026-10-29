@@ -103,6 +103,20 @@ def test_reroll_shows_latest_revision_and_keeps_history():
     assert item.versions == (1, 2)
 
 
+def test_older_revisions_stay_on_the_item_to_read_or_compare():
+    v1 = make_series('mm: tidy', revision=1, change_id='tidy-1', lists=LINUX_LISTS, msgid='v1@x')
+    v2 = make_series('mm: tidy', revision=2, change_id='tidy-1', lists=LINUX_LISTS, msgid='v2@x')
+    v3 = make_series('mm: tidy', revision=3, change_id='tidy-1', lists=LINUX_LISTS, msgid='v3@x')
+    idx = index_for(workspace_config(), [v2, v3, v1])
+    [item] = idx.items('all')
+    assert [s.revision for s in item.older] == [1, 2]  # Oldest first; the latest is .series.
+    assert {s.identity for s in item.older} == {item.identity}
+    older = item.at_revision(1)
+    assert older is not None and older.series.msgids == ('v1@x',)
+    assert older.identity == item.identity and older.sashiko is None
+    assert item.at_revision(3) is item and item.at_revision(9) is None
+
+
 def test_unmerged_submissions_match_maintainer_identity():
     mine = make_series('mm: mine', lists=LINUX_LISTS, author_email='maintainer@example.org')
     theirs = make_series('mm: theirs', lists=LINUX_LISTS)

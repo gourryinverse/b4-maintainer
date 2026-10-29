@@ -431,6 +431,7 @@ def build_items(
     canonical = _families(series)
     members: dict[str, list[str]] = {}
     latest: dict[str, Series] = {}
+    postings: dict[str, dict[int, Series]] = {}  # Every revision's, merged.
     versions: dict[str, set[int]] = {}
     sources: dict[str, dict[str, None]] = {}
     for s in series:
@@ -440,6 +441,9 @@ def build_items(
         if s.identity not in members.setdefault(identity, []):
             members[identity].append(s.identity)
         versions.setdefault(identity, set()).add(s.revision)
+        at = postings.setdefault(identity, {})
+        known = at.get(s.revision)
+        at[s.revision] = _merge_postings(known, s) if known else replace(s, identity=identity)
         current = latest.get(identity)
         if current is None or s.revision > current.revision:
             latest[identity] = replace(s, identity=identity)
@@ -471,6 +475,9 @@ def build_items(
                 versions=tuple(sorted(versions[identity])),
                 responsible=any(m in responsible for m in [identity, *members[identity]]),
                 sources=tuple(sources.get(identity, ())),
+                older=tuple(
+                    postings[identity][r] for r in sorted(postings[identity]) if r != s.revision
+                ),
             )
         )
     # Newest first; undated postings last.

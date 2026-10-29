@@ -17,10 +17,10 @@ import re
 import subprocess
 import tomllib
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from .attachments import Attachment, gather, preview
-from .model import Series
+from .model import Series, WorkItem
 from .sessions.records import SessionRecord, session_name, session_trees
 from .sessions.trees import TreeItem, classify_tree
 from .workspace import Workspace
@@ -276,6 +276,30 @@ def remove_project(bench: Workbench, project: str) -> Workbench:
     return replace(bench, entries=tuple(e for e in bench.entries if e.project != project))
 
 
+def _posting_key(identity: str, revision: int) -> str:
+    return f'{identity}#v{revision}'
+
+
+def series_map(items: Iterable[WorkItem]) -> dict[str, Series]:
+    """Cached series for workbenches: each latest posting by identity, and every
+    revision's (older ones too) by identity and revision (see posting)."""
+    found: dict[str, Series] = {}
+    for item in items:
+        found[item.identity] = item.series
+        for s in (item.series, *item.older):
+            found[_posting_key(item.identity, s.revision)] = s
+    return found
+
+
+def posting(series: Mapping[str, Series], identity: str, revision: int) -> Optional[Series]:
+    """Series *identity* as posted at *revision*, from *series* (see series_map)."""
+    found = series.get(_posting_key(identity, revision))
+    if found is not None:
+        return found
+    latest = series.get(identity)
+    return latest if latest is not None and latest.revision == revision else None
+
+
 def _entry(bench: Workbench, project: str, base: str = '') -> Entry:
     return bench.entry(project) or Entry(project, base)
 
@@ -290,11 +314,13 @@ def add_series(
     msgid: str = '',
     patches: tuple[int, ...] = (),
 ) -> Workbench:
-    """The series last under *project* (an entry made at *base* if it has none); with
-    *patches*, only those patches of it."""
+    """The series at *revision* last under *project* (an entry made at *base* if it has
+    none); with *patches*, only those patches of it. Another revision of it may be there
+    too (to compare)."""
     entry = _entry(bench, project, base)
-    if any(i.series == series and i.patches == tuple(patches) for i in entry.items):
-        raise WorkbenchError(f'{subject} is already on this workbench')
+    same = (series, revision, tuple(patches))
+    if any((i.series, i.revision, i.patches) == same for i in entry.items):
+        raise WorkbenchError(f'{subject} v{revision} is already on this workbench')
     item = Item(series, revision, subject, msgid=msgid, patches=tuple(patches))
     return _with_entry(bench, replace(entry, items=entry.items + (item,)))
 
@@ -423,6 +449,7 @@ class ContentRow:
     index: int = -1  # An item's place in its project's entry.
     session: str = ''
     series: str = ''  # A mailbox's series identity.
+    revision: int = 0  # A series mailbox's revision.
     attachment: Optional[Attachment] = None  # A commit's or artifact's, for showing.
     path: str = ''  # A tree's path.
     item: str = ''  # A tree's or commit's Branches item key (tree:<sid>[/<project>]).
@@ -531,12 +558,14 @@ class WorkbenchService:
                         items.append(TreeItem(item.label, file=str(path), apply=False))
                     continue
                 if item.series:
-                    known = series.get(item.series)
-                    if known is None:
+                    known = posting(series, item.series, item.revision)
+                    cached = series.get(item.series)
+                    if cached is None:
                         problems.append(f'{item.label}: not in the cache (F5 fetches it)')
-                    elif known.revision != item.revision:
+                    elif known is None:
                         problems.append(
-                            f'{item.label}: only v{known.revision} is cached (v on F4 takes it)'
+                            f'{item.label}: v{item.revision} is not in the cache '
+                            f'(v takes v{cached.revision})'
                         )
                     else:
                         items.append(
@@ -552,7 +581,16 @@ class WorkbenchService:
                     items.append(TreeItem(item.label, branch=item.commit, repo=other, single=True))
                 else:
                     items.append(TreeItem(item.branch, branch=name, repo=other))
-            plans.append(TreePlan(entry.project, entry.base, tuple(items)))
+            revisions: dict[str, set[int]] = {}
+            for item in entry.items:
+                if item.series:
+                    revisions.setdefault(item.series, set()).add(item.revision)
+            compare = tuple(
+                dict.fromkeys(
+                    i.subject for i in entry.items if len(revisions.get(i.series, ())) > 1
+                )
+            )
+            plans.append(TreePlan(entry.project, entry.base, tuple(items), compare=compare))
         if not bench.entries:
             problems.append(f'{bench.label} has nothing to prepare: w adds series to it')
         return tuple(plans), problems, tree_problems
@@ -588,6 +626,7 @@ class WorkbenchService:
                 entry.project,
                 series=item.series or item.mail,
                 path=item.file,
+                revision=item.revision,
             )
             for entry in bench.entries
             for item in entry.items
@@ -651,7 +690,11 @@ class WorkbenchService:
             more = f'\n… {len(lines) - 400} more lines' if len(lines) > 400 else ''
             return f'{row.path}\n\n' + '\n'.join(lines[:400]) + more
         if row.kind == 'mailbox':
-            known = series.get(row.series)
+            known = (
+                posting(series, row.series, row.revision)
+                if row.revision
+                else series.get(row.series)
+            )
             if known is None:
                 return f'{row.text.strip()}: not in the cache (F5 fetches it)'
             lines = [
@@ -726,13 +769,15 @@ class WorkbenchService:
             return f'{item.label} · {how}'
         if item.series:
             text = item.label
-            known = series.get(item.series)
-            if known is None:
+            known = posting(series, item.series, item.revision)
+            if series.get(item.series) is None:
                 return f'{text} · not in the cache (F5 fetches it)'
-            if known.revision == item.revision and item.patches:
+            if known is not None and item.patches:
                 text += f' · {len(item.patches)} of {len(known.patches)} patches'
-            elif known.revision == item.revision:
+            elif known is not None:
                 text += f' · {len(known.patches)} patches'
+            else:
+                text += ' · not in the cache'
             newer = latest.get(item.series, 0)
             return text + (f' · v{newer} available (v)' if newer > item.revision else '')
         repo, name = self.branch_repo(workspace, entry.project, item.branch)

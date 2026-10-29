@@ -533,11 +533,11 @@ class WorkbenchScreen(Screen[None]):
         load = getattr(self.app, 'bench_thread', None)
         if row is None or row.kind != 'mailbox' or load is None:
             return
-        identity = row.series
+        identity, revision = row.series, row.revision
 
         def work() -> None:
             try:
-                item, thread = load(identity)
+                item, thread = load(identity, revision)
             except Exception as exc:
                 self.app.call_from_thread(self._status, f'Cannot open the thread: {exc}')
                 return

@@ -91,6 +91,13 @@ Python 3.11 or newer.
 - The series list is newest posting first; `l` orders it by latest activity (its newest
   message, a reply or a posting, from the cached mail) and back, keeping the selected
   series, in every view and search; a Last column then says how long ago (5m, 3h, 12d).
+- Each series is listed at its latest revision; the older ones in the cache stay
+  readable: `V` (in the list or a thread, when there are any) picks the revision to read,
+  newest first, and the status line says when it is not the latest (it stays open across
+  `F5`). `w` while reading one adds that revision to a workbench, so two revisions of a
+  series can sit side by side to compare: a workbench session reads each revision's own
+  mail (no tree, or a tree at its base with them for the agent); one tree never holds
+  both applied, so a launch that asks for that is refused.
 - `a` in the series list or a thread applies that series to a maintainer base or a b4 prep
   branch of any project (for a series routed to the wrong project, or none): pick the
   project and branch (when there are several), then the patches (all ticked to start). b4 applies them as `b4 am` would: authors kept, trailers given on the list
