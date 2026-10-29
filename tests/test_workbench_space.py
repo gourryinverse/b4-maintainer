@@ -6,6 +6,7 @@ reaches it; changes.md, and each running session's inbox, say what changed."""
 
 import datetime
 import json
+import pathlib
 
 from sessiondata import make_record
 
@@ -222,3 +223,56 @@ def test_workbench_sessions_check_out_the_spaces_repos_and_leave_branches_behind
     policy = policy_for(store, 'w2')
     assert str(space / 'repos') in policy.writable  # Its commits land in the space.
     assert command.cwd == str(space / 'sessions' / 'w2')
+
+
+def test_a_space_is_listed_as_a_tree_holding_what_its_checkouts_left(tmp_path, home):
+    from gitutil import git
+    from test_session_workbench import project
+
+    from b4_maintainer.adapters.bases import pluck_onto
+    from b4_maintainer.sessions.hub import RecordWorktrees, TreePlan
+    from b4_maintainer.space import space_records
+
+    (home / '.gitconfig').write_text('[user]\n\tname = M\n\temail = m@example.org\n')
+    project(tmp_path / 'projects' / 'linux', 'linux')
+    checkout = tmp_path / 'projects' / 'linux'
+    trees = RecordWorktrees(tmp_path / 'var' / 'worktrees', {'linux': str(checkout)})
+    space = space_dir(tmp_path, 'cmp')
+    one = make_record('w1', scope='workbench', workbench='cmp', space=str(space), model='dry-run')
+    made = trees.prepare_entry(one, TreePlan('linux', 'main'))
+    dest = made.worktree.path
+    git('switch', '-q', '-c', 'b4m/fixup/x', cwd=dest)
+    (pathlib.Path(dest) / 'x.c').write_text('x\n')
+    git('add', '-A', cwd=dest)
+    git('commit', '-q', '-m', 'linux: fix x', cwd=dest)
+    sha = git('rev-parse', 'HEAD', cwd=dest)
+    trees.remove(dest)  # The session's checkout goes; its branch stays in the space.
+
+    bench = Workbench('cmp', 'Compare', ())
+    [view] = space_records(tmp_path, [bench], [one.replace(trees=(made,))])
+    assert view.workbench == 'cmp' and view.name == 'Compare (space)'
+    [(proj, tree)] = [(t.project, t.worktree) for t in view.trees]
+    assert (proj, tree.path, tree.branch) == (
+        'linux',
+        str(space / 'repos' / 'linux.git'),
+        'b4m/bench/cmp',
+    )
+    service = service_for(tmp_path, [view])
+    rows = service.contents(Workspace.from_config({}), bench, {}, {})
+    texts = [r.text.strip() for r in rows]
+    assert any('Compare (space) · linux' in t for t in texts)
+    commit_rows = [r for r in rows if r.kind == 'commit']
+    assert [r.attachment.title for r in commit_rows] == ['linux: fix x']
+    git('branch', 'me/target', 'main', cwd=checkout)
+    result = pluck_onto(
+        checkout,
+        'me/target',
+        pathlib.Path(commit_rows[0].attachment.repo),
+        [sha],
+        git('rev-parse', 'me/target', cwd=checkout),
+        'agent@b4-maintainer.invalid',
+        'LLM',
+    )
+    assert result.ok  # Plucked straight from the space's repository.
+    # Removing the workbench would delete it: its confirmation lists it.
+    assert service.space_branches('cmp') == ['linux: b4m/fixup/x']

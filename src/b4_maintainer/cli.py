@@ -13,7 +13,7 @@ import signal
 import sys
 import tempfile
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 from .adapters.tmux import TmuxEditor
 from .model import Authority
@@ -23,7 +23,8 @@ if TYPE_CHECKING:
     from .adapters.live import LiveSource
     from .app import MaintainerApp
     from .sessions.hub import SessionHub
-    from .workbench import WorkbenchService
+    from .sessions.records import SessionRecord
+    from .workbench import WorkbenchService, WorkbenchStore
 
 
 def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
@@ -103,7 +104,7 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
         sessions=(hub := _sessions(source.root, workspace, private=True)),
         branches=BranchService(
             source.root,
-            hub.records,
+            _with_spaces(source.root, hub),
             hub.store.directory,
             hub,
             email_dryrun=source.email_dryrun,
@@ -117,11 +118,30 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
 def _workbenches(root: pathlib.Path, hub: 'SessionHub') -> 'WorkbenchService':
     """Workbenches beside the configuration: state/workbenches/ when the
     workspace has a state/ directory, else workbenches/ in the workspace."""
-    from .projectsetup import config_path
-    from .workbench import WorkbenchService, WorkbenchStore
+    from .workbench import WorkbenchService
 
-    store = WorkbenchStore(config_path(root).parent / 'workbenches')
-    return WorkbenchService(root, store, hub.records, hub.store.directory)
+    return WorkbenchService(root, _bench_store(root), _with_spaces(root, hub), hub.store.directory)
+
+
+def _bench_store(root: pathlib.Path) -> 'WorkbenchStore':
+    from .projectsetup import config_path
+    from .workbench import WorkbenchStore
+
+    return WorkbenchStore(config_path(root).parent / 'workbenches')
+
+
+def _with_spaces(root: pathlib.Path, hub: 'SessionHub') -> Callable[[], list['SessionRecord']]:
+    """Every session's record, then each workbench space as one (its repositories as
+    trees), so Branches and the Workbench tab list a space's branches like a session's."""
+    from .space import space_records
+
+    store = _bench_store(root)
+
+    def records() -> list['SessionRecord']:
+        sessions = hub.records()
+        return [*sessions, *space_records(root, store.list()[0], sessions)]
+
+    return records
 
 
 def _app_pane() -> str:

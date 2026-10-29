@@ -168,6 +168,46 @@ def in_space(tree: pathlib.Path) -> bool:
     return (tree / '.git').is_file() and tree.parent.parent.name == 'sessions'
 
 
+def is_space_repo(path: pathlib.Path) -> bool:
+    """Whether *path* is a workbench space's repository (var/workbenches/<id>/repos/)."""
+    return path.parent.name == 'repos' and path.suffix == '.git' and (path / 'HEAD').is_file()
+
+
+def _made_in(checkout: pathlib.Path) -> set[str]:
+    """The branches a space checkout made or worked on: its own, and each it switched to
+    (its HEAD's reflog, which only this checkout keeps)."""
+    found = {f'b4m/session/{checkout.parent.name}'}  # sessions/<id>/<project>: its own.
+    try:
+        for line in _git(checkout, 'reflog', '--format=%gs', 'HEAD'):
+            if line.startswith('checkout: moving from ') and ' to ' in line:
+                found.add(line.rsplit(' to ', 1)[1].strip())
+        found.update(_git(checkout, 'symbolic-ref', '-q', '--short', 'HEAD'))
+    except OSError:
+        pass
+    return found
+
+
+def _space_branches(path: pathlib.Path, names: list[str]) -> list[str]:
+    """Of a space repository's branches, those *path* lists: a checkout, those it made or
+    worked on; the repository itself, the rest (the space's branch, and what checkouts
+    since removed left behind). So each is listed once."""
+    if in_space(path):
+        mine = _made_in(path)
+        return [n for n in names if n in mine]
+    if is_space_repo(path):
+        taken: set[str] = set()
+        for line in _git(path, 'worktree', 'list', '--porcelain'):
+            where = (
+                pathlib.Path(line.removeprefix('worktree '))
+                if line.startswith('worktree ')
+                else None
+            )
+            if where is not None and where.resolve() != path.resolve() and where.is_dir():
+                taken |= _made_in(where)
+        return [n for n in names if n not in taken]
+    return names
+
+
 def series_tip(path: pathlib.Path, tree: Worktree) -> str:
     """The series' last commit in the tree: as recorded, or (when the agent applies the
     series itself) the session branch's tip."""
@@ -185,7 +225,9 @@ def classify_tree(path: pathlib.Path, tree: Worktree) -> TreeCommits:
     tree = dataclasses.replace(tree, applied=series_tip(path, tree))
     try:
         series = _commits(path, f'{tree.base}..{tree.applied}')
-        names = _git(path, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/')
+        names = _space_branches(
+            path, _git(path, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/')
+        )
         branches = []
         for name in names:
             commits = _commits(path, name, '--not', tree.base, tree.applied, '--remotes')

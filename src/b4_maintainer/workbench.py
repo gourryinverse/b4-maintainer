@@ -594,6 +594,25 @@ class WorkbenchService:
                     continue  # A session being removed.
         return changes
 
+    def space_branches(self, wid: str) -> list[str]:
+        """The branches agents left in workbench *wid*'s space (`project: branch`), which
+        removing it deletes (blocking); not the space's own branch or session branches
+        with nothing of their own."""
+        from .space import space_dir
+
+        found = []
+        for repo in sorted((space_dir(self.root, wid) / 'repos').glob('*.git')):
+            names = _git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/') or ''
+            bench = f'b4m/bench/{wid}'
+            for name in names.split():
+                if name == bench:
+                    continue
+                own = _git(repo, 'rev-list', '--count', name, '--not', bench) if name else None
+                if name.startswith('b4m/session/') and own in (None, '0'):
+                    continue
+                found.append(f'{repo.name.removesuffix(".git")}: {name}')
+        return found
+
     def remove_space(self, wid: str) -> None:
         """Workbench *wid*'s space, gone with it (blocking)."""
         from .space import remove_space, space_dir

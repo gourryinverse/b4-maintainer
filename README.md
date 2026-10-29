@@ -168,7 +168,15 @@ Python 3.11 or newer.
   its items, and where each is), `mail/` (each series' thread at the revision named, each
   discussion's), `files/`, and `changes.md`. Sessions filed in the workbench read it live,
   so a mailbox or file added after a session started reaches it, and a note in the
-  session's inbox says what changed. Removing the workbench removes its space.
+  session's inbox says what changed. Each project has one repository in the space
+  (`repos/<project>.git`, sharing the project's objects); a session's tree is its own
+  checkout of it (`sessions/<id>/<project>`, on `b4m/session/<id>`), started from the
+  space's branch `b4m/bench/<id>`, which the first session that needs it prepares (base
+  and items applied). Every branch an agent makes is the space's at once: listed under
+  the checkout that made it, and under the space itself (in the Workbench tab's Trees
+  and in Branches) once that checkout is removed, so pluck, fold, and prep reach it
+  either way. Removing a session's checkout loses only uncommitted changes. Removing the
+  workbench removes its space, after listing the branches agents left there.
 - Every session is filed in a workbench: F1 on a series makes that series' workbench the
   first time (named after it, the series on its base; `origin` in its file) and files
   the session there, so its sessions and their output are found in the Workbench tab; a

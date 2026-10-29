@@ -16,7 +16,11 @@ import pathlib
 import re
 import shutil
 from dataclasses import dataclass
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    from .sessions.records import SessionRecord
+    from .workbench import Workbench
 
 SPACES = pathlib.Path('var') / 'workbenches'
 MANIFEST = '.manifest.json'
@@ -178,3 +182,80 @@ def remove_space(space: pathlib.Path) -> None:
     """The space, gone (the workbench was removed)."""
     if space.is_dir() and not space.is_symlink():
         shutil.rmtree(space)
+
+
+def space_key(branch: str) -> str:
+    """A branch name as a git config key part (b4m.space.<key>.base)."""
+    return re.sub(r'[^A-Za-z0-9-]', '-', branch)
+
+
+def _rev(repo: pathlib.Path, *args: str) -> str:
+    import subprocess
+
+    run = subprocess.run(
+        ['git', *args], cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL
+    )
+    return run.stdout.strip() if run.returncode == 0 else ''
+
+
+def space_records(
+    root: pathlib.Path, benches: Sequence['Workbench'], records: Sequence['SessionRecord']
+) -> list['SessionRecord']:
+    """Each workbench space with repositories as a record to list like a session's trees:
+    one tree per project, its repository on the space's branch, holding what no session's
+    checkout lists (the items applied, and what removed checkouts left)."""
+    from .sessions.records import ProjectTree, SessionRecord, Worktree
+
+    found = []
+    for bench in benches:
+        space = space_dir(root, bench.id)
+        branch = f'b4m/bench/{bench.id}'
+        trees = []
+        for repo in sorted((space / 'repos').glob('*.git')):
+            project = repo.name.removesuffix('.git')
+            tip = _rev(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}')
+            base = _rev(repo, 'config', f'b4m.space.{space_key(branch)}.base')
+            if not tip:  # Only checkouts for the agent so far: from where they started.
+                started = [
+                    t.worktree.base
+                    for r in records
+                    if r.space == str(space)
+                    for t in r.trees
+                    if t.project == project
+                ]
+                base = tip = started[0] if started else ''
+            if tip:
+                tree = Worktree(str(repo), branch, base or tip, tip)
+                trees.append(ProjectTree(project, tree, ('the space branch',)))
+        if not trees:
+            continue
+        found.append(
+            SessionRecord(
+                id=f'space-{bench.id}'[:64],
+                created='',
+                scope='workbench',
+                project=trees[0].project,
+                series=f'workbench:{bench.id}',
+                revision=0,
+                subject=bench.label,
+                profile_id='',
+                profile_version=0,
+                profile_hash='',
+                choices={},
+                mode='worktree',
+                harness='',
+                preset='',
+                command=(),
+                native_id='',
+                model='',
+                thinking='',
+                permissions='read-only',
+                state='ended',  # Never live: nothing runs in it.
+                workbench=bench.id,
+                trees=tuple(trees),
+                home=str(space / 'repos'),
+                space=str(space),
+                name=f'{bench.label} (space)',
+            )
+        )
+    return found

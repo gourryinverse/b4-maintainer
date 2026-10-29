@@ -20,7 +20,6 @@ import io
 import logging
 import os
 import pathlib
-import re
 import shutil
 import subprocess
 from typing import Generator, Optional, Sequence
@@ -31,6 +30,7 @@ import b4.review
 from ..sessions.hub import TreeError
 from ..sessions.records import Worktree
 from ..sessions.trees import AGENT_MBOX, TreeItem, clone_project
+from ..space import space_key
 from .b4state import b4_repo
 
 TRAILERS = ('Signed-off-by', 'Reviewed-by', 'Acked-by', 'Tested-by', 'Co-developed-by')
@@ -467,7 +467,9 @@ def prepare_space_tree(
             return tree, False
         tip = _commit(repo, f'refs/heads/{space_branch}')
         if tip is not None:
-            start = _git(repo, 'config', '--default', '', f'b4m.space.{_key(space_branch)}.base')
+            start = _git(
+                repo, 'config', '--default', '', f'b4m.space.{space_key(space_branch)}.base'
+            )
             _git(repo, 'worktree', 'add', '--quiet', '-b', branch, str(dest), tip)
             made = True
             _space_agent(dest, identity)
@@ -480,18 +482,13 @@ def prepare_space_tree(
         start, tip = _apply_items(project, dest, base, items)
         _git(dest, 'checkout', '--quiet', '-b', branch, tip)
         _git(repo, 'update-ref', f'refs/heads/{space_branch}', tip)
-        _git(repo, 'config', f'b4m.space.{_key(space_branch)}.base', start)
+        _git(repo, 'config', f'b4m.space.{space_key(space_branch)}.base', start)
         _space_agent(dest, identity)
         return Worktree(str(dest), branch, start, tip), True
     except BaseException:
         if made:
             remove_space_tree(dest, keep_branch=False)
         raise
-
-
-def _key(branch: str) -> str:
-    """A branch name as a git config subsection-free key part."""
-    return re.sub(r'[^A-Za-z0-9-]', '-', branch)
 
 
 def remove_space_tree(dest: pathlib.Path, keep_branch: bool = True) -> None:

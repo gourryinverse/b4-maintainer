@@ -33,7 +33,15 @@ from .sandbox import available
 from .skills import BUILTIN_DIR as BUILTIN_SKILLS
 from .skills import Skill, load_skills
 from .store import SessionStore, SessionView
-from .trees import TreeItem, TreeState, in_space, inspect_tree, remove_tree, series_tip
+from .trees import (
+    TreeItem,
+    TreeState,
+    in_space,
+    inspect_tree,
+    is_space_repo,
+    remove_tree,
+    series_tip,
+)
 
 RESUMABLE = frozenset({'stopped', 'gone'})
 COUNTED_LIVE = LIVE | {'preparing'}  # Limits count a session from its preparation.
@@ -451,6 +459,8 @@ class RecordWorktrees:
         """A tree directly under the directory, or in a workbench session's folder there
         (the folder goes with its last tree); a session's checkout of a workbench space,
         whose branches stay in the space."""
+        if is_space_repo(pathlib.Path(path)):
+            raise OSError("a workbench space's repository goes only with the workbench (x on it)")
         if in_space(pathlib.Path(path)):
             from ..adapters.sessiontree import remove_space_tree
 

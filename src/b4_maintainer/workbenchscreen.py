@@ -1170,20 +1170,26 @@ class WorkbenchScreen(Screen[None]):
             return
 
         look = getattr(self.app, 'bench_removal', None)
-        if look is None:
-            self._confirm_removal(bench, ([], [], {}))
-            return
+
+        def gather() -> tuple[tuple[list[str], list[str], Mapping[str, Any]], list[str]]:
+            found = look(bench.id) if look is not None else ([], [], {})
+            return found, self.service.space_branches(bench.id)
+
         self._act(
-            lambda: look(bench.id),
-            lambda found: self._confirm_removal(bench, found),
+            gather,
+            lambda both: self._confirm_removal(bench, both[0], both[1]),
             'Looking at what it would lose…',
         )
 
     def _confirm_removal(
-        self, bench: Workbench, found: tuple[list[str], list[str], Mapping[str, Any]]
+        self,
+        bench: Workbench,
+        found: tuple[list[str], list[str], Mapping[str, Any]],
+        branches: Sequence[str] = (),
     ) -> None:
-        """Removing a workbench takes its sessions: live ones ended, their trees removed,
-        their records and output deleted. A tree with changes asks a second time."""
+        """Removing a workbench takes its sessions (live ones ended, their trees removed,
+        their records and output deleted) and its space with the branches agents left
+        there (*branches*). A tree with changes, or any such branch, asks a second time."""
         from .app import Confirm
 
         sids, live, losses = found
@@ -1195,7 +1201,10 @@ class WorkbenchScreen(Screen[None]):
             lines += [f'  {path}: {state.describe()}' for path, state in losses.items()]
         else:
             lines = [f'Remove the workbench {bench.label} (no sessions)?']
+        if branches:
+            lines.append(f'  Branches in its space, deleted with it: {", ".join(branches)}')
         changed = [f'  {p}: {s.describe()}' for p, s in losses.items() if not s.clean]
+        changed += [f'  branch {b}' for b in branches]
 
         def removed(_result: object) -> None:
             self._reload()

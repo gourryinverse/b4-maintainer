@@ -694,3 +694,44 @@ def test_a_space_tree_for_the_agent_has_its_mbox_where_the_prompt_says(upstream,
     assert git('for-each-ref', '--format=%(refname:short)', 'refs/heads', cwd=repo).split() == [
         'b4m/session/s1'
     ]  # The space branch is only made from items applied.
+
+
+def test_each_branch_is_listed_once_by_the_checkout_that_made_it_else_by_the_space(
+    upstream, tmp_path
+):
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree, remove_space_tree
+    from b4_maintainer.sessions.records import Worktree
+    from b4_maintainer.sessions.trees import TreeItem, classify_tree
+
+    project, base, mbox = upstream
+    repo, sessions = space_paths(tmp_path)
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2),)
+    trees = {
+        s: prepare_space_tree(
+            project,
+            repo,
+            sessions / s / 'demo',
+            f'b4m/session/{s}',
+            'b4m/bench/w',
+            base,
+            items,
+            AGENT,
+        )[0]
+        for s in ('s1', 's2')
+    }
+    for s, name in (('s1', 'b4m/fixup/a'), ('s2', 'b4m/fixup/b')):
+        dest = pathlib.Path(trees[s].path)
+        git('switch', '-q', '-c', name, cwd=dest)
+        write(dest, f'mm/{s}.c', f'{s}\n')
+        commit(dest, f'mm: {s}')
+    space = Worktree(str(repo), 'b4m/bench/w', base, trees['s1'].applied)
+
+    def listed(path, tree):
+        return sorted(b.name for b in classify_tree(pathlib.Path(path), tree).branches)
+
+    assert listed(trees['s1'].path, trees['s1']) == ['b4m/fixup/a', 'b4m/session/s1']
+    assert listed(trees['s2'].path, trees['s2']) == ['b4m/fixup/b', 'b4m/session/s2']
+    assert listed(repo, space) == ['b4m/bench/w']
+    remove_space_tree(pathlib.Path(trees['s1'].path))
+    # Its fixup moves to the space; its session branch held nothing of its own.
+    assert listed(repo, space) == ['b4m/bench/w', 'b4m/fixup/a']
