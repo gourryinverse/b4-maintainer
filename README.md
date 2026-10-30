@@ -181,11 +181,14 @@ Python 3.11 or newer.
   and in Branches) once that checkout is removed, so pluck, fold, and prep reach it
   either way. Removing a session's checkout loses only uncommitted changes. Removing the
   workbench removes its space, after listing the branches agents left there.
-- Every session is filed in a workbench: F1 on a series makes that series' workbench the
-  first time (named after it, the series on its base; `origin` in its file) and files
-  the session there, so its sessions and their output are found in the Workbench tab; a
-  derived session goes with its parent. Sessions from before (or whose workbench is
-  gone) are listed under Unfiled sessions.
+- Every session runs in a workbench: it is started in one (F1 on the Workbench tab), or
+  starts one to launch into. F1 on a series no workbench holds makes one from it (named
+  after it, the series as its item, b4 choosing the base; saved when the session
+  launches, so a cancelled dialog leaves none); when workbenches hold it, a pick offers a
+  new one (first) or one of those. Either way it is the workbench's launch dialog, and
+  the session stays the series' own (beside its thread, first in its lists). A derived
+  session goes with its parent. Sessions from before (or whose workbench is gone) are
+  listed under Unfiled sessions.
 - Sessions have names, shown wherever they appear (the drawer, the Workbench tab,
   Branches, their tmux windows) in place of their ids. On disk a session's directory
   (`var/sessions/<id>/`) and its trees (`var/worktrees/<id>/`) keep the timestamp id;
@@ -194,13 +197,15 @@ Python 3.11 or newer.
   and so on when taken; sessions from before get theirs the first time they are listed.
   `n` in the drawer, or `r` on a session in the Workbench tab, renames it (one line, at
   most 40 characters, no other session's name).
-- F1 on a series chooses each project's checkout in place of Mode: the series' own as a
-  tree with the series applied, a tree at its base with the series for the agent, or its
-  checkout to read (following the goal's suggestion until you pick); each other project
-  as a tree at its base, its checkout to read, or left out (e.g. a userland library
-  tested against the kernel). Any tree makes a worktree session (trees side by side);
-  otherwise it reads the checkouts chosen, and its prompt names them. A project you add
-  is saved in the series' workbench and offered chosen the next time.
+- A workbench launch offers every configured project in place of Mode: one with items
+  as a tree with them applied, a tree at its base with them for the agent, its checkout
+  to read, or its mail only (launched from a series, its own project follows the goal's
+  suggestion until you pick); any other as a tree at its base, its checkout to read, or
+  left out (e.g. a userland library tested against the kernel). Any tree makes a
+  worktree session (trees side by side); otherwise it reads the checkouts chosen, and its
+  prompt names them. A project you add is saved in the workbench (at its first maintainer
+  base) and, launching from a series, offered chosen to read the next time. Its prompt
+  package has each series' thread, Sashiko's reviews, and (unticked) your drafts.
 - Every session (lightweight too) writes its results under `out/` and records them in
   `out/artifacts.toml` (the b4m-artifacts skill): findings, reports, comparisons,
   reproducers, results, and, without a tree, proposed changes as `diff` files.

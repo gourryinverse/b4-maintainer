@@ -55,3 +55,33 @@ async def test_f1_offers_the_threads_drafts_unticked_and_copies_them_when_ticked
         text = (store.directory(sid) / 'work' / 'context' / 'drafts.md').read_text()
         assert 'Draft on this series.' in text and 'Draft elsewhere.' not in text
         assert 'drafts' in store.record(sid).context
+
+
+async def test_a_series_launched_into_a_workbench_is_offered_its_drafts_too(demo_root, tmp_path):
+    from test_workbench_screen import FakeService
+
+    from b4_maintainer.workbench import WorkbenchStore
+
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    runner = FakeSessionRunner(store)
+    drafts = DraftStore(tmp_path / 'drafts')
+    hub = SessionHub(store, runner, FakeWorktrees(), catalog=catalog)
+    service = FakeService(tmp_path, WorkbenchStore(tmp_path / 'wb'), hub.records, store.directory)
+    app = MaintainerApp(
+        FixtureSource(demo_root).load, sessions=hub, drafts=drafts, workbenches=service
+    )
+    async with app.run_test(size=(180, 50)) as pilot:
+        await settle(pilot)
+        mine = app.snapshot.items[0]
+        drafts.save(mine.series.msgids[0], '', 'Draft on this series.\n')
+        dialog = await open_dialog(pilot)
+        assert dialog.trees  # Launched into a workbench made from the series.
+        assert 'drafts' not in dialog.ticked('package')  # Private: not ticked.
+        assert not dialog.option_disabled('package', 'drafts')
+        await act(pilot, dialog.pick, 'goal', 'review')
+        await act(pilot, dialog.pick, 'package', 'drafts')
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        text = (store.directory(sid) / 'work' / 'context' / 'drafts.md').read_text()
+        assert 'Draft on this series.' in text

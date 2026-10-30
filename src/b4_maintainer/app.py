@@ -38,10 +38,10 @@ from .attachments import Attachment, gather, gather_all, git_identity, preview, 
 from .branches import ApplyChoices, CutResult, DetailRow, DropChoices, FoldPlan
 from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
-from .launchdialog import OTHER_USES, SERIES_USES, Derived, LaunchDialog, LaunchResult
+from .launchdialog import ITEM_USES, OTHER_USES, SERIES_USES, Derived, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
-from .package import drafts_context, series_context
+from .package import SASHIKO, drafts_context, sashiko_text, series_context
 from .reader import (
     SASHIKO_PREFIX,
     SEVERITY_STYLES,
@@ -79,6 +79,7 @@ from .views import ViewIndex
 from .widgets import Block, KeyBar, TabBar, TextPane, printable, tree_width
 from .workbench import (
     ContentRow,
+    Entry,
     Item,
     Workbench,
     WorkbenchError,
@@ -2928,10 +2929,71 @@ class MaintainerApp(App[None]):
         what = f'{s.subject} v{s.revision}' + (f' patch {patches[0]}' if patches else '')
         self._set_notice(f'Added {what} to {bench.label} ({project}) · F3 shows it')
 
-    def launch_workbench(self, bench: Workbench) -> None:
-        """F1 on the Workbench screen: the launch dialog for a session over *bench*: its
-        trees (worktree mode; each tree's base and items from the workbench), or only its
-        series' mail to read and compare (lightweight)."""
+    def _launch_series(self, item: WorkItem) -> None:
+        """F1 on a series: a session always runs in a workbench. With none holding the
+        series, one is made from it (saved when the session launches); otherwise a pick:
+        a new one (first), or one of those holding it. A series routed to no project asks
+        which first."""
+        service, snapshot = self._workbenches, self.snapshot
+        if service is None or snapshot is None:
+            return
+
+        def fresh(project: str) -> Workbench:
+            s = item.series
+            msgid = s.msgids[0] if s.msgids else ''
+            if s.discussion:
+                held = Item(mail=item.identity, subject=s.subject, msgid=msgid)
+            else:
+                held = Item(item.identity, s.revision, s.subject, msgid=msgid)
+            entry = Entry(project, '', (held,))  # Its base: b4 chooses, as for a series.
+            return Workbench(service.store.new_id(s.subject), s.subject, (entry,), item.identity)
+
+        def into(project: str) -> None:
+            def work() -> None:
+                holding = [
+                    b
+                    for b in service.store.list()[0]
+                    if any(
+                        i.series == item.identity or i.mail == item.identity
+                        for e in b.entries
+                        for i in e.items
+                    )
+                ]
+                self.call_from_thread(offer, holding)
+
+            def offer(holding: list[Workbench]) -> None:
+                if not holding:
+                    self.launch_workbench(fresh(project), item)
+                    return
+                choices = [(NEW_BENCH_LAUNCH, f'New workbench: {item.series.subject}')]
+                choices += [(b.id, b.label) for b in holding]
+
+                def picked(wid: Optional[str]) -> None:
+                    if wid == NEW_BENCH_LAUNCH:
+                        self.launch_workbench(fresh(project), item)
+                    elif wid:
+                        bench = next((b for b in holding if b.id == wid), None)
+                        if bench is not None:
+                            self.launch_workbench(bench, item)
+
+                self.push_screen(Pick('Launch into which workbench?', choices), picked)
+
+            self.run_worker(work, thread=True, group='session-action')
+
+        if item.project:
+            into(item.project)
+        else:
+            projects = [(p.id, p.label) for p in snapshot.workspace.projects]
+            self.push_screen(
+                Pick(f'Which project is {item.series.subject} for?', projects),
+                lambda project: into(project) if project else None,
+            )
+
+    def launch_workbench(self, bench: Workbench, origin: Optional[WorkItem] = None) -> None:
+        """F1 on the Workbench screen (or on a series, *origin*): the launch dialog for a
+        session over *bench*: its trees (worktree mode; each tree's base and items from the
+        workbench), or only its series' mail to read and compare (lightweight). A bench not
+        saved yet (made from *origin*) is saved when the session launches."""
         hub, snapshot, service = self._sessions, self.snapshot, self._workbenches
         if hub is None or snapshot is None or service is None:
             self._set_notice('Agent sessions are not available here')
@@ -2953,15 +3015,24 @@ class MaintainerApp(App[None]):
                 profiles, profile_problems = hub.profiles()
                 skills, skill_problems = hub.skills()
                 situation = _bench_situation(hub, workspace, overview, skills, plans)
+                package = self._bench_package(bench)
             except Exception as exc:
                 self.call_from_thread(self._set_notice, f'Cannot open the session dialog: {exc}')
                 return
             trees = [_tree_line(p) for p in plans]
             mailboxes = [f'{i.label} ({p.project})' for p in plans for i in p.items if i.source]
-            target = Target('series', '', f'workbench:{bench.id}', 0, bench.label)
+            target = (
+                _target(origin)
+                if origin is not None
+                else Target('series', '', f'workbench:{bench.id}', 0, bench.label)
+            )
             warned = [f'trees only: {w}' for w in tree_problems]
             threads = (ContextItem('threads', "each series' thread"),)
-            items: dict[str, tuple[ContextItem, ...]] = {'series': threads, 'workspace': ()}
+            items: dict[str, tuple[ContextItem, ...]] = {
+                'series': (*threads, *package),
+                'workspace': (),
+            }
+            projects, options, defaults = self._bench_checkouts(bench, origin)
             dialog = LaunchDialog(
                 target,
                 profiles,
@@ -2970,15 +3041,71 @@ class MaintainerApp(App[None]):
                 profile_problems + skill_problems + warned,
                 trees=trees,
                 mailboxes=mailboxes,
-                tree_projects=[p.project for p in plans],
+                tree_projects=projects,
+                tree_options=options,
+                tree_defaults=defaults,
+                follow=origin.project or '' if origin is not None else '',
             )
             self.call_from_thread(
                 self.push_screen,
                 dialog,
-                lambda r: self._launch_bench(bench, plans, r, tree_problems),
+                lambda r: self._launch_bench(bench, plans, r, tree_problems, origin),
             )
 
         self.run_worker(work, thread=True, group='session-action')
+
+    def _bench_checkouts(
+        self, bench: Workbench, origin: Optional[WorkItem]
+    ) -> tuple[list[str], dict[str, dict[str, str]], dict[str, str]]:
+        """Every project for a workbench launch (the series' own first, then the
+        workbench's, then the rest) with the uses each may have: one with items, a tree
+        with them applied or at its base for the agent, its checkout to read, or its mail
+        only; any other, a tree at its base, its checkout to read, or left out. Launched
+        from a series, the workbench's other projects start chosen to read."""
+        snapshot = self.snapshot
+        every = [p.id for p in snapshot.workspace.projects] if snapshot is not None else []
+        own = [origin.project] if origin is not None and origin.project else []
+        mine = [e.project for e in bench.entries]
+        projects = list(dict.fromkeys([*own, *mine, *every]))
+        with_items = {e.project for e in bench.entries if e.items}
+        options = {p: dict(ITEM_USES) if p in with_items else dict(OTHER_USES) for p in projects}
+        defaults = {
+            p: ('read' if origin is not None and p in mine and p not in with_items else 'none')
+            for p in projects
+        }
+        return projects, options, defaults
+
+    def _bench_package(self, bench: Workbench) -> tuple[ContextItem, ...]:
+        """More of a workbench launch's prompt package (blocking): Sashiko's reviews of
+        its series (at the revisions it names), and the maintainer's drafts on their
+        threads (private: unticked)."""
+        snapshot = self.snapshot
+        if snapshot is None:
+            return ()
+        reviewed, drafts, seen = [], [], set()
+        for entry in bench.entries:
+            for held in entry.items:
+                identity = held.series or held.mail
+                found = snapshot.item_by_identity(identity) if identity else None
+                if found is None:
+                    continue
+                if held.series:
+                    found = found.at_revision(held.revision) or found
+                    if found.sashiko is not None and found.sashiko.patches:
+                        reviewed.append(sashiko_text(found.sashiko))
+                for draft, answers in self._series_drafts(found) or []:
+                    if draft.msgid not in seen:
+                        seen.add(draft.msgid)
+                        drafts.append((draft, answers))
+        sashiko = (
+            ContextItem('sashiko', SASHIKO, text='\n'.join(reviewed))
+            if reviewed
+            else ContextItem('sashiko', SASHIKO, available=False, reason='not reviewed')
+        )
+        package = (sashiko,)
+        if self._drafts is not None:
+            package += (drafts_context(drafts),)
+        return package
 
     def _launch_bench(
         self,
@@ -2986,16 +3113,39 @@ class MaintainerApp(App[None]):
         plans: tuple[TreePlan, ...],
         result: Optional[LaunchResult],
         tree_problems: Sequence[str] = (),
+        origin: Optional[WorkItem] = None,
     ) -> None:
-        hub, snapshot = self._sessions, self.snapshot
+        hub, snapshot, service = self._sessions, self.snapshot, self._workbenches
         if result is None or hub is None or snapshot is None:
             return
         workspace = snapshot.workspace
         uses = dict(result.choice.trees)
-        if uses:  # The dialog's choice of tree per project.
-            plans = tuple(dataclasses.replace(p, use=uses.get(p.project, 'none')) for p in plans)
+        reads: list[str] = []
+        if uses:  # The dialog's choice per project: a tree, its checkout to read, or not.
+            chosen = []
+            for p in plans:
+                use = uses.get(p.project, 'none')
+                if use == 'read':
+                    reads.append(p.project)
+                chosen.append(
+                    dataclasses.replace(p, use={'read': 'none', 'base': 'apply'}.get(use, use))
+                )
+            for project, use in uses.items():  # Projects not in the workbench yet: added.
+                if use not in ('base', 'read') or bench.entry(project) is not None:
+                    continue
+                found = workspace.project(project)
+                base = found.bases[0].branch if found is not None and found.bases else ''
+                bench = add_project(bench, project, base)
+                if use == 'base':
+                    chosen.append(TreePlan(project, base, (), use='apply'))
+                else:
+                    reads.append(project)
+            plans = tuple(chosen)
+        checkouts = [(p, c) for p in reads if (c := hub.worktrees.checkout(p))]
 
         def launch() -> Optional[str]:
+            if service is not None and service.store.get(bench.id) != bench:
+                service.store.save(bench)  # Made for this launch, or projects added: kept.
             self._sync_space_now(bench)  # Its context as the recipe stands now.
             skills = hub.skills()[0]
             situation = _bench_situation(hub, workspace, hub.overview(), skills, plans)
@@ -3021,17 +3171,24 @@ class MaintainerApp(App[None]):
                     result.choice,
                     situation,
                     result.items,
+                    origin=_target(origin) if origin is not None else None,
+                    reads=checkouts,
                 )
             except SessionError as exc:
                 handed = any(p.agent_apply for p in plans if p.project == exc.project)
                 if exc.base and exc.project and not handed:
-                    self.call_from_thread(self._offer_bench_handoff, bench, plans, result, exc)
+                    self.call_from_thread(
+                        self._offer_bench_handoff, bench, plans, result, exc, origin
+                    )
                     return None
                 if not exc.detail:
                     raise
                 self.call_from_thread(self.push_screen, Notice(f'{exc}\n\n{exc.detail.strip()}'))
                 return None
-            self.call_from_thread(self._bench_launched, record)
+            if origin is not None and self._reading is not None:
+                self.call_from_thread(self._after_launch, record)  # Beside its thread.
+            else:
+                self.call_from_thread(self._bench_launched, record)
             return f'Launched session {session_name(record)}: workbench {bench.label}'
 
         self._session_call(launch)
@@ -3239,6 +3396,7 @@ class MaintainerApp(App[None]):
         plans: tuple[TreePlan, ...],
         result: LaunchResult,
         exc: SessionError,
+        origin: Optional[WorkItem] = None,
     ) -> None:
         """A workbench tree whose items do not apply: hand that tree to the agent (it starts
         at that base with every item as one mbox), or launch nothing."""
@@ -3250,7 +3408,7 @@ class MaintainerApp(App[None]):
                     dataclasses.replace(p, agent_apply=base) if p.project == project else p
                     for p in plans
                 )
-                self._launch_bench(bench, again, result)
+                self._launch_bench(bench, again, result, origin=origin)
             else:
                 self._set_notice(f'Not launched: {project} does not apply there')
 
@@ -3316,6 +3474,11 @@ class MaintainerApp(App[None]):
         if hub is None or snapshot is None:
             return
         item = self._reading or self._item
+        if item is not None and self._workbenches is not None:
+            self._launch_series(
+                item
+            )  # Into a workbench: a new one made from it, or one holding it.
+            return
         workspace, overview = snapshot.workspace, self._overview
 
         def work() -> None:
@@ -4072,6 +4235,7 @@ def _target_label(key: str, targets: Sequence[tuple[str, str]]) -> str:
 
 
 NEW_BENCH = '+new'  # w's "new workbench" choice (workbench ids never hold '+').
+NEW_BENCH_LAUNCH = '\0new'  # F1's: a new workbench made from the series.
 
 
 def _bench_situation(

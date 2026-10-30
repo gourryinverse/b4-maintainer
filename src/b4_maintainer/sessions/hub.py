@@ -812,11 +812,14 @@ class SessionHub:
         situation: Situation,
         items: Sequence[ContextItem] = (),
         now: Optional[datetime.datetime] = None,
+        origin: Optional[Target] = None,
+        reads: Sequence[tuple[str, str]] = (),
     ) -> SessionRecord:
         """A session over workbench *bench*: in worktree mode its trees, one per project
         (*plans*), side by side in one folder (a tree that cannot be prepared leaves none
         of them); lightweight, no trees, only each series' thread to read and compare. It
-        counts once against the limits."""
+        counts once against the limits. *origin*: the series it was launched from, which
+        it stays pinned to (shown and listed as that series' session)."""
         planned = plan(profile, choice, situation, items)
         if not planned.ok:
             raise SessionError('; '.join(planned.blockers))
@@ -824,9 +827,12 @@ class SessionHub:
             raise SessionError(f'workbench {label} has nothing to prepare')
         assert planned.request is not None and planned.model is not None
         now = now or datetime.datetime.now(datetime.timezone.utc)
-        target = Target('workbench', '', f'workbench:{bench}', 0, label)
+        target = origin or Target('workbench', '', f'workbench:{bench}', 0, label)
         record = self._in_space(
-            new_record(target, profile, choice, planned, now).replace(workbench=bench)
+            new_record(target, profile, choice, planned, now).replace(
+                workbench=bench,
+                reads=tuple(reads),  # Checkouts it reads (project, path).
+            )
         )
         installed = {s.id: s for s in situation.skills}
         chosen = [installed[s] for s in planned.skills if s in installed]

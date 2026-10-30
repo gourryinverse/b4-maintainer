@@ -47,6 +47,13 @@ TREE_USES = {
     'deliver': 'tree at its base, its items for the agent',
     'none': 'no tree: its mail only',
 }
+# A workbench launch: a project with items in it.
+ITEM_USES = {
+    'apply': 'tree, its items applied',
+    'deliver': 'tree at its base, its items for the agent',
+    'read': 'no tree: read its checkout',
+    'none': 'no tree: its mail only',
+}
 # A series launch: its own project, and each other project.
 SERIES_USES = {
     'apply': 'tree, the series applied',
@@ -683,11 +690,18 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 label = dict(self._uses_labels(project)).get(use, use)
                 where = f' on {self._base_text()}' if project == self.follow else ''
                 lines.append(f'  {project}: {label}{where if use in TREE_KINDS else ""}')
-        elif self.tree_projects:
-            uses = dict(self._tree_uses())
+        elif self.tree_projects:  # A workbench: each project's tree, checkout, or mail.
+            by_project = {line.split(' ', 1)[0]: line for line in self.trees}
+            uses = self._tree_uses()
+            shown = [(p, u) for p, u in uses if p in by_project or u in TREE_KINDS]
+            reads = [p for p, u in uses if u == 'read']
             lines.append('Trees:')
-            for project, tree in zip(self.tree_projects, self.trees):
-                lines.append(f'  {TREE_USES[uses.get(project, "none")]} · {tree}')
+            for project, use in shown:
+                label = dict(self._uses_labels(project)).get(use, use)
+                held = by_project.get(project, f'{project} at its base')
+                lines.append(f'  {label} · {held}')
+            if reads:
+                lines.append('Checkouts: ' + ', '.join(f'{p} (read)' for p in reads))
             if self.mailboxes:
                 lines += ['Mailboxes (every series, as a thread to read):']
                 lines += [f'  {m}' for m in self.mailboxes]

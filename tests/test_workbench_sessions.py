@@ -169,24 +169,53 @@ async def test_the_panes_are_titled(demo_root, tmp_path):
         assert titles == ['Workbenches', 'Sessions', 'Contents', 'Launch preview']
 
 
-async def test_f1_on_a_series_files_the_session_in_its_workbench(demo_root, tmp_path):
+async def test_f1_on_a_series_launches_into_a_new_workbench_made_from_it(demo_root, tmp_path):
+    from b4_maintainer.branchscreen import Pick
+    from b4_maintainer.launchdialog import LaunchDialog
+
     app, runner = make(demo_root, tmp_path)
     async with app.run_test(size=(220, 50)) as pilot:
         await settle(pilot)
         item = app.query_one('SeriesList').highlighted_item
-        for _ in range(2):  # Twice: the second finds the same workbench.
-            await pilot.press('f1')
-            await settle(pilot)
-            app.screen.pick('goal', 'review')
-            await pilot.pause()
-            await pilot.press('ctrl+s')
-            await settle(pilot)
-        records = [app._sessions.store.record(sid) for sid, _r in runner.launches]
-        benches = {r.workbench for r in records}
-        assert len(benches) == 1 and '' not in benches
-        bench = app._workbenches.store.get(benches.pop())
+        held = [b for b in app._workbenches.store.list()[0] if b.id != BENCH.id]
+        assert held == []
+        await pilot.press('f1')  # No workbench holds it: straight to a new one's dialog.
+        await settle(pilot)
+        assert isinstance(app.screen, LaunchDialog)
+        assert app.screen.trees and app.screen.mailboxes  # A workbench launch.
+        await pilot.press('escape')  # Cancelled: no workbench is left behind.
+        await settle(pilot)
+        assert [b.id for b in app._workbenches.store.list()[0]] == [BENCH.id]
+        await pilot.press('f1')
+        await settle(pilot)
+        app.screen.pick('goal', 'review')
+        await pilot.pause()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        record = app._sessions.store.record(sid)
+        bench = app._workbenches.store.get(record.workbench)
         assert bench.origin == item.identity and bench.label == item.series.subject
         assert bench.entries[0].items[0].series == item.identity
+        # Still the series' own session: beside its thread, first in its lists.
+        assert (record.scope, record.series, record.project) == (
+            'series',
+            item.identity,
+            item.project,
+        )
+
+        await pilot.press('f1')  # Now a workbench holds it: new (first) or that one.
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        assert [key for key, _label in app.screen.choices] == ['\0new', bench.id]
+        await pilot.press('down', 'enter')
+        await settle(pilot)
+        app.screen.pick('goal', 'review')
+        await pilot.pause()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        second = app._sessions.store.record(runner.launches[-1][0])
+        assert second.workbench == bench.id and len(app._workbenches.store.list()[0]) == 2
 
 
 async def test_sessions_from_before_are_listed_as_unfiled(demo_root, tmp_path):

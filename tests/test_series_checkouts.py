@@ -1,8 +1,9 @@
-"""Contract: F1 on a series offers every project in place of Mode: the series' own (tree
-with the series applied, tree at its base with the series for the agent, or read its
-checkout; following the goal's suggestion until changed) and each other (tree at its
-base, read its checkout, or left out). A project added is saved in the series'
-workbench, at its first maintainer base, and offered chosen the next time."""
+"""Contract: F1 on a series launches into a workbench and offers every project in place of
+Mode: the series' own (tree with its items applied, tree at its base with them for the
+agent, read its checkout, or its mail only; following the goal's suggestion until
+changed) and each other (tree at its base, read its checkout, or left out). A project
+added is saved in the workbench, at its first maintainer base, and offered chosen the
+next time a session launches into it."""
 
 from sessiondata import FakeSessionRunner, FakeWorktrees
 from test_workbench_screen import FakeService
@@ -67,7 +68,12 @@ async def test_f1_offers_each_projects_checkout_and_saves_the_added_ones(demo_ro
         bench = benches.get(record.workbench)
         assert bench.entry(other) is not None  # Saved for next time.
 
-        dialog = await open_dialog(pilot)  # Next time: offered chosen.
+        await pilot.press('f1')  # Next time, into the same workbench: offered chosen.
+        await settle(pilot)
+        await pilot.press('down', 'enter')  # Not a new one: the one holding the series.
+        await settle(pilot)
+        dialog = pilot.app.screen
+        assert isinstance(dialog, LaunchDialog)
         assert dialog.selected(f'tree:{other}') == 'read'
         dialog.pick('goal', 'review')
         dialog.pick(f'tree:{item.project}', 'apply')
