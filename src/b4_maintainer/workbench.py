@@ -458,6 +458,33 @@ class ContentRow:
     attachment: Optional[Attachment] = None  # A commit's or artifact's, for showing.
     path: str = ''  # A tree's path.
     item: str = ''  # A tree's or commit's Branches item key (tree:<sid>[/<project>]).
+    group: str = ''  # A collapsible group it heads (kind group) or sits in (artifact:<kind>).
+
+
+# The Artifacts groups, in order; any other kind follows, by name.
+ARTIFACT_ORDER = ('prompt', 'finding', 'analysis', 'diff', 'results', 'reproducer', 'file')
+
+
+def _artifact_groups(
+    artifacts: Sequence[tuple[str, ContentRow]], records: Sequence[SessionRecord]
+) -> list[ContentRow]:
+    """Artifact rows under a header per kind (`kind (count)`); each row its title, and
+    its session's name only when several sessions left artifacts."""
+    names = {r.id: session_name(r) for r in records}
+    several = len({row.session for _kind, row in artifacts}) > 1
+    kinds = sorted(
+        {k for k, _row in artifacts},
+        key=lambda k: (ARTIFACT_ORDER.index(k) if k in ARTIFACT_ORDER else len(ARTIFACT_ORDER), k),
+    )
+    rows = []
+    for kind in kinds:
+        mine = [row for k, row in artifacts if k == kind]
+        group = f'artifact:{kind}'
+        rows.append(ContentRow(f'  {kind} ({len(mine)})', 'group', group=group))
+        for row in mine:
+            who = f' · {names.get(row.session, row.session)}' if several else ''
+            rows.append(replace(row, text=f'    {row.text}{who}', group=group))
+    return rows
 
 
 class WorkbenchService:
@@ -833,7 +860,7 @@ class WorkbenchService:
             rows += [ContentRow('Mailboxes', 'heading'), *mailboxes]
         records = [r for r in self._records() if bench.id and r.workbench == bench.id]
         trees: list[ContentRow] = []
-        artifacts: list[ContentRow] = []
+        artifacts: list[tuple[str, ContentRow]] = []  # (kind, row)
         for record in sorted(records, key=lambda r: r.created, reverse=True):
             found = gather([record], record.series, self._directory) if self._directory else []
             for project, tree in session_trees(record):
@@ -856,12 +883,13 @@ class WorkbenchService:
                         )
                     )
             for a in (x for x in found if x.kind != 'patch'):
-                text = f'  {session_name(record)}: {a.label.split("  (")[0]}'
-                artifacts.append(ContentRow(text, 'artifact', session=record.id, attachment=a))
+                title = 'the initial prompt' if a.kind == 'prompt' else a.title
+                row = ContentRow(title, 'artifact', session=record.id, attachment=a)
+                artifacts.append((a.group or 'file', row))
         if trees:
             rows += [ContentRow('Trees', 'heading'), *trees]
         if artifacts:
-            rows += [ContentRow('Artifacts', 'heading'), *artifacts]
+            rows += [ContentRow('Artifacts', 'heading'), *_artifact_groups(artifacts, records)]
         return rows
 
     def show(

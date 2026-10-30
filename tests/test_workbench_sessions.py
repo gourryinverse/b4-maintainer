@@ -252,6 +252,9 @@ async def test_contents_keep_their_place_through_session_polls(demo_root, tmp_pa
         await pilot.press('f3')
         await settle(pilot)
         screen = app.screen
+        screen.select_row('group')  # prompt (1), then analysis (3): open it.
+        await pilot.press('down', 'enter')
+        await settle(pilot)
         rows = [r for r in screen._rows if r.kind == 'artifact']
         assert len(rows) >= 3 and record.id == 'w1'
         screen.select_row('artifact')

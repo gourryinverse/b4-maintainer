@@ -16,6 +16,7 @@ the app. `w` in the series list or a thread adds series (see the app).
 """
 
 import pathlib
+import re
 from dataclasses import replace
 from typing import Any, Callable, Mapping, Optional, Sequence, TypeVar
 
@@ -25,7 +26,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, OptionList, SelectionList, Static
+from textual.widgets import Footer, Input, OptionList, SelectionList, Static
 from textual.widgets.option_list import Option
 from textual.widgets.selection_list import Selection
 
@@ -144,6 +145,8 @@ class WorkbenchScreen(Screen[None]):
         border-title-color: $accent;
     }
     WorkbenchScreen #bench-status { height: 1; padding: 0 1; }
+    WorkbenchScreen #bench-search { display: none; height: 1; border: none; padding: 0 1; }
+    WorkbenchScreen.-searching #bench-search { display: block; }
     /* A thread opened from Mailboxes takes Contents' and the text pane's place. */
     WorkbenchScreen #bench-thread { display: none; width: 9fr; }
     WorkbenchScreen.-thread #bench-contents, WorkbenchScreen.-thread #bench-show-pane {
@@ -187,6 +190,11 @@ class WorkbenchScreen(Screen[None]):
         Binding('P', 'new_prep', 'new prep branch'),
         Binding('f', 'fold', 'fold to prep'),
         Binding('w', 'add_to_workbench', 'to workbench'),
+        # Contents: a group (Artifacts by kind) opens and closes; / searches.
+        Binding('enter', 'toggle_group', 'open/close', priority=True),
+        Binding('right', 'open_group', 'open', show=False),
+        Binding('left', 'close_group', 'close', show=False),
+        Binding('slash', 'search', 'search', key_display='/'),
     ]
 
     def __init__(
@@ -203,7 +211,10 @@ class WorkbenchScreen(Screen[None]):
         self.latest = latest  # Each series' newest revision known.
         self.benches: list[Workbench] = []
         self._problems: list[str] = []
-        self._rows: list[ContentRow] = []  # The selected workbench's contents.
+        self._rows: list[ContentRow] = []  # The selected workbench's contents, as shown.
+        self._all_rows: list[ContentRow] = []  # All of them: groups fold, / filters.
+        self._open_groups: set[str] = set()  # Groups opened (they start closed).
+        self._search = ''  # / over Contents (a regex, case-insensitive).
         self._row_texts: dict[ContentRow, str] = {}  # Rows' texts read (not trees').
         self._preview = ''  # What a launch of the selected workbench would prepare.
         self._shown = ''  # The text on the right.
@@ -233,6 +244,7 @@ class WorkbenchScreen(Screen[None]):
             with Horizontal(id='bench-thread'):
                 yield OptionList(id='thread-tree')
                 yield TextPane(id='thread-content')
+        yield Input(placeholder='/ regex over Contents', id='bench-search')
         yield Static('', id='bench-status', markup=False)
         yield Footer()
 
@@ -338,8 +350,16 @@ class WorkbenchScreen(Screen[None]):
             return  # Another workbench was selected meanwhile.
         keep = self._keep if self._keep[0] else self._row_key(self.row())
         self._keep = ('', '', -1)
-        self._rows = rows
+        self._all_rows = rows
         self._row_texts = {}
+        self._show_contents(keep)
+
+    def _show_contents(self, keep: tuple[str, str, int] = ('', '', -1)) -> None:
+        """Contents as shown: closed groups' rows left out, or (searching) only rows that
+        match, with their section, project, and group."""
+        keep = keep if keep[0] else self._row_key(self.row())
+        rows = self._visible(self._all_rows)
+        self._rows = rows
         self._marks = []
         lists = self.query_one('#bench-contents', OptionList)
         with self.prevent(OptionList.OptionHighlighted):
@@ -356,11 +376,107 @@ class WorkbenchScreen(Screen[None]):
             self._show_row()
         self.refresh_bindings()
 
+    def _visible(self, rows: list[ContentRow]) -> list[ContentRow]:
+        pattern = None
+        if self._search:
+            try:
+                pattern = re.compile(self._search, re.IGNORECASE)
+            except re.error:
+                pattern = re.compile(re.escape(self._search), re.IGNORECASE)
+        keep: set[int] = set()
+        heading = entry = group = -1
+        for n, row in enumerate(rows):
+            if row.kind == 'heading':
+                heading, entry, group = n, -1, -1
+            elif row.kind == 'entry':
+                entry = n
+            elif row.kind == 'group':
+                group = n
+            if pattern is None:
+                closed = row.kind != 'group' and row.group and row.group not in self._open_groups
+                if not closed:
+                    keep.add(n)
+            elif row.kind not in ('heading', 'group') and pattern.search(row.text):
+                keep.update(i for i in (n, heading, entry if row.kind == 'item' else -1) if i >= 0)
+                if row.group and group >= 0:
+                    keep.add(group)
+        shown = []
+        for n in sorted(keep):
+            row = rows[n]
+            if row.kind == 'group':
+                opened = pattern is not None or row.group in self._open_groups
+                row = replace(row, text=f'  {"▾" if opened else "▸"} {row.text.strip()}')
+            shown.append(row)
+        return shown
+
+    def content_rows(self) -> list[ContentRow]:
+        """Contents as shown (for tests)."""
+        return list(self._rows)
+
     @staticmethod
     def _row_key(row: Optional[ContentRow]) -> tuple[str, str, int]:
         if row is None:
             return ('', '', -1)
-        return (row.kind, row.project or row.session, row.index)
+        if row.kind == 'artifact' and row.attachment is not None:
+            return (row.kind, f'{row.session}:{row.attachment.title}', row.index)
+        return (row.kind, row.project or row.session or row.group, row.index)
+
+    # Groups and search.
+
+    def action_toggle_group(self) -> None:
+        row = self.row()
+        if row is not None and row.kind == 'group':
+            if row.group in self._open_groups:
+                self._open_groups.discard(row.group)
+            else:
+                self._open_groups.add(row.group)
+            self._show_contents()
+
+    def action_open_group(self) -> None:
+        row = self.row()
+        if row is not None and row.kind == 'group' and row.group not in self._open_groups:
+            self._open_groups.add(row.group)
+            self._show_contents()
+
+    def action_close_group(self) -> None:
+        """Left: close the group the cursor is on, or in (moving onto its header)."""
+        row = self.row()
+        if row is None or not row.group or row.group not in self._open_groups:
+            return
+        self._open_groups.discard(row.group)
+        self._show_contents(('group', row.group, -1))
+
+    def action_search(self) -> None:
+        self.add_class('-searching')
+        box = self.query_one('#bench-search', Input)
+        box.value = self._search
+        box.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == 'bench-search':
+            event.stop()
+            self._search = event.value.strip()
+            self._show_contents()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == 'bench-search':
+            event.stop()
+            self.remove_class('-searching')
+            self.query_one('#bench-contents', OptionList).focus()
+            if self._search:
+                self._status(f'Contents matching /{self._search}/ (Escape clears)')
+
+    def _clear_search(self) -> bool:
+        """Escape: the search goes (and its box); whether there was one."""
+        if not self._search and not self.has_class('-searching'):
+            return False
+        self._search = ''
+        self.remove_class('-searching')
+        self.query_one('#bench-search', Input).value = ''
+        self.query_one('#bench-contents', OptionList).focus()
+        self._show_contents()
+        self._status('')
+        return True
 
     def row(self) -> Optional[ContentRow]:
         index = self.query_one('#bench-contents', OptionList).highlighted
@@ -370,6 +486,10 @@ class WorkbenchScreen(Screen[None]):
         bench, row = self.bench(), self.row()
         if bench is None or row is None or row.kind in ITEMS:
             self._show_text(self._preview, 'Launch preview')
+            return
+        if row.kind == 'group':  # What it holds (Enter opens it).
+            held = [r.text.strip() for r in self._all_rows if r.group == row.group]
+            self._show_text('\n'.join(held[1:]), row.text.strip())
             return
         known = self._row_texts.get(row)
         if known is not None:
@@ -904,9 +1024,10 @@ class WorkbenchScreen(Screen[None]):
         return [label for _sid, label, _live in self._sessions]
 
     def output_labels(self) -> list[str]:
-        """The selected session's artifacts and commits, as Contents lists them."""
+        """The selected session's artifacts and commits, as Contents lists them (in
+        closed groups too)."""
         sid = self.selected_session()
-        return [r.text.strip() for r in self._rows if r.session == sid and r.attachment]
+        return [r.text.strip() for r in self._all_rows if r.session == sid and r.attachment]
 
     def preview_text(self) -> str:
         return self._preview
@@ -962,6 +1083,8 @@ class WorkbenchScreen(Screen[None]):
         self.refresh_bindings()
 
     def action_back(self) -> None:
+        if self._clear_search():
+            return
         if self.thread_open():
             self.action_close_thread()  # Escape closes a thread first.
             return
@@ -998,6 +1121,14 @@ class WorkbenchScreen(Screen[None]):
             row = self.row()
             artifact = row is not None and row.kind == 'artifact' and row.attachment is not None
             return pane == 'bench-contents' and (bool(self._chosen()) or artifact)
+        if action in ('toggle_group', 'open_group'):
+            row = self.row()
+            return pane == 'bench-contents' and row is not None and row.kind == 'group'
+        if action == 'close_group':
+            row = self.row()
+            return pane == 'bench-contents' and row is not None and bool(row.group)
+        if action == 'search':
+            return pane == 'bench-contents' and not self.thread_open()
         if action == 'update_trees':
             return pane == 'bench-contents' and bool(self._project()) and self._editable()
         if action == 'rename_session':

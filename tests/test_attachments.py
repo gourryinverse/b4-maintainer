@@ -135,3 +135,42 @@ def test_each_sessions_initial_prompt_is_one_of_its_artifacts(produced):
     shown = preview(prompt)
     assert shown.index('/goal Help me review') < shown.index('You assist a Linux kernel')
     assert 'Help me review' in render([prompt], AGENT, 'x')
+
+
+def test_each_artifact_has_a_kind_from_its_manifest_else_where_it_lies(tmp_path):
+    """A manifest entry keeps its kind; a file under out/ the manifest leaves out is
+    classed by its folder (reports, diffs, reproducers, tests) or its extension, so few
+    are left a plain file."""
+    store = SessionStore(tmp_path / 'sessions')
+    record = make_record('s1')
+    store.create(record)
+    out = store.directory('s1') / 'work' / 'out'
+    for rel, text in {
+        'reports/review.md': '# review\n',
+        'diffs/fix.diff': 'diff --git a/x b/x\n',
+        'reproducers/race/run.sh': '#!/bin/sh\n',
+        'tests/run.log': 'ok\n',
+        'notes.md': 'notes\n',
+        'build.log': 'cc\n',
+        'odd.data': 'data\n',
+        'finding.md': 'the bug\n',
+    }.items():
+        (out / rel).parent.mkdir(parents=True, exist_ok=True)
+        (out / rel).write_text(text)
+    (out / 'artifacts.toml').write_text(
+        '[[artifact]]\nkind = "finding"\ntitle = "A leak"\nsummary = "It leaks."\n'
+        'path = "out/finding.md"\n'
+    )
+    found = {a.title: a.group for a in gather([record], record.series, store.directory)}
+    assert found == {
+        'A leak': 'finding',  # (A session's prompt is 'prompt': see the test above.)
+        'out/reports/review.md': 'analysis',
+        'out/diffs/fix.diff': 'diff',
+        'out/reproducers/race/run.sh': 'reproducer',
+        'out/tests/run.log': 'results',
+        'out/notes.md': 'analysis',
+        'out/build.log': 'results',
+        'out/odd.data': 'file',
+    }
+    labels = [a.label for a in gather([record], record.series, store.directory)]
+    assert any(label.startswith('diff: out/diffs/fix.diff') for label in labels)

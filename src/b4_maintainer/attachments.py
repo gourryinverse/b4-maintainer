@@ -35,6 +35,10 @@ class Attachment:
     title: str = ''
     text: str = ''  # A summary (an artifact's), shown above a file or alone.
     branch: str = ''  # patch: the tree branch it is on.
+    # What it is, to group by: prompt; a commit's branch class (fixup, pull-ahead, …);
+    # a manifest kind (finding, analysis, diff, results, reproducer); or for a file the
+    # manifest leaves out, one from where it lies (file when nothing says).
+    group: str = ''
 
 
 def _text_file(path: pathlib.Path) -> bool:
@@ -97,7 +101,9 @@ def _attachments(
             system = ''
         label = f'prompt: the initial prompt  ({who})'
         found.append(
-            Attachment('prompt', label, sid, path=task, title='Initial prompt', text=system)
+            Attachment(
+                'prompt', label, sid, path=task, title='Initial prompt', text=system, group='prompt'
+            )
         )
     branches: set[str] = set()
     for _project, tree in session_trees(record):
@@ -117,6 +123,7 @@ def _attachments(
                         sha=c.sha,
                         title=c.subject,
                         branch=branch.name,
+                        group=branch.kind,
                     )
                 )
     out = (directory(sid) / 'work' / 'out').resolve()
@@ -133,18 +140,56 @@ def _attachments(
             if _text_file(a.path):
                 label = f'{a.kind}: {a.title}  ({rel}, {who})'
                 found.append(
-                    Attachment('file', label, sid, path=a.path, title=a.title, text=a.summary)
+                    Attachment(
+                        'file', label, sid, path=a.path, title=a.title, text=a.summary, group=a.kind
+                    )
                 )
         else:
             found.append(
                 Attachment(
-                    'text', f'{a.kind}: {a.title}  ({who})', sid, title=a.title, text=a.summary
+                    'text',
+                    f'{a.kind}: {a.title}  ({who})',
+                    sid,
+                    title=a.title,
+                    text=a.summary,
+                    group=a.kind,
                 )
             )
     for path in _other_files(out, named):
         rel = path.relative_to(out.parent)
-        found.append(Attachment('file', f'file: {rel}  ({who})', sid, path=path, title=str(rel)))
+        kind = file_kind(path.relative_to(out))
+        found.append(
+            Attachment(
+                'file', f'{kind}: {rel}  ({who})', sid, path=path, title=str(rel), group=kind
+            )
+        )
     return found
+
+
+# Where the b4m-artifacts skill puts each kind of result under out/, and what a file's
+# extension says when its folder does not.
+FOLDER_KINDS = {
+    'reports': 'analysis',
+    'diffs': 'diff',
+    'reproducers': 'reproducer',
+    'tests': 'results',
+    'logs': 'results',
+}
+SUFFIX_KINDS = {
+    '.diff': 'diff',
+    '.patch': 'diff',
+    '.log': 'results',
+    '.md': 'analysis',
+    '.txt': 'analysis',
+    '.rst': 'analysis',
+}
+
+
+def file_kind(rel: pathlib.Path) -> str:
+    """The kind of an out/ file the manifest leaves out (*rel*: its path under out/)."""
+    if len(rel.parts) > 1 and rel.parts[0] in FOLDER_KINDS:
+        return FOLDER_KINDS[rel.parts[0]]
+    return SUFFIX_KINDS.get(rel.suffix.lower(), 'file')
 
 
 def _cut(text: str, max_lines: int) -> str:

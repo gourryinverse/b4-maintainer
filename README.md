@@ -144,9 +144,13 @@ Python 3.11 or newer.
   starts; no tree anywhere is a lightweight session (series that conflict are fine). The tab
   shows, left, the workbenches and the selected one's sessions; middle, its Contents in
   sections: Items (each project and its items, edited as above), Mailboxes (each
-  series), Trees (each session tree and its commits by class), Artifacts (each
-  session's prompt, reports, results, files); right, the selected row's text (for
-  Items, the launch preview). On Trees, space marks commits, `p` plucks them (or the
+  series), Trees (each session tree and its commits by class), Artifacts (grouped by
+  kind: prompt, finding, analysis, diff, results, reproducer, file; a file left out of
+  a session's manifest takes its kind from its folder under `out/` or its extension;
+  each group collapsed to start, Enter or → opens it, ← closes it; a row names its
+  session only when several sessions left artifacts); right, the selected row's text
+  (for Items, the launch preview). `/` searches Contents by regex as you type (matches
+  in closed groups show with their group); Enter keeps it, Escape clears it. On Trees, space marks commits, `p` plucks them (or the
   selected one) onto the project's base, a prep branch, or another session tree, `P` cuts
   a prep branch from them, `w` adds them (each alone, or the selected one's whole
   branch) or a file artifact to a workbench or a new one, to start sessions from, and
