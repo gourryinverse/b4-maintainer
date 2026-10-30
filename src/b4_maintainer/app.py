@@ -106,6 +106,7 @@ SESSION_ACTIONS = frozenset(
 WORKTREE_ACTIONS = frozenset({'mark_worktree', 'remove_worktrees'})
 DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit', 'focus_session'})
 LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
+GONE_STATES = frozenset({'stopped', 'failed', 'gone', 'ended'})  # No pane beside the app.
 UNREAD_STYLE = Style(color='green')
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
@@ -2271,10 +2272,11 @@ class MaintainerApp(App[None]):
             self._drawer = line
             self.query_one('#drawer', Static).update(line)
         self.query_one('#drawer-tabs', Static).update(tabs_line(overview, self._drawer_tab))
-        if self._beside is not None and not any(
-            v.record.id == self._beside and v.state in LIVE_STATES for v in overview.sessions
-        ):
-            self._beside = None  # Its pane went away with it; nothing to move.
+        beside = next((v for v in overview.sessions if v.record.id == self._beside), None)
+        if self._beside is not None and (beside is None or beside.state in GONE_STATES):
+            # Its pane went away with it; nothing to move. Not while it prepares or starts:
+            # a poll read just before it joined beside the app may land just after.
+            self._beside = None
         self._render_session_rows()
         self._render_worktree_rows()
         self._sync_bindings()

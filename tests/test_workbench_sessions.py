@@ -294,3 +294,35 @@ async def test_r_on_a_session_renames_it_and_r_on_the_workbench_still_renames_th
         assert runner.store.names()['w1'] == 'cxl compare'
         assert screen.session_labels()[0].startswith('cxl compare · ')
         assert 'Renamed to cxl compare' in screen.status_text()
+
+
+async def test_a_session_launched_on_the_tab_leaves_when_lkml_is_shown_at_once(demo_root, tmp_path):
+    """A poll read while the session was still preparing can land after it joined beside
+    the app: the app must not forget it is there, or going back to LKML leaves it open."""
+    from textual.worker import WorkerCancelled
+
+    from b4_maintainer.sessions.hub import Overview
+    from b4_maintainer.sessions.store import SessionView
+
+    async def settle(pilot):  # A refresh superseded by the next is cancelled: fine here.
+        for _ in range(3):
+            try:
+                await pilot.app.workers.wait_for_complete()
+            except WorkerCancelled:
+                pass
+            await pilot.pause()
+
+    app, runner = make(demo_root, tmp_path)
+    record = bench_session(runner, 'w1')
+    async with app.run_test(size=(220, 50)) as pilot:
+        app.poll_sessions()
+        await settle(pilot)
+        await pilot.press('f3')
+        await settle(pilot)
+        app._bench_launched(record)  # Launched from the tab: beside the app.
+        await settle(pilot)
+        assert runner.beside == 'w1'
+        app._show_overview(Overview((SessionView(record, 'preparing'),)))  # A late poll.
+        await pilot.press('f2')
+        await settle(pilot)
+        assert runner.beside is None  # Back on LKML: hidden the first time.
