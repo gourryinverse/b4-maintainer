@@ -546,6 +546,22 @@ def fold_ws(ws, tmp_path):
     return service, workspace, project, record
 
 
+def test_a_pull_ahead_already_in_the_folded_series_is_carried_not_offered(ws, tmp_path):
+    """As an agent may leave it: a pull-ahead cherry-picked onto the folded series (not
+    leading it, not named in its manifest) is carried already; asking whether it should
+    lead would only add it twice."""
+    service, workspace, project, record = fold_ws(ws, tmp_path)
+    tree = tmp_path / 'ws' / 'var' / 'worktrees' / 's1'
+    git('switch', '-q', '-c', 'b4m/pull-ahead/late', record.worktree.base, cwd=tree)
+    late = commit(tree, 'late.c', 'late\n', 'mm: a fix found later')
+    git('switch', '-q', 'b4m/folded/foo', cwd=tree)
+    git('cherry-pick', late, cwd=tree)  # A copy: another sha, the same change.
+    git('switch', '-q', 'b4m/session/s1', cwd=tree)
+    plan = service.fold_plan(workspace, 'tree:s1', 'b4m/folded/foo', {})
+    assert plan.needs == ('b4m/pull-ahead/dep', 'b4m/pull-ahead/late')
+    assert plan.optional == (('b4m/pull-ahead/leak', 'mm: fix the leak'),)
+
+
 def test_folding_offers_the_pull_aheads_and_targets_the_series_own_prep_branch(ws, tmp_path):
     service, workspace, project, record = fold_ws(ws, tmp_path)
     branch = own_prep(project, tmp_path, '20261020-mm-foo')  # The record's series.
@@ -909,3 +925,12 @@ def test_a_newly_sent_revision_waits_to_be_tracked(ws, monkeypatch):
         {'project': 'linux', 'msgid': 'cover-v1@example.org', 'subject': pending[0]['subject']}
     ]
     assert service.record_sent(workspace, item, ('v1',)) == ''  # Nothing new (a dry run).
+
+
+def test_a_suggested_prep_branch_name_keeps_whole_words():
+    from b4_maintainer.branches import _branch_name
+
+    subject = 'mm/mempolicy: recompute automatic interleave weights on memory hotplug'
+    assert _branch_name(subject) == 'recompute-automatic-interleave-weights'
+    assert _branch_name('mm: x') == 'x' and _branch_name('mm: ') == 'series'
+    assert _branch_name('mm: ' + 'a' * 50) == 'a' * 40  # One word too long: cut.

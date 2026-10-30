@@ -941,8 +941,8 @@ class WorkbenchScreen(Screen[None]):
                 return
             carried = ', '.join(plan.needs) or 'none'
             title = (
-                f'It leads with: {carried}. Lead with which others? (those it conflicts '
-                'without; leave independent fixes out)'
+                f'It carries already: {carried}. Lead with which others? (those it '
+                'conflicts without; leave independent fixes out)'
             )
             options = [(b, f'{title_} ({b})') for b, title_ in plan.optional]
             self.app.push_screen(PickMany(title, options), chosen)

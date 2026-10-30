@@ -1070,11 +1070,21 @@ class BranchService:
             return FoldPlan(error=f'{folded}: {branch.problem or "no commits"}')
         artifacts = load_artifacts(self._out(record.id) / 'work' / 'out', set(branches))[0]
         titles = {a.branch: a.title for a in artifacts if a.branch}
-        needs = next((a.needs for a in artifacts if a.branch == folded), ())
+        needs = tuple(next((a.needs for a in artifacts if a.branch == folded), ()))
+        pull_aheads = [
+            b for b in classed.branches if b.kind == 'pull-ahead' and b.commits and not b.problem
+        ]
+        # Pull-aheads whose changes the folded series has already (anywhere in it, a copy
+        # counts): carried, so never offered to lead.
+        needs += tuple(
+            b.name
+            for b in pull_aheads
+            if b.name not in needs and _carried(pathlib.Path(tree), folded, b.name, base)
+        )
         optional = tuple(
             (b.name, titles.get(b.name) or b.commits[-1].subject)
-            for b in classed.branches
-            if b.kind == 'pull-ahead' and b.name not in needs and b.commits and not b.problem
+            for b in pull_aheads
+            if b.name not in needs
         )
         plan = FoldPlan(
             project.id,
@@ -1683,6 +1693,21 @@ def _slug(subject: str) -> str:
     return words[:40].rstrip('-') or 'commit'
 
 
+def _carried(tree: pathlib.Path, folded: str, branch: str, base: str) -> bool:
+    """Whether every commit of *branch* beyond *base* is in *folded* already, by its
+    change (git cherry: a cherry-picked copy counts)."""
+    run = subprocess.run(
+        ['git', 'cherry', folded, branch, base],
+        cwd=tree,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    lines = run.stdout.split('\n') if run.returncode == 0 else []
+    marks = [line[:1] for line in lines if line]
+    return bool(marks) and all(mark == '-' for mark in marks)
+
+
 def is_commit(row: DetailRow) -> bool:
     """A commit row (not a heading, an artifact, a cover letter, or a range-diff)."""
     return (
@@ -1758,7 +1783,13 @@ def _posted_series(
 def _branch_name(subject: str) -> str:
     """A prep branch name from a series subject: its words after the subsystem prefix."""
     words = re.findall(r'[a-z0-9]+', subject.rsplit(': ', 1)[-1].lower())
-    return '-'.join(words)[:40].strip('-') or 'series'
+    name = ''
+    for word in words:  # Whole words, up to 40 characters.
+        longer = f'{name}-{word}' if name else word
+        if len(longer) > 40:
+            break
+        name = longer
+    return name or '-'.join(words)[:40].strip('-') or 'series'
 
 
 def _pluck_branches(repo: pathlib.Path) -> set[str]:
