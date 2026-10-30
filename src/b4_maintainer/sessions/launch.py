@@ -46,11 +46,6 @@ class LaunchChoice:
     skills_off: frozenset[str] = frozenset()
     # Prompt package sources the maintainer unticked (available ones start ticked).
     context_off: frozenset[str] = frozenset()
-    # A derived session: its tree starts at *start* (no series applied), found in the tree
-    # of session *start_from* (empty: the project); *parent* is the session it came from.
-    start: str = ''
-    start_from: str = ''
-    parent: str = ''
     # A combined tree: further series (source, revision, subject) applied after this one.
     also: tuple[tuple[str, int, str], ...] = ()
     # b4 could not apply the series at this base: the tree starts there without it, and the
@@ -192,6 +187,5 @@ def new_record(
         permissions=planned.permissions,
         context=tuple(i.id for i in planned.included),
         skills=planned.skills,
-        parent=choice.parent,
         workbench=choice.workbench,
     )

@@ -38,9 +38,7 @@ from .branches import (
     SendSummary,
     is_commit,
 )
-from .launchdialog import Derived
 from .sessions.launch import Target
-from .sessions.policy import ContextItem
 from .sessions.records import SessionRecord, session_name
 from .widgets import TabBar, TextPane
 from .workspace import Workspace
@@ -121,12 +119,6 @@ class Branches(Protocol):
     def send_summary(self, workspace: Workspace, item: str) -> SendSummary: ...
 
     def reapable(self, data: BranchesSnapshot, item: str) -> bool: ...
-
-    def derive_options(
-        self, workspace: Workspace, item: str, row: Optional[DetailRow]
-    ) -> list[tuple[str, str, str]]: ...
-
-    def derive_context(self, item: str, row: Optional[DetailRow]) -> Optional[ContextItem]: ...
 
     def losses(self, workspace: Workspace, item: str) -> str: ...
 
@@ -313,7 +305,6 @@ class BranchesScreen(Screen[None]):
         Binding('d', 'prep_run("compare")', 'compare', show=False),
         Binding('w', 'add_to_workbench', 'to workbench'),
         Binding('x', 'reap', 'remove'),
-        Binding('D', 'derive', 'derive a session', show=False),
     ]
 
     def __init__(self, service: Branches, workspace: Workspace) -> None:
@@ -678,8 +669,6 @@ class BranchesScreen(Screen[None]):
             return bool(key) and (key.partition(':')[0] in WHOLE_KINDS or bool(self._chosen()))
         if action == 'reap':
             return self.service.reapable(self.data, key)
-        if action == 'derive':
-            return key.startswith('tree:') and key not in self.data.rebases
         if action == 'prep_run' and parameters == ('compare',):
             return bool(self.data.preps.get(key, {}).get('sent'))
         if action in ('prep_run', 'edit_cover', 'sign_off', 'preview', 'send'):
@@ -1423,49 +1412,6 @@ class BranchesScreen(Screen[None]):
             self.app.call_from_thread(self._acted, note)
 
         self.run_worker(work, thread=True, group='branches-act')
-
-    def action_derive(self) -> None:
-        """D on a session tree: a new session from its output, after choosing where the new
-        tree starts; the launch dialog follows (nothing starts without it)."""
-        key = self.selected_item()
-        if key is None or not key.startswith('tree:') or key in self.data.rebases:
-            return
-        row = self.selected_row()
-
-        def work() -> None:
-            try:
-                options = self.service.derive_options(self.workspace, key, row)
-                context = self.service.derive_context(key, row)
-            except Exception as exc:
-                self.app.call_from_thread(self._status, f'Cannot derive: {exc}')
-                return
-            self.app.call_from_thread(self._pick_start, key, options, context)
-
-        self.run_worker(work, thread=True, group='branches-act')
-
-    def _pick_start(
-        self, key: str, options: list[tuple[str, str, str]], context: Optional[ContextItem]
-    ) -> None:
-        if not options:
-            self._status('That session has no tree to derive from')
-            return
-        parent = key.removeprefix('tree:').partition('/')[0]  # The session.
-        by_key = {f'{n}': option for n, option in enumerate(options)}
-
-        def picked(choice: Optional[str]) -> None:
-            if choice is None:
-                return
-            start, start_from, label = by_key[choice]
-            launch = getattr(self.app, 'launch_derived', None)
-            if launch is None:
-                self._status('Agent sessions are not available here')
-                return
-            launch(parent, Derived(parent, start, start_from, label), context)
-
-        choices = [(n, option[2]) for n, option in by_key.items()]
-        self.app.push_screen(
-            Pick(f'Start the new tree at (from session {parent}):', choices), picked
-        )
 
 
 def _moved(result: RebaseResult) -> str:

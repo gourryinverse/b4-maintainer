@@ -192,7 +192,6 @@ class FakeWorktrees:
         self.removed = []
         self.during = None  # Called with the record while preparing.
         self.rebases = []  # (session id, base)
-        self.starts = []  # (session id, start, the session whose tree holds it)
         self.also = []  # Further series per prepared tree.
         self.unapplied = []  # (session id, source, base): the agent applies the series.
         self.with_mbox = []  # (session id, mbox bytes, base): an apply session's tree.
@@ -208,13 +207,6 @@ class FakeWorktrees:
 
     def checkout(self, project):
         return f'/w/projects/{project}' if project else ''
-
-    def prepare_start(self, record, start, start_from):
-        from b4_maintainer.sessions.records import Worktree
-
-        self.starts.append((record.id, start, start_from))
-        path = f'/w/var/worktrees/{record.id}'
-        return Worktree(path, f'b4m/session/{record.id}', start, start)
 
     def prepare_rebase(self, record, base):
         from b4_maintainer.sessions.hub import TreeError

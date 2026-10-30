@@ -1,7 +1,7 @@
 """Contract: the Workbench's Trees section acts on session trees as Branches did: space
 marks commits, p plucks them (or the selected one) onto a base, a prep branch, or another
 session tree; P cuts a prep branch from them; x on a tree removes it after saying what it
-would lose; D derives a session from it."""
+would lose; w adds commits, their branches, or file artifacts to a workbench."""
 
 from test_workbench_screen import FakeService
 
@@ -72,12 +72,6 @@ class TreeBranches:
     def reap(self, workspace, item):
         self.reaped.append(item)
         return True, f'Removed the tree of {item}'
-
-    def derive_options(self, workspace, item, row):
-        return [('base0', '', 'the series base'), (row.key if row else 'tip', 's1', 'its tree')]
-
-    def derive_context(self, item, row):
-        return None
 
 
 def make(demo_root, tmp_path):
@@ -165,20 +159,77 @@ async def test_x_on_a_tree_removes_it_after_saying_what_goes(demo_root, tmp_path
         assert branches.reaped == ['tree:s1']
 
 
-async def test_d_derives_a_session_from_a_tree(demo_root, tmp_path):
-    app, branches = make(demo_root, tmp_path)
-    launched = []
-    app.launch_derived = lambda parent, derived, context=None: launched.append((parent, derived))
+async def test_w_adds_a_commit_or_its_whole_branch_to_any_workbench(demo_root, tmp_path):
+    app, _branches = make(demo_root, tmp_path)
+    store = app._workbenches.store
     async with app.run_test(size=(200, 50)) as pilot:
         screen = await tab(pilot)
         screen.select_row('commit')
-        await pilot.press('D')
+        await pilot.press('w')
         await settle(pilot)
-        assert isinstance(app.screen, Pick)
-        await pilot.press('down', 'enter')
+        assert [k for k, _label in app.screen.choices] == ['branch', 'commit']
+        await pilot.press('down', 'enter')  # Only this commit.
         await settle(pilot)
-        [(parent, derived)] = launched
-        assert parent == 's1' and (derived.start, derived.start_from) == ('c1', 's1')
+        assert [k for k, _label in app.screen.choices] == ['w', '+new']
+        await pilot.press('enter')  # Onto W.
+        await settle(pilot)
+        added = store.get('w').entry('linux').items[-1]
+        assert (added.branch, added.commit, added.subject) == (
+            'tree:s1:b4m/fixup/x',
+            'c1',
+            'mm: one',
+        )
+        await pilot.press('w')
+        await settle(pilot)
+        await pilot.press('enter')  # The whole branch,
+        await settle(pilot)
+        await pilot.press('down', 'enter')  # onto a new workbench.
+        await settle(pilot)
+        assert isinstance(app.screen, Ask)
+        await pilot.press(*'Fresh', 'enter')
+        await settle(pilot)
+        [item] = store.get('fresh').entry('linux').items
+        assert (item.branch, item.commit) == ('tree:s1:b4m/fixup/x', '')
+
+
+async def test_w_adds_marked_commits_each_alone_and_a_file_artifact(demo_root, tmp_path):
+    import pathlib
+
+    report = tmp_path / 'report.md'
+    report.write_text('findings\n')
+    artifact = ContentRow(
+        '  s1: report: report.md',
+        'artifact',
+        session='s1',
+        attachment=Attachment('file', 'file: report.md', 's1', path=report, title='report.md'),
+    )
+    ROWS.extend([ContentRow('Artifacts', 'heading'), artifact])
+    try:
+        app, _branches = make(demo_root, tmp_path)
+        store = app._workbenches.store
+        async with app.run_test(size=(200, 50)) as pilot:
+            screen = await tab(pilot)
+            screen.select_row('commit')
+            await pilot.press('space', 'down', 'space', 'w')
+            await settle(pilot)
+            await pilot.press('enter')  # Onto W: no question, the marks say it.
+            await settle(pilot)
+            items = store.get('w').entry('linux').items
+            assert [i.commit for i in items[-2:]] == ['c1', 'c2']
+            screen.select_row('artifact')
+            await pilot.press('w')
+            await settle(pilot)
+            assert isinstance(app.screen, Pick)  # Which project: a file has none.
+            await pilot.press('enter')
+            await settle(pilot)
+            await pilot.press('enter')  # Onto W.
+            await settle(pilot)
+            project = app.snapshot.workspace.projects[0].id
+            files = [i.file for e in store.get('w').entries for i in e.items if i.file]
+            assert files == [str(report)] and store.get('w').entry(project) is not None
+            assert pathlib.Path(files[0]).read_text() == 'findings\n'
+    finally:
+        del ROWS[-2:]
 
 
 FOLDED = ContentRow(

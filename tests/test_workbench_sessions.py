@@ -239,23 +239,6 @@ async def test_sessions_from_before_are_listed_as_unfiled(demo_root, tmp_path):
         assert not screen.check_action('rename', ()) and not screen.check_action('launch', ())
 
 
-async def test_a_derived_session_is_filed_with_its_parent(demo_root, tmp_path):
-    from b4_maintainer.sessions.launch import LaunchChoice, Target
-
-    app, runner = make(demo_root, tmp_path)
-    bench_session(runner, 'w1')  # Filed in BENCH.
-    async with app.run_test(size=(220, 50)) as pilot:
-        await settle(pilot)
-        item = app.snapshot.items[0]
-        target = Target(
-            'series', item.project, item.identity, item.series.revision, item.series.subject
-        )
-        derived = LaunchChoice('series', parent='w1')
-        assert app._file_in(target, derived) == BENCH.id
-        fresh = app._file_in(target, LaunchChoice('series'))
-        assert fresh != BENCH.id and app._workbenches.store.get(fresh).origin == item.identity
-
-
 async def test_contents_keep_their_place_through_session_polls(demo_root, tmp_path):
     app, runner = make(demo_root, tmp_path)
     record = bench_session(runner, 'w1')

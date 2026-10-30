@@ -176,11 +176,6 @@ class Worktrees(Protocol):
         """A rebase session's tree: a copy of *base* and its upstream."""
         ...
 
-    def prepare_start(self, record: SessionRecord, start: str, start_from: str) -> Worktree:
-        """A derived session's tree at *start* (in session *start_from*'s tree, or the
-        project's), no series applied."""
-        ...
-
     def bases(self, project: str) -> Sequence[str]:
         """Suggested bases for the project's series (b4's)."""
         ...
@@ -268,25 +263,6 @@ class RecordWorktrees:
             base=base or None,
             identity=(name, self.agent[1]),
             also=[(src, rev) for src, rev, _subject in also],
-        )
-
-    def prepare_start(self, record: SessionRecord, start: str, start_from: str) -> Worktree:
-        from ..adapters.sessiontree import prepare_start_tree
-
-        checkout, directory = self.checkouts.get(record.project), self.directory
-        if not checkout or directory is None:
-            raise TreeError(self.reason(record.project))
-        source = directory / start_from if start_from else None
-        if source is not None and not (source / '.git').exists():
-            raise TreeError(f'session {start_from} has no tree to start from')
-        name = self.agent[0].format(model=record.model or record.preset)
-        return prepare_start_tree(
-            pathlib.Path(checkout),
-            directory / record.id,
-            f'b4m/session/{record.id}',
-            start,
-            (name, self.agent[1]),
-            source=source,
         )
 
     def prepare_unapplied(self, record: SessionRecord, source: str, base: str) -> Worktree:
@@ -682,9 +658,9 @@ class SessionHub:
         read = tuple((p, c) for p in reads if (c := self.worktrees.checkout(p)))
         record = record.replace(reads=read)
         extra = [p for p, u in others if u == 'base']
-        # In its workbench's space (not a session derived from another's tree): trees are
-        # checkouts of the space's repositories, like a workbench session's.
-        spaced = bool(record.space) and not choice.start
+        # In its workbench's space: trees are checkouts of the space's repositories, like a
+        # workbench session's.
+        spaced = bool(record.space)
         if planned.mode == 'worktree' and (extra or own == 'deliver' or spaced):
             bases = dict(choice.bases)
             plans = [TreePlan(p, bases.get(p, ''), ()) for p in extra]
@@ -707,8 +683,6 @@ class SessionHub:
         def tree(r: SessionRecord) -> Worktree:
             if choice.agent_apply:
                 return self.worktrees.prepare_unapplied(r, target.source, choice.agent_apply)
-            if choice.start:
-                return self.worktrees.prepare_start(r, choice.start, choice.start_from)
             if choice.also:
                 return self.worktrees.prepare(r, target.source, choice.base, choice.also)
             return self.worktrees.prepare(r, target.source, choice.base)

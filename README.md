@@ -148,8 +148,9 @@ Python 3.11 or newer.
   session's prompt, reports, results, files); right, the selected row's text (for
   Items, the launch preview). On Trees, space marks commits, `p` plucks them (or the
   selected one) onto the project's base, a prep branch, or another session tree, `P` cuts
-  a prep branch from them, `D` derives a session, and `x` on a tree removes it after
-  saying what it would lose. A session that leaves fixups also leaves the series with
+  a prep branch from them, `w` adds them (each alone, or the selected one's whole
+  branch) or a file artifact to a workbench or a new one, to start sessions from, and
+  `x` on a tree removes it after saying what it would lose. A session that leaves fixups also leaves the series with
   them folded in (`b4m/folded/<slug>`: from the base, the pull-aheads it needs first,
   each fixup squashed into its patch); `f` on it makes the next revision's prep branch:
   pick which other pull-aheads lead (those it conflicts without), then the series' own
@@ -186,8 +187,8 @@ Python 3.11 or newer.
   after it, the series as its item, b4 choosing the base; saved when the session
   launches, so a cancelled dialog leaves none); when workbenches hold it, a pick offers a
   new one (first) or one of those. Either way it is the workbench's launch dialog, and
-  the session stays the series' own (beside its thread, first in its lists). A derived
-  session goes with its parent. Sessions from before (or whose workbench is gone) are
+  the session stays the series' own (beside its thread, first in its lists). Sessions
+  from before (or whose workbench is gone) are
   listed under Unfiled sessions.
 - Sessions have names, shown wherever they appear (the drawer, the Workbench tab,
   Branches, their tmux windows) in place of their ids. On disk a session's directory
@@ -312,10 +313,8 @@ Python 3.11 or newer.
   after saying what goes; rebasing a base moves the prep branches cut from it. `p` onto
   another session's tree copies commits there (same branch names, authors kept, a note in
   that session's `context/inbox.md`): a fix back to the session that found the bug, or
-  work onto the tree of a series' next revision. `D` on a session tree derives a new
-  session from its output: its tree starts at the series base, the parent's tree, or a
-  maintainer base (no series applied), its prompt package carries the parent's artifact,
-  and the launch dialog follows.
+  work onto the tree of a series' next revision. To start a session from another's
+  output, `w` its commits, branches, or files onto a workbench and launch there.
 - Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.

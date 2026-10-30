@@ -38,7 +38,7 @@ from .attachments import Attachment, gather, gather_all, git_identity, preview, 
 from .branches import ApplyChoices, CutResult, DetailRow, DropChoices, FoldPlan
 from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
-from .launchdialog import ITEM_USES, OTHER_USES, SERIES_USES, Derived, LaunchDialog, LaunchResult
+from .launchdialog import ITEM_USES, OTHER_USES, SERIES_USES, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Reply, Series, SeriesThread, WorkItem
 from .package import SASHIKO, drafts_context, sashiko_text, series_context
@@ -84,6 +84,7 @@ from .workbench import (
     Workbench,
     WorkbenchError,
     add_branch,
+    add_file,
     add_mail,
     add_project,
     add_series,
@@ -2862,6 +2863,50 @@ class MaintainerApp(App[None]):
 
         self.run_worker(work, thread=True, group='workbench')
 
+    def add_output_to_workbench(self, chosen: Sequence[tuple[str, Item]], what: str) -> None:
+        """w on the Workbench tab: session output (*chosen*: each with its project, ''
+        to ask once) onto a workbench, or a new one: commits and branches as branch items,
+        files as file items; any already there are left as they are."""
+        service, snapshot = self._workbenches, self.snapshot
+        if service is None or snapshot is None or not chosen:
+            return
+        if any(not project for project, _item in chosen):
+
+            def picked(project: Optional[str]) -> None:
+                if project:
+                    self.add_output_to_workbench([(p or project, i) for p, i in chosen], what)
+
+            projects = [(p.id, p.label) for p in snapshot.workspace.projects]
+            self.push_screen(Pick(f'Which project is {what} for?', projects), picked)
+            return
+
+        def add(bench: Workbench) -> None:
+            changed, skipped = bench, 0
+            for project, item in chosen:
+                found = snapshot.workspace.project(project)
+                base = found.bases[0].branch if found and found.bases else ''
+                try:
+                    if item.file:
+                        changed = add_file(changed, project, item.file, base)
+                    else:
+                        changed = add_branch(
+                            changed, project, item.branch, base, item.commit, item.subject
+                        )
+                except WorkbenchError:
+                    skipped += 1
+            if skipped == len(chosen):
+                self._set_notice(f'Not added: {what} is already on {bench.label}')
+                return
+            try:
+                service.store.save(changed)
+            except OSError as exc:
+                self._set_notice(f'Not added: {exc}')
+                return
+            there = f' ({skipped} already there)' if skipped else ''
+            self._set_notice(f'Added {what} to {bench.label}{there}')
+
+        self._choose_workbench(what, add)
+
     def add_branch_to_workbench(
         self, project: str, picks: Sequence[tuple[str, str, str]], what: str
     ) -> Optional[str]:
@@ -3369,15 +3414,6 @@ class MaintainerApp(App[None]):
         branches, workspace = self._bench_branches()
         return branches.reap(workspace, item)
 
-    def bench_derive(
-        self, item: str, row: Optional[ContentRow]
-    ) -> tuple[list[tuple[str, str, str]], Optional[ContextItem]]:
-        branches, workspace = self._bench_branches()
-        detail = (self._branch_rows([row]) or [None])[0] if row is not None else None
-        return branches.derive_options(workspace, item, detail), branches.derive_context(
-            item, detail
-        )
-
     def _open_bench_tab(self, record: SessionRecord) -> None:
         """A workbench session from the drawer: its workbench's tab, the session selected
         and beside the app."""
@@ -3574,47 +3610,6 @@ class MaintainerApp(App[None]):
         defaults = {p: 'read' if p in saved else 'none' for p in others}
         return [item.project, *others], options, defaults
 
-    def launch_derived(
-        self, parent: str, derived: Derived, context: Optional[ContextItem] = None
-    ) -> None:
-        """The launch dialog for a session derived from *parent*'s output: its series,
-        *context* (the parent's artifact) in the prompt package, its tree at the derived
-        start (Branches, D)."""
-        hub, snapshot = self._sessions, self.snapshot
-        if hub is None or snapshot is None:
-            return
-        workspace, overview = snapshot.workspace, self._overview
-
-        def work() -> None:
-            try:
-                blocker = hub.blocker()
-                if blocker is not None:
-                    self.call_from_thread(self.push_screen, Notice(f'Agent sessions: {blocker}'))
-                    return
-                record = hub.store.record(parent)
-                profiles, problems = hub.profiles()
-                skills, skill_problems = hub.skills()
-                situation = _situation(hub, workspace, overview, skills, record.project)
-            except Exception as exc:
-                self.call_from_thread(self._set_notice, f'Cannot derive a session: {exc}')
-                return
-            item = snapshot.item_by_identity(record.series) if record.series else None
-            target = (
-                _target(item)
-                if item is not None
-                else Target(
-                    'series', record.project, record.series, record.revision, record.subject
-                )
-            )
-            series = series_context(item) if item is not None else ()
-            items = {'series': (*series, *([context] if context else [])), 'workspace': ()}
-            dialog = LaunchDialog(
-                target, profiles, situation, items, problems + skill_problems, derived
-            )
-            self.call_from_thread(self.push_screen, dialog, self._launch_chosen)
-
-        self.run_worker(work, thread=True, group='session-action')
-
     def _launch_chosen(self, result: Optional[LaunchResult]) -> None:
         hub, snapshot = self._sessions, self.snapshot
         if result is None or hub is None or snapshot is None:
@@ -3683,19 +3678,12 @@ class MaintainerApp(App[None]):
         return dataclasses.replace(choice, bases=tuple(bases))
 
     def _file_in(self, target: Target, choice: LaunchChoice) -> str:
-        """The workbench a series session is filed in (blocking): its parent's, else the
-        series' own (made once: the series on the chosen base, else the project's first
-        maintainer base). Without workbenches: none."""
-        hub, service, snapshot = self._sessions, self._workbenches, self.snapshot
+        """The workbench a series session is filed in (blocking): the series' own (made
+        once: the series on the chosen base, else the project's first maintainer base).
+        Without workbenches: none."""
+        service, snapshot = self._workbenches, self.snapshot
         if service is None or snapshot is None:
             return ''
-        if choice.parent and hub is not None:
-            try:
-                parent = hub.store.record(choice.parent)
-            except (OSError, ValueError):
-                parent = None
-            if parent is not None and parent.workbench:
-                return parent.workbench
         project = snapshot.workspace.project(target.project)
         base = choice.base or (project.bases[0].branch if project and project.bases else '')
         try:

@@ -261,22 +261,18 @@ def prepare_start_tree(
     branch: str,
     start: str,
     identity: tuple[str, str],
-    source: Optional[pathlib.Path] = None,
 ) -> Worktree:
-    """A derived session's tree: the project shared into its own clone, on *branch* at
-    *start* (a commit or ref), no series applied. *source* is another session's tree
-    holding *start* (its own commits are fetched in); else the project. Agent identity
-    and the sign-off hook as for any session tree; on failure nothing is left."""
+    """A tree with nothing applied: the project shared into its own clone, on *branch*
+    at *start* (a commit or ref of the project), e.g. for a series the agent applies
+    itself. Agent identity and the sign-off hook as for any session tree; on failure
+    nothing is left."""
     if os.path.lexists(dest):
         raise PrepareError(f'{dest} exists')
     try:
         _clone(project, dest)
-        where = source or project
-        sha = _commit(where, start)
+        sha = _commit(project, start)
         if sha is None:
-            raise PrepareError(f'{start} is not a commit in {where.name}')
-        if source is not None:
-            _git(dest, 'fetch', '--quiet', '--no-tags', str(source), sha)
+            raise PrepareError(f'{start} is not a commit in {project.name}')
         _git(dest, 'checkout', '--quiet', '-b', branch, sha)
         for other in _git(dest, 'branch', '--format=%(refname:short)').splitlines():
             if other != branch:

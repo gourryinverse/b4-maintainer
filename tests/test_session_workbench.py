@@ -229,8 +229,6 @@ def test_branches_shows_each_tree_under_its_project_and_acts_on_it(tmp_path, hom
     assert tips['base:ndctl:me/base'] == git(
         'rev-parse', 'me/base', cwd=root / 'projects' / 'ndctl'
     )
-    options = service.derive_options(workspace, 'tree:w1/ndctl', None)
-    assert any(start_from == 'w1/ndctl' for _start, start_from, _label in options)
 
 
 def test_a_tree_whose_items_conflict_can_be_left_to_the_agent(tmp_path, home):

@@ -186,7 +186,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('p', 'pluck', 'pluck'),
         Binding('P', 'new_prep', 'new prep branch'),
         Binding('f', 'fold', 'fold to prep'),
-        Binding('D', 'derive', 'derive a session', show=False),
+        Binding('w', 'add_to_workbench', 'to workbench'),
     ]
 
     def __init__(
@@ -878,37 +878,6 @@ class WorkbenchScreen(Screen[None]):
         if ok:
             self._load_contents()
 
-    def action_derive(self) -> None:
-        from .launchdialog import Derived
-
-        row = self.row()
-        derive = getattr(self.app, 'bench_derive', None)
-        if row is None or row.kind not in ('tree', 'commit') or derive is None:
-            return
-        parent = row.session
-
-        def pick(found: tuple[list[tuple[str, str, str]], Any]) -> None:
-            options, context = found
-            if not options:
-                self._status('That session has no tree to derive from')
-                return
-            by_key = {str(n): option for n, option in enumerate(options)}
-
-            def picked(choice: Optional[str]) -> None:
-                if choice is None:
-                    return
-                start, start_from, label = by_key[choice]
-                launch = getattr(self.app, 'launch_derived', None)
-                if launch is not None:
-                    launch(parent, Derived(parent, start, start_from, label), context)
-
-            choices = [(n, option[2]) for n, option in by_key.items()]
-            self.app.push_screen(Pick('Start the new session from…', choices), picked)
-
-        self._act(lambda: derive(row.item, row if row.kind == 'commit' else None), pick, '')
-
-    # Text, for tests.
-
     def bench_labels(self) -> list[str]:
         lists = self.query_one('#bench-list', OptionList)
         return [str(lists.get_option_at_index(n).prompt) for n in range(lists.option_count)]
@@ -1025,6 +994,10 @@ class WorkbenchScreen(Screen[None]):
             return False
         if action == 'rename':
             return pane == 'bench-list' and bench is not None and not self.thread_open()
+        if action == 'add_to_workbench':
+            row = self.row()
+            artifact = row is not None and row.kind == 'artifact' and row.attachment is not None
+            return pane == 'bench-contents' and (bool(self._chosen()) or artifact)
         if action == 'update_trees':
             return pane == 'bench-contents' and bool(self._project()) and self._editable()
         if action == 'rename_session':
@@ -1041,10 +1014,6 @@ class WorkbenchScreen(Screen[None]):
             return pane == 'bench-contents' and bool(self._chosen())
         if action == 'fold':
             return pane == 'bench-contents' and self._folded() is not None
-        if action == 'derive':
-            row = self.row()
-            kinds = ('tree', 'commit')
-            return pane == 'bench-contents' and row is not None and row.kind in kinds
         if action in ('base', 'add_branch'):
             return bool(self._project())
         if action in ('move', 'move_project'):
@@ -1128,6 +1097,43 @@ class WorkbenchScreen(Screen[None]):
                 self._save(replace(bench, label=label), note=f'Renamed to {label}')
 
         self.app.push_screen(Ask('Rename the workbench', bench.label), named)
+
+    def action_add_to_workbench(self) -> None:
+        """w: session output onto a workbench (or a new one): the marked commits, each
+        alone; the selected commit, or its whole branch (asked); a file artifact."""
+        add: Any = getattr(self.app, 'add_output_to_workbench', None)
+        row = self.row()
+        if add is None or row is None:
+            return
+        if row.kind == 'artifact' and row.attachment is not None and not self._marks:
+            a = row.attachment
+            if a.path is not None:
+                add([('', Item(file=str(a.path)))], a.title or a.path.name)
+            return
+        rows = [r for r in self._chosen() if r.attachment is not None]
+        if not rows:
+            return
+
+        def commit(r: ContentRow) -> tuple[str, Item]:
+            a = r.attachment
+            assert a is not None
+            return r.project, Item(branch=f'{r.item}:{a.branch}', commit=a.sha, subject=a.title)
+
+        if self._marks:
+            add([commit(r) for r in rows], f'{len(rows)} commits')
+            self._unmark_all()
+            return
+        a = rows[0].attachment
+        assert a is not None
+
+        def scoped(scope: Optional[str]) -> None:
+            if scope == 'branch':
+                add([(rows[0].project, Item(branch=f'{rows[0].item}:{a.branch}'))], a.branch)
+            elif scope == 'commit':
+                add([commit(rows[0])], f'{a.sha[:12]} {a.title}')
+
+        choices = [('branch', f'The whole branch: {a.branch}'), ('commit', f'Only {a.title}')]
+        self.app.push_screen(Pick('Add what to a workbench?', choices), scoped)
 
     def action_update_trees(self) -> None:
         """u: the project's space branch brought in line with its items: those added
