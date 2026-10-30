@@ -5,13 +5,31 @@ description: How to leave commits and artifacts in a b4-maintainer session workt
 
 # Leaving work for the maintainer (b4-maintainer worktrees)
 
-Your worktree is a private clone with the series under review applied. The maintainer
-does not read your transcript to find your work: their tools read your **branch names**
-and your **artifact manifest**. Work left anywhere else is easy to lose.
+Your worktree is your own checkout, with the series under review (or the workbench's
+items) applied. The maintainer does not read your transcript to find your work: their
+tools read your **branch names** and your **artifact manifest**. Work left anywhere else
+is easy to lose.
+
+## The workbench you work in
+
+Most sessions run in a workbench: your checkout is one of several of the workbench's
+shared repository (one per project), and the system prompt says so.
+
+- Every branch you create is the workbench's at once: other sessions of the workbench
+  see it, and it stays after your checkout is removed. Pick slugs that say what the work
+  is, so they do not collide with another session's (git refuses a name that is taken).
+- The workbench's material is in its context folder (named in the system prompt):
+  `items.md` lists every project, its base, and its items, with each series' mail under
+  `mail/`. It changes while you work; your inbox says when.
+- The workbench's branch, `b4m/bench/<workbench>`, holds its base with the items applied.
+  When the maintainer adds items to it, your inbox says so; rebase (or merge) onto it in
+  your checkout if your task needs them. Until then, an added series' mail is in the
+  context folder for you to apply yourself.
 
 ## The tree you start with
 
-- The session branch (`b4m/session/<id>`, checked out): the series applied on its base.
+- The session branch (`b4m/session/<id>`, checked out): the series (or the workbench's
+  items) applied on its base.
   The system prompt names the branch, the base commit, and the series' last commit.
 - `git log --oneline <base>..<last>` lists the series. Never rewrite, reorder, amend, or
   drop those commits: they are the posted patches.
@@ -142,5 +160,6 @@ tested = "x86_64 defconfig build; vng boot; tools/testing/selftests/mm/foo: 12/1
 ## Never
 
 - Push, fetch, or run `b4` (prep, send, or anything else): the maintainer's tools do that.
-- Delete or rename branches you did not create, or the session branch.
+- Delete or rename branches you did not create (in a workbench, other sessions' too),
+  or the session branch.
 - Leave work only in the working tree or the stash: uncommitted work is not reviewed.

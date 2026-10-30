@@ -140,8 +140,8 @@ Python 3.11 or newer.
   tree with its items applied; a tree at its base with its items for the agent (in its
   context and as one mbox in the tree, to use as the task directs); or no tree (its
   mail only). Every series' thread is in the context either way; trees sit side by side
-  in `var/worktrees/<id>/`, where the agent starts; no tree anywhere is a lightweight
-  session (series that conflict are fine). The tab
+  in the workbench's space (`var/workbenches/<id>/sessions/<session>/`), where the agent
+  starts; no tree anywhere is a lightweight session (series that conflict are fine). The tab
   shows, left, the workbenches and the selected one's sessions; middle, its Contents in
   sections: Items (each project and its items, edited as above), Mailboxes (each
   series), Trees (each session tree and its commits by class), Artifacts (each
@@ -192,7 +192,8 @@ Python 3.11 or newer.
   listed under Unfiled sessions.
 - Sessions have names, shown wherever they appear (the drawer, the Workbench tab,
   Branches, their tmux windows) in place of their ids. On disk a session's directory
-  (`var/sessions/<id>/`) and its trees (`var/worktrees/<id>/`) keep the timestamp id;
+  (`var/sessions/<id>/`) and its trees (`var/workbenches/<workbench>/sessions/<id>/`, or
+  `var/worktrees/<id>/` for sessions from before spaces) keep the timestamp id;
   `var/sessions/names.toml` maps each id to its name. A new session is named after what
   it is pinned to (`mm-fix-foo-leak-v3`, a workbench's label, `rebase-…`), with `-2`
   and so on when taken; sessions from before get theirs the first time they are listed.
