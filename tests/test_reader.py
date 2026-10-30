@@ -762,10 +762,11 @@ async def test_arrow_keys_expand_and_collapse_in_the_tree():
 
 async def test_thread_rows_leave_the_last_column_free(demo_root):
     """A terminal may draw a symbol a cell wider than counted; a row reaching the pane's
-    last column would then wrap, so rows stop one cell short."""
+    last column would then wrap, so rows stop ROW_MARGIN cells short."""
     from rich.cells import cell_len
 
     from b4_maintainer.fixtures import PatchSpec, write_series_mbox
+    from b4_maintainer.widgets import ROW_MARGIN
 
     subject = 'mm: ' + ' '.join(['a rather long subject'] * 6)
     write_series_mbox(
@@ -780,4 +781,26 @@ async def test_thread_rows_leave_the_last_column_free(demo_root):
         await open_reader(pilot)
         width = app.query_one('#tree').scrollable_content_region.width
         widest = max(cell_len(label) for label in app.tree_labels())
-        assert widest == width - 1  # Its long rows are cut, a cell short.
+        assert widest == width - ROW_MARGIN  # Its long rows are cut short of the edge.
+
+
+async def test_series_rows_stop_short_of_the_column_edge(demo_root):
+    """As thread rows: a row's text stops ROW_MARGIN cells short of the column's edge (the
+    rest blank, the highlight full width), so a terminal drawing a symbol wider than
+    counted never pushes a row past it."""
+    from rich.cells import cell_len
+
+    from b4_maintainer.fixtures import PatchSpec, write_series_mbox
+    from b4_maintainer.widgets import ROW_MARGIN
+
+    subject = 'mm: ' + ' '.join(['a rather long subject'] * 8)
+    write_series_mbox(demo_root / 'mail' / 'long.mbx', subject, patches=[PatchSpec('mm/a.c')])
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(160, 40)) as pilot:
+        series_list = await loaded(pilot)
+        width = series_list.scrollable_content_region.width
+        for y in range(series_list.row_count + 1):
+            strip = series_list.render_line(y)
+            text = strip.text
+            assert cell_len(text) == width  # Painted across (the highlight too).
+            assert text[-ROW_MARGIN:] == ' ' * ROW_MARGIN, (y, text[-12:])

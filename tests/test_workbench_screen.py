@@ -374,10 +374,11 @@ async def test_a_new_workbench_takes_the_projects_ticked_and_a_adds_another(demo
         assert [e.project for e in store.get('both').entries] == ['linux', 'qemu']
 
 
-async def test_a_thread_opened_on_the_tab_fits_its_rows_a_cell_short(demo_root, tmp_path):
+async def test_a_thread_opened_on_the_tab_stops_its_rows_short_of_the_edge(demo_root, tmp_path):
     from rich.cells import cell_len
 
     from b4_maintainer.fixtures import PatchSpec, write_series_mbox
+    from b4_maintainer.widgets import ROW_MARGIN
 
     subject = 'mm: ' + ' '.join(['a rather long subject'] * 6)
     write_series_mbox(
@@ -396,7 +397,7 @@ async def test_a_thread_opened_on_the_tab_fits_its_rows_a_cell_short(demo_root, 
         tree = screen.query_one('#thread-tree')
         width = tree.scrollable_content_region.width
         labels = [str(tree.get_option_at_index(n).prompt) for n in range(tree.option_count)]
-        assert labels and max(cell_len(label) for label in labels) == width - 1
+        assert labels and max(cell_len(label) for label in labels) == width - ROW_MARGIN
 
 
 async def test_u_applies_added_items_at_once_and_asks_before_a_rebuild(demo_root, tmp_path):

@@ -76,7 +76,7 @@ from .sessions.store import SessionView
 from .sessions.trees import TreeState
 from .settingsscreen import SettingsScreen
 from .views import ViewIndex
-from .widgets import Block, KeyBar, TabBar, TextPane, printable, tree_width
+from .widgets import ROW_MARGIN, Block, KeyBar, TabBar, TextPane, printable, tree_width
 from .workbench import (
     ContentRow,
     Entry,
@@ -239,8 +239,10 @@ class SeriesList(ScrollView, can_focus=True):
 
     def render_line(self, y: int) -> Strip:
         width = self.scrollable_content_region.width
+        room = max(0, width - ROW_MARGIN)  # The text stops short of the edge; blank after.
         if y == 0:
-            return Strip([Segment(pad_display(self._heading, width), HEADING_STYLE)]).crop(0, width)
+            heading = Strip([Segment(pad_display(self._heading, room), HEADING_STYLE)])
+            return Strip.join([heading.crop(0, room), Strip.blank(width - room, HEADING_STYLE)])
         index = self.scroll_offset.y + y - 1
         if index >= len(self._items):
             return Strip.blank(width)
@@ -255,7 +257,8 @@ class SeriesList(ScrollView, can_focus=True):
             segments.append(Segment(text, seg_style))
         fill = style + CURSOR_STYLE if index == self.cursor else style
         segments.append(Segment(' ' * width, fill))
-        return Strip(segments).crop(0, width)
+        text = Strip(segments).crop(0, room)
+        return Strip.join([text, Strip([Segment(' ' * (width - room), fill)])])
 
     def _set_cursor(self, index: int) -> None:
         if not self._items:
