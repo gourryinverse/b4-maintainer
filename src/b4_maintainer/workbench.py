@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Se
 from .attachments import Attachment, gather, preview
 from .model import Series, WorkItem
 from .sessions.records import SessionRecord, session_name, session_trees
-from .sessions.trees import TreeItem, classify_tree
+from .sessions.trees import TreeItem, classify_tree, is_space_repo
 from .workspace import Workspace
 
 if TYPE_CHECKING:
@@ -870,18 +870,34 @@ class WorkbenchService:
                     label, 'tree', project, session=record.id, path=tree.path, item=key
                 )
                 trees.append(row)
+                by_branch: dict[str, list[Attachment]] = {}
                 for a in (x for x in found if x.kind == 'patch' and x.repo == tree.path):
-                    kind = a.label.split(' · ')[1] if ' · ' in a.label else 'commit'
+                    by_branch.setdefault(a.branch, []).append(a)
+                for branch, commits in by_branch.items():  # Each branch, by name, then its commits.
+                    group = f'branch:{key}:{branch}'
+                    kind = commits[0].group or 'commit'
                     trees.append(
                         ContentRow(
-                            f'    {kind}: {a.title}',
+                            f'    {kind} · {branch} ({len(commits)})',
+                            'group',
+                            project,
+                            session=record.id,
+                            item=key,
+                            group=group,
+                        )
+                    )
+                    trees += [
+                        ContentRow(
+                            f'      {a.title}',
                             'commit',
                             project,
                             session=record.id,
                             attachment=a,
                             item=key,
+                            group=group,
                         )
-                    )
+                        for a in commits
+                    ]
             for a in (x for x in found if x.kind != 'patch'):
                 title = 'the initial prompt' if a.kind == 'prompt' else a.title
                 row = ContentRow(title, 'artifact', session=record.id, attachment=a)
@@ -932,6 +948,20 @@ class WorkbenchService:
             if known.preview:
                 lines += ['', known.preview_label or 'Cover letter', '', known.preview]
             return '\n'.join(lines)
+        if row.kind == 'tree' and is_space_repo(pathlib.Path(row.path)):
+            branch = f'b4m/bench/{bench.id}'
+            where = pathlib.Path(row.path)
+            log = _git(where, 'log', '--oneline', '-20', branch)
+            held = (
+                f'Its branch {branch}:\n{log}'
+                if log is not None
+                else f'No {branch} yet: its sessions so far took their items to apply themselves.'
+            )
+            return (
+                f"{row.path}\n\nThe workbench's shared repository: each session works in its "
+                'own checkout of it; branches listed here are those no checkout lists (what '
+                f'removed checkouts left).\n\n{held}'
+            )
         if row.kind == 'tree':
             where = pathlib.Path(row.path)
             status = _git(where, 'status', '--short') if where.is_dir() else None

@@ -213,7 +213,7 @@ class WorkbenchScreen(Screen[None]):
         self._problems: list[str] = []
         self._rows: list[ContentRow] = []  # The selected workbench's contents, as shown.
         self._all_rows: list[ContentRow] = []  # All of them: groups fold, / filters.
-        self._open_groups: set[str] = set()  # Groups opened (they start closed).
+        self._flipped: set[str] = set()  # Groups opened or closed (see _opened).
         self._search = ''  # / over Contents (a regex, case-insensitive).
         self._row_texts: dict[ContentRow, str] = {}  # Rows' texts read (not trees').
         self._preview = ''  # What a launch of the selected workbench would prepare.
@@ -393,7 +393,7 @@ class WorkbenchScreen(Screen[None]):
             elif row.kind == 'group':
                 group = n
             if pattern is None:
-                closed = row.kind != 'group' and row.group and row.group not in self._open_groups
+                closed = row.kind != 'group' and row.group and not self._opened(row.group)
                 if not closed:
                     keep.add(n)
             elif row.kind not in ('heading', 'group') and pattern.search(row.text):
@@ -404,8 +404,9 @@ class WorkbenchScreen(Screen[None]):
         for n in sorted(keep):
             row = rows[n]
             if row.kind == 'group':
-                opened = pattern is not None or row.group in self._open_groups
-                row = replace(row, text=f'  {"▾" if opened else "▸"} {row.text.strip()}')
+                opened = pattern is not None or self._opened(row.group)
+                indent = row.text[: len(row.text) - len(row.text.lstrip())]
+                row = replace(row, text=f'{indent}{"▾" if opened else "▸"} {row.text.strip()}')
             shown.append(row)
         return shown
 
@@ -417,33 +418,41 @@ class WorkbenchScreen(Screen[None]):
     def _row_key(row: Optional[ContentRow]) -> tuple[str, str, int]:
         if row is None:
             return ('', '', -1)
-        if row.kind == 'artifact' and row.attachment is not None:
-            return (row.kind, f'{row.session}:{row.attachment.title}', row.index)
+        if row.kind == 'group':
+            return (row.kind, row.group, row.index)
+        if row.kind in ('artifact', 'commit') and row.attachment is not None:
+            a = row.attachment
+            return (row.kind, f'{row.session}:{a.sha or a.title}', row.index)
         return (row.kind, row.project or row.session or row.group, row.index)
 
     # Groups and search.
 
+    def _opened(self, group: str) -> bool:
+        """Whether a group shows its rows: a tree's branches start open (their commits
+        are worked on), Artifacts' kinds closed; the maintainer flips either."""
+        return (group in self._flipped) != group.startswith('branch:')
+
+    def _flip(self, group: str) -> None:
+        self._flipped ^= {group}
+
     def action_toggle_group(self) -> None:
         row = self.row()
         if row is not None and row.kind == 'group':
-            if row.group in self._open_groups:
-                self._open_groups.discard(row.group)
-            else:
-                self._open_groups.add(row.group)
+            self._flip(row.group)
             self._show_contents()
 
     def action_open_group(self) -> None:
         row = self.row()
-        if row is not None and row.kind == 'group' and row.group not in self._open_groups:
-            self._open_groups.add(row.group)
+        if row is not None and row.kind == 'group' and not self._opened(row.group):
+            self._flip(row.group)
             self._show_contents()
 
     def action_close_group(self) -> None:
         """Left: close the group the cursor is on, or in (moving onto its header)."""
         row = self.row()
-        if row is None or not row.group or row.group not in self._open_groups:
+        if row is None or not row.group or not self._opened(row.group):
             return
-        self._open_groups.discard(row.group)
+        self._flip(row.group)
         self._show_contents(('group', row.group, -1))
 
     def action_search(self) -> None:
@@ -850,13 +859,19 @@ class WorkbenchScreen(Screen[None]):
             self._status(f'Not plucked: {why}; nothing changed')
         self._load_contents()
 
-    def _folded(self) -> Optional[ContentRow]:
-        """The selected row, if it is a commit of a session's folded series."""
+    def _folded(self) -> Optional[tuple[str, str]]:
+        """(tree item, branch) of a session's folded series: its branch's row selected,
+        or one of its commits."""
         row = self.row()
-        a = row.attachment if row is not None else None
-        if row is None or row.kind != 'commit' or a is None:
+        if row is None:
             return None
-        return row if a.branch.startswith('b4m/folded/') else None
+        if row.kind == 'group' and row.group.startswith('branch:'):
+            branch = row.group.rpartition(':')[2]  # branch:<tree item>:<branch>
+        elif row.kind == 'commit' and row.attachment is not None:
+            branch = row.attachment.branch
+        else:
+            return None
+        return (row.item, branch) if branch.startswith('b4m/folded/') else None
 
     def action_fold(self) -> None:
         """f: the folded series as a prep branch: the series' own (its commits replaced,
@@ -864,12 +879,12 @@ class WorkbenchScreen(Screen[None]):
         pull-ahead leads or stays out."""
         from .app import Confirm
 
-        row = self._folded()
+        target = self._folded()
         plan_of = getattr(self.app, 'bench_fold_plan', None)
         fold: Any = getattr(self.app, 'bench_fold', None)
-        if row is None or row.attachment is None or plan_of is None or fold is None:
+        if target is None or plan_of is None or fold is None:
             return
-        branch = row.attachment.branch
+        item, branch = target
 
         def done(result: Any) -> None:
             if result.ok:
@@ -932,7 +947,7 @@ class WorkbenchScreen(Screen[None]):
             options = [(b, f'{title_} ({b})') for b, title_ in plan.optional]
             self.app.push_screen(PickMany(title, options), chosen)
 
-        self._act(lambda: plan_of(row.item, branch), planned, 'Reading the folded series…')
+        self._act(lambda: plan_of(item, branch), planned, 'Reading the folded series…')
 
     def action_new_prep(self) -> None:
         rows = self._chosen()

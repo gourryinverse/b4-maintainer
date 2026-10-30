@@ -349,3 +349,49 @@ async def test_f_makes_a_prep_branch_from_the_thread_for_another_authors_series(
         await settle(pilot)
         assert branches.folds == [('b4m/folded/one', [], 'one-series')]
         assert 'Made b4/one-series' in screen.status_text()
+
+
+FOLDED_BRANCH = ContentRow(
+    '    folded · b4m/folded/one (1)',
+    'group',
+    'linux',
+    session='s1',
+    item='tree:s1',
+    group='branch:tree:s1:b4m/folded/one',
+)
+
+
+async def test_f_on_the_folded_branchs_own_row_folds_the_branch(demo_root, tmp_path):
+    class BranchRowService(TreeService):
+        def contents(self, workspace, bench, series, latest):
+            folded = ContentRow(
+                FOLDED.text,
+                'commit',
+                'linux',
+                session='s1',
+                attachment=FOLDED.attachment,
+                item='tree:s1',
+                group=FOLDED_BRANCH.group,
+            )
+            return [ContentRow('Trees', 'heading'), TREE, FOLDED_BRANCH, folded]
+
+    store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
+    store.save(Workbench('w', 'W', (Entry('linux', '', (Item(branch='me/fix'),)),)))
+    branches = FoldBranches(replaces=True)
+    app = MaintainerApp(
+        FixtureSource(demo_root).load,
+        branches=branches,
+        workbenches=BranchRowService(tmp_path, store, lambda: []),
+    )
+    async with app.run_test(size=(200, 50)) as pilot:
+        screen = await tab(pilot)
+        screen.select_row('group')  # The branch's own line, not one of its commits.
+        await settle(pilot)
+        assert screen.check_action('fold', ())
+        await pilot.press('f')
+        await settle(pilot)
+        await pilot.press('enter')  # No other pull-ahead leads.
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        assert branches.folds == [('b4m/folded/one', [], '')]

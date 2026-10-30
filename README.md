@@ -144,7 +144,8 @@ Python 3.11 or newer.
   starts; no tree anywhere is a lightweight session (series that conflict are fine). The tab
   shows, left, the workbenches and the selected one's sessions; middle, its Contents in
   sections: Items (each project and its items, edited as above), Mailboxes (each
-  series), Trees (each session tree and its commits by class), Artifacts (grouped by
+  series), Trees (each session tree, then each of its branches by class and name with
+  its commits, open to start and collapsible as below), Artifacts (grouped by
   kind: prompt, finding, analysis, diff, results, reproducer, file; a file left out of
   a session's manifest takes its kind from its folder under `out/` or its extension;
   each group collapsed to start, Enter or → opens it, ← closes it; a row names its
@@ -156,7 +157,8 @@ Python 3.11 or newer.
   branch) or a file artifact to a workbench or a new one, to start sessions from, and
   `x` on a tree removes it after saying what it would lose. A session that leaves fixups also leaves the series with
   them folded in (`b4m/folded/<slug>`: from the base, the pull-aheads it needs first,
-  each fixup squashed into its patch); `f` on it makes the next revision's prep branch:
+  each fixup squashed into its patch); `f` on it (its branch's line, or any of its
+  commits) makes the next revision's prep branch:
   pick which other pull-aheads lead (those it conflicts without), then the series' own
   prep branch has its commits replaced (b4 keeps its cover letter and tracking), or a
   new one is made from the posted thread (`b4 prep -F`, authors kept). F4 shows it with

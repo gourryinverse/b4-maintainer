@@ -373,7 +373,10 @@ def test_a_workbenchs_contents_come_in_sections(tmp_path):
     tree_row = next(r for r in rows if r.kind == 'tree')
     assert tree_row.session == 's1' and 'linux' in tree_row.text
     commit = next(r for r in rows if r.kind == 'commit')
-    assert 'mm: plug the leak' in commit.text and 'fixup' in commit.text
+    assert commit.text.strip() == 'mm: plug the leak'
+    # Its branch heads it, by class and name.
+    branch = next(r for r in rows if r.kind == 'group' and r.group == commit.group)
+    assert branch.text.strip() == 'fixup · b4m/fixup/leak (1)'
     assert commit.attachment is not None and commit.attachment.repo == str(tree)
     artifact = next(r for r in rows if r.kind == 'artifact' and 'Compare A and B' in r.text)
     assert artifact.session == 's1' and artifact.attachment is not None

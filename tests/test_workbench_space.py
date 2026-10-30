@@ -263,6 +263,13 @@ def test_a_space_is_listed_as_a_tree_holding_what_its_checkouts_left(tmp_path, h
     assert any('Compare (space) · linux' in t for t in texts)
     commit_rows = [r for r in rows if r.kind == 'commit']
     assert [r.attachment.title for r in commit_rows] == ['linux: fix x']
+    # Each branch heads its commits, by name (so / finds it): open to start.
+    [branch] = [r for r in rows if r.kind == 'group' and r.group.startswith('branch:')]
+    assert branch.text.strip() == 'fixup · b4m/fixup/x (1)' and commit_rows[0].group == branch.group
+    # The space's own row shows its branch, not a missing tree.
+    space_row = next(r for r in rows if r.kind == 'tree')
+    shown = service.show(Workspace.from_config({}), bench, space_row, {}, {})
+    assert 'the tree is gone' not in shown and 'b4m/bench/cmp' in shown
     git('branch', 'me/target', 'main', cwd=checkout)
     result = pluck_onto(
         checkout,
