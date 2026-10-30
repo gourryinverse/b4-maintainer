@@ -523,6 +523,9 @@ class MaintainerApp(App[None]):
         self._facts: Optional[tuple[SeriesThread, tuple[bool, bool]]] = None
         # Replies marked seen while reading; counts refresh when the reader closes.
         self._seen_now: set[str] = set()
+        # The open series' unread replies to the maintainer, by the revision whose thread
+        # holds them (the thread pane's top lists the revisions holding some).
+        self._unread_where: dict[int, frozenset[str]] = {}
         self._draft: Optional[Draft] = None
         # The open thread's saved draft, left closed until r (or discarded with ctrl+g).
         self._saved_draft: Optional[tuple[WorkItem, str]] = None
@@ -1147,13 +1150,18 @@ class MaintainerApp(App[None]):
         self._open_reader()
 
     def _open_reader(self, pane: bool = True, item: Optional[WorkItem] = None) -> None:
-        """The reader on the selected series, or on *item* (e.g. an older revision)."""
+        """The reader on the selected series, or on *item* (e.g. an older revision). The
+        selected series opens where its unread replies are: an older revision, when they
+        are all on it."""
+        follow = item is None
         item = item or self._item
         if item is None:
             return
         latest = self._latest_of(item).series.revision
         self._pinned = item.series.revision if item.series.revision != latest else 0
         self._reading, self._thread, self._post_key = item, None, ''
+        self._unread_where = {}
+        self._tree.border_title = 'Thread'
         self._reply_on_open = False
         self._saved_draft = None
         self.screen.add_class('-reading')
@@ -1170,15 +1178,22 @@ class MaintainerApp(App[None]):
         )
         self._set_reader_pane('tree')
         self.run_worker(
-            lambda: self._load_thread(item), thread=True, group='thread', exclusive=True
+            lambda: self._load_thread(item, follow), thread=True, group='thread', exclusive=True
         )
         if pane:
             self._place_pane()
 
-    def _load_thread(self, item: WorkItem) -> None:
+    def _load_thread(self, item: WorkItem, follow: bool = False) -> None:
         restore, adopt = None, False
+        where: dict[int, frozenset[str]] = {}
         try:
             thread = self._with_sashiko(item, self._thread_loader(item.series))
+            where, threads = self._unread_by_revision(item, thread)
+            if follow and where and item.series.revision not in where:
+                # All its unread replies are on older revisions: open the newest of those.
+                at = self._latest_of(item).at_revision(max(where))
+                if at is not None:
+                    item, thread = at, self._with_sashiko(at, threads[at.series.revision])
             error = None
             if self._drafts is not None:
                 restore = _drafted_in(thread, self._drafts.msgids())
@@ -1189,7 +1204,37 @@ class MaintainerApp(App[None]):
                 adopt = bool(saved and saved.pane and self._editor.runs(saved.pane, path))
         except Exception as exc:  # Shown to the maintainer; mail is untrusted input.
             thread, error = None, f'{type(exc).__name__}: {exc}'
-        self.call_from_thread(self._apply_thread, item, thread, error, restore, adopt)
+        self.call_from_thread(self._apply_thread, item, thread, error, restore, adopt, where)
+
+    def _unread_by_revision(
+        self, item: WorkItem, thread: SeriesThread
+    ) -> tuple[dict[int, frozenset[str]], dict[int, SeriesThread]]:
+        """(blocking) Which revisions' threads hold *item*'s unread replies to the
+        maintainer (*thread*: its own), and the older threads read to find out (only
+        while some are not found yet, newest first): a reply on v1 while v2 is out."""
+        unread = set(item.unread_msgids)
+        where: dict[int, frozenset[str]] = {}
+        threads: dict[int, SeriesThread] = {}
+        held = unread & _thread_msgids(thread)
+        if held:
+            where[item.series.revision] = frozenset(held)
+        remaining = unread - held
+        family = self._latest_of(item)
+        for posting in (family.series, *reversed(family.older)):
+            if not remaining:
+                break
+            if posting.revision == item.series.revision:
+                continue
+            try:
+                older = self._thread_loader(posting)
+            except Exception:  # Not cached: its replies cannot be placed.
+                continue
+            found = remaining & _thread_msgids(older)
+            if found:
+                where[posting.revision] = frozenset(found)
+                threads[posting.revision] = older
+                remaining -= found
+        return where, threads
 
     def _reload_thread(self, item: WorkItem) -> None:
         """The open thread loaded again (after a refresh), keeping the highlighted row and
@@ -1231,9 +1276,22 @@ class MaintainerApp(App[None]):
         error: Optional[str],
         restore: Optional[tuple[str, int, str]] = None,
         adopt: bool = False,
+        unread_where: Optional[dict[int, frozenset[str]]] = None,
     ) -> None:
         if not self._still_reading(item):
             return  # Closed or reopened on another series while loading.
+        reading = self._reading
+        hopped = reading is not None and item.series.revision != reading.series.revision
+        if hopped:
+            # Opened where its unread replies are: an older revision.
+            latest = self._latest_of(item).series.revision
+            self._reading, self._pinned = item, item.series.revision
+            self._set_status(
+                f' b4-maintainer — Reading: {item.series.subject} v{item.series.revision} '
+                f'(older: v{latest} is the latest) · its unread reply to you is here'
+            )
+        self._unread_where = dict(unread_where or {})
+        self._render_revisions()
         # A draft already open or saved for this thread takes precedence: one at a time.
         reply_now, self._reply_on_open = self._reply_on_open, False
         if thread is None:
@@ -1274,7 +1332,15 @@ class MaintainerApp(App[None]):
                 self._set_notice('Saved draft here · r resumes · ctrl+g discards')
                 self._sync_bindings()
             return
-        self._render_tree((keys[0], 0) if keys else ('', 0))
+        # Opened on an older revision for its unread replies: at the first of them.
+        first = _drafted_in(thread, set(self._unread())) if hopped else None
+        if first is not None and not reply_now:
+            key, node = first[:2]
+            if node:
+                self._expanded.add(key)
+            self._render_tree((key, node))
+        else:
+            self._render_tree((keys[0], 0) if keys else ('', 0))
         if reply_now == 'attach':
             self.action_reply_attach()
         elif reply_now:
@@ -1949,6 +2015,32 @@ class MaintainerApp(App[None]):
             return frozenset()
         return self._reading.unread_msgids - self._seen_now
 
+    def _render_revisions(self) -> None:
+        """The thread pane's top: the latest revision and each older one holding unread
+        replies to the maintainer (● while it does), the one read in brackets; just
+        Thread when only the latest is worth naming."""
+        item = self._reading
+        if item is None:
+            self._tree.border_title = 'Thread'
+            return
+        latest = self._latest_of(item).series.revision
+        current = item.series.revision
+        live = {r: m - self._seen_now for r, m in self._unread_where.items()}
+        older = sorted((r for r, m in live.items() if m and r != latest), reverse=True)
+        shown = [latest, *older] + ([current] if current not in (latest, *older) else [])
+        if shown == [latest] and current == latest:
+            self._tree.border_title = 'Thread'
+            return
+        parts = []
+        for revision in shown:
+            label = f'v{revision}' + (' ●' if live.get(revision) else '')
+            parts.append(f'[{label}]' if revision == current else label)
+        self._tree.border_title = escape('Thread · ' + ' · '.join(parts))
+
+    def revisions_text(self) -> str:
+        """The thread pane's top, as shown (for tests)."""
+        return Content.from_markup(str(self._tree.border_title)).plain
+
     def _mark_seen(self, reply: Reply) -> None:
         msgid = reply.message.msgid
         actions = self._actions
@@ -1956,6 +2048,7 @@ class MaintainerApp(App[None]):
             return
         self._seen_now.add(msgid)
         self._refresh_tree_labels()
+        self._render_revisions()  # Its revision's ● goes with its last unread reply.
 
         def work() -> None:
             try:
@@ -2819,10 +2912,12 @@ class MaintainerApp(App[None]):
             return
         family = self._latest_of(item)
         reading = self._reading.series.revision if self._reading is not None else 0
+        unread = {r for r, m in self._unread_where.items() if m - self._seen_now}
         choices = []
         for s in (family.series, *reversed(family.older)):
             notes = ['latest'] if s is family.series else []
             notes += ['reading'] if s.revision == reading else []
+            notes += ['● unread reply to you'] if s.revision in unread else []
             when = s.sent.strftime('%Y-%m-%d') if s.sent else 'undated'
             count = len(s.patches)
             words = [*notes, when, f'{count} patch{"es" if count != 1 else ""}']
@@ -4159,6 +4254,17 @@ class MaintainerApp(App[None]):
                 text = f'  {patch.part}/{total} {f.severity}{old}: {f.problem}'
                 lines.append((text, SEVERITY_STYLES.get(f.severity)))
         return lines
+
+
+def _thread_msgids(thread: SeriesThread) -> set[str]:
+    """Every message of *thread*: its postings and their replies, attached or not."""
+    found = set()
+    for key in post_keys(thread):
+        post = find_post(thread, key)
+        if post is not None:
+            found.add(post.message.msgid)
+        found.update(r.message.msgid for r in thread_replies(thread, key))
+    return found
 
 
 def _drafted_in(thread: SeriesThread, drafted: set[str]) -> Optional[tuple[str, int, str]]:

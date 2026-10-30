@@ -177,3 +177,95 @@ async def test_two_revisions_are_never_applied_in_one_tree(demo_root, tmp_path):
             (2, 'mm-foo-v2.mbx'),
             (3, 'mm-foo.mbx'),
         ]
+
+
+async def test_an_unread_reply_on_an_older_revision_opens_that_revision(demo_root):
+    """A reply to the maintainer on v2 while v3 is out (Responses lists the series): the
+    reader opens v2, where the reply is, at that reply, so reading it clears it."""
+    import dataclasses
+
+    from b4_maintainer.fixtures import Followup
+    from b4_maintainer.workspace import Snapshot
+
+    mail = write_series_mbox(
+        demo_root / 'mail' / 'mm-foo-v2.mbx',
+        'mm: fix foo leak',
+        revision=2,
+        patches=[PatchSpec('mm/foo1.c'), PatchSpec('mm/foo2.c')],
+        change_id=CHANGE_ID,
+        date=EPOCH + datetime.timedelta(days=2),
+        followups=[Followup(2, body='Answering your review of patch 2.')],
+    )
+    reply = mail.followups[0]
+    source = FixtureSource(demo_root)
+
+    def load():
+        snapshot = source.load()
+        items = tuple(
+            dataclasses.replace(i, unread_msgids=frozenset({reply}))
+            if i.identity == f'change-id:{CHANGE_ID}'
+            else i
+            for i in snapshot.items
+        )
+        return Snapshot(snapshot.workspace, items)
+
+    app = MaintainerApp(load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        foo_first(app)
+        await pilot.press('enter')
+        await settle(pilot)
+        assert app.reading.series.revision == 2  # Where the unread reply is.
+        assert 'v2 (older: v3 is the latest)' in app.status_text()
+        assert 'unread reply' in app.status_text()
+        key, node = app.tree_position()
+        assert (key, node) == ('2', 1)  # At the reply itself.
+        # The thread pane's top: the latest and each revision holding unread replies.
+        assert app.revisions_text() == 'Thread · v3 · [v2 ●]'
+
+
+async def test_the_thread_top_dots_revisions_holding_unread_replies(demo_root):
+    import dataclasses
+
+    from b4_maintainer.fixtures import Followup
+    from b4_maintainer.workspace import Snapshot
+
+    mail = write_series_mbox(
+        demo_root / 'mail' / 'mm-foo-v2.mbx',
+        'mm: fix foo leak',
+        revision=2,
+        patches=[PatchSpec('mm/foo1.c'), PatchSpec('mm/foo2.c')],
+        change_id=CHANGE_ID,
+        date=EPOCH + datetime.timedelta(days=2),
+        followups=[Followup(1, body='One.'), Followup(2, body='Two.')],
+    )
+    source = FixtureSource(demo_root)
+
+    def load():
+        snapshot = source.load()
+        unread = frozenset(mail.followups)
+        items = tuple(
+            dataclasses.replace(i, unread_msgids=unread)
+            if i.identity == f'change-id:{CHANGE_ID}'
+            else i
+            for i in snapshot.items
+        )
+        return Snapshot(snapshot.workspace, items)
+
+    app = MaintainerApp(load)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        foo_first(app)
+        await pilot.press('enter')
+        await settle(pilot)
+        assert app.revisions_text() == 'Thread · v3 · [v2 ●]'
+        await pilot.press('V')
+        await settle(pilot)
+        assert '● unread reply to you' in app.screen.choices[1][1]  # v2 in the picker.
+        await pilot.press('escape')
+        app._seen_now.add(mail.followups[0])  # Read (as the live flag store records it):
+        app._render_revisions()
+        assert app.revisions_text() == 'Thread · v3 · [v2 ●]'  # one still unread,
+        app._seen_now.add(mail.followups[1])
+        app._render_revisions()
+        assert app.revisions_text() == 'Thread · v3 · [v2]'  # then none: no dot.

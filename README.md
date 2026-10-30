@@ -105,7 +105,11 @@ Python 3.11 or newer.
 - Each series is listed at its latest revision; the older ones in the cache stay
   readable: `V` (in the list or a thread, when there are any) picks the revision to read,
   newest first, and the status line says when it is not the latest (it stays open across
-  `F5`). `w` while reading one adds that revision to a workbench, so two revisions of a
+  `F5`). A series whose unread replies to you are all on an older revision (a reply to
+  your review of v1 after v2 is out) opens on that revision, at the first of them; the
+  thread pane's top then names the latest revision and each older one holding unread
+  replies, with a ● while it does (`Thread · v2 · [v1 ●]`, the one read in brackets),
+  and `V` marks them too. `w` while reading one adds that revision to a workbench, so two revisions of a
   series can sit side by side to compare: a workbench session reads each revision's own
   mail (no tree, or a tree at its base with them for the agent); one tree never holds
   both applied, so a launch that asks for that is refused.
