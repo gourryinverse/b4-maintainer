@@ -349,17 +349,23 @@ def test_extra_checkouts_are_found_counted_and_removed_with_the_tree(upstream, t
     extra = out / 'worktrees' / 'base'
     git('worktree', 'add', '-q', '--detach', str(extra), tree.base, cwd=dest)  # As the skill says.
     (extra / 'scratch.c').write_text('x\n')
-    found = tree_worktrees(dest)
-    assert [(w.path, w.head) for w in found] == [(str(extra), tree.base)]
+    second = out / 'worktrees' / 'tip'
+    git('worktree', 'add', '-q', '--detach', str(second), tree.applied, cwd=dest)
+    found = tree_worktrees(dest)  # Every one, not only the last listed.
+    assert [(w.path, w.head) for w in found] == [
+        (str(extra), tree.base),
+        (str(second), tree.applied),
+    ]
     state = inspect_tree(dest, tree.applied, tree)
-    assert state.extras == (str(extra),)
-    assert state.describe() == '1 uncommitted file, 1 extra checkout'
+    assert state.extras == (str(extra), str(second))
+    assert state.describe() == '1 uncommitted file, 2 extra checkouts'
     assert not state.clean  # Its uncommitted file would be lost.
     unrelated = tmp_path / 'unrelated'
     unrelated.mkdir()
     (unrelated / '.git').write_text('gitdir: /elsewhere/.git/worktrees/x\n')
     remove_tree(dest, trees)
-    assert not dest.exists() and not extra.exists() and unrelated.exists()
+    assert not dest.exists() and not extra.exists() and not second.exists()
+    assert unrelated.exists()
     assert out.exists()  # The rest of the session's output stays.
 
 
@@ -759,3 +765,35 @@ def test_the_space_branch_takes_new_items_on_top_or_is_rebuilt(upstream, tmp_pat
         'mm/bar: add bar',
     ]
     assert not list((repo.parent.parent / 'sessions').glob('.update-*'))  # Nothing left.
+
+
+def test_a_space_checkouts_extra_checkouts_count_and_go_with_it(upstream, tmp_path):
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree, remove_space_tree
+    from b4_maintainer.sessions.trees import TreeItem, inspect_tree
+
+    project, base, mbox = upstream
+    repo, sessions = space_paths(tmp_path)
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2),)
+    mine, theirs = (
+        prepare_space_tree(
+            project,
+            repo,
+            sessions / s / 'demo',
+            f'b4m/session/{s}',
+            'b4m/bench/w',
+            base,
+            items,
+            AGENT,
+        )[0]
+        for s in ('s1', 's2')
+    )
+    out = tmp_path / 'var' / 'sessions'
+    extra = out / 's1' / 'work' / 'out' / 'worktrees' / 'at-base'  # Per the b4m-branches skill.
+    git('worktree', 'add', '-q', '--detach', str(extra), base, cwd=mine.path)
+    other = out / 's2' / 'work' / 'out' / 'worktrees' / 'theirs'
+    git('worktree', 'add', '-q', '--detach', str(other), base, cwd=theirs.path)
+    write(extra, 'scratch.c', 'x\n')
+    state = inspect_tree(pathlib.Path(mine.path), mine.applied, mine)
+    assert state.extras == (str(extra),) and any('scratch.c' in c for c in state.changed)
+    remove_space_tree(pathlib.Path(mine.path))
+    assert not extra.exists() and other.is_dir()  # Its own extra goes; another's stays.

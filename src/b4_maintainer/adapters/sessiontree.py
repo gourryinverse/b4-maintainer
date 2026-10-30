@@ -535,6 +535,10 @@ def remove_space_tree(dest: pathlib.Path, keep_branch: bool = True) -> None:
         stdin=subprocess.DEVNULL,
     ).stdout.strip()
     repo = pathlib.Path(common)
+    from ..sessions.trees import space_extras
+
+    for extra in space_extras(dest):  # Its own extra checkouts (out/worktrees/) go too.
+        _git(repo, 'worktree', 'remove', '--force', extra.path)
     _git(repo, 'worktree', 'remove', '--force', str(dest))
     if not keep_branch and branch:
         _git(repo, 'branch', '--quiet', '-D', branch)

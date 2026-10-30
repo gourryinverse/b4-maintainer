@@ -168,6 +168,14 @@ def in_space(tree: pathlib.Path) -> bool:
     return (tree / '.git').is_file() and tree.parent.parent.name == 'sessions'
 
 
+def space_extras(checkout: pathlib.Path) -> list[ExtraCheckout]:
+    """A space checkout's extra checkouts: those of the shared repository under its own
+    session's output (`<session>/work/out/worktrees/`, per the b4m-branches skill), not
+    other sessions' nor the checkouts themselves."""
+    mark = f'/{checkout.parent.name}/work/out/worktrees/'
+    return [e for e in tree_worktrees(checkout) if mark in e.path and os.path.isdir(e.path)]
+
+
 def is_space_repo(path: pathlib.Path) -> bool:
     """Whether *path* is a workbench space's repository (var/workbenches/<id>/repos/)."""
     return path.parent.name == 'repos' and path.suffix == '.git' and (path / 'HEAD').is_file()
@@ -303,22 +311,20 @@ def tree_worktrees(path: pathlib.Path) -> list[ExtraCheckout]:
     """The tree's extra checkouts: its linked worktrees, not the tree itself nor b4's
     scratch worktrees."""
     found = []
-    current: dict[str, str] = {}
-    for line in (*_git(path, 'worktree', 'list', '--porcelain'), ''):
+    entries: list[dict[str, str]] = []
+    # Each entry starts with its `worktree` line (_git drops the blank lines between them).
+    for line in _git(path, 'worktree', 'list', '--porcelain'):
         if line.startswith('worktree '):
-            current = {'path': line.removeprefix('worktree ')}
-        elif line.startswith('HEAD '):
-            current['head'] = line.removeprefix('HEAD ')
-        elif line.startswith('branch '):
-            current['branch'] = line.removeprefix('branch refs/heads/')
-        elif not line and current:
-            where = current.get('path', '')
-            own = pathlib.Path(where).resolve() == path.resolve()
-            if not own and 'b4-shazam-worktree' not in where:
-                found.append(
-                    ExtraCheckout(where, current.get('head', ''), current.get('branch', ''))
-                )
-            current = {}
+            entries.append({'path': line.removeprefix('worktree ')})
+        elif line.startswith('HEAD ') and entries:
+            entries[-1]['head'] = line.removeprefix('HEAD ')
+        elif line.startswith('branch ') and entries:
+            entries[-1]['branch'] = line.removeprefix('branch refs/heads/')
+    for entry in entries:
+        where = entry['path']
+        own = pathlib.Path(where).resolve() == path.resolve()
+        if not own and 'b4-shazam-worktree' not in where:
+            found.append(ExtraCheckout(where, entry.get('head', ''), entry.get('branch', '')))
     return found
 
 
@@ -340,9 +346,17 @@ def inspect_tree(
     (the session's record of it) is known."""
     if in_space(path):  # Its branches stay in the space's repository: only changes go.
         try:
-            return TreeState(tuple(_git(path, 'status', '--porcelain')))
+            changed = _git(path, 'status', '--porcelain')
+            extras = space_extras(path)
+            for extra in extras:
+                name = pathlib.Path(extra.path).name
+                changed += [
+                    f'{name}: {line}'
+                    for line in _git(pathlib.Path(extra.path), 'status', '--porcelain')
+                ]
         except OSError as ex:
             return TreeState(error=str(ex))
+        return TreeState(tuple(changed), extras=tuple(e.path for e in extras))
     if not (path / '.git').is_dir():
         return TreeState(error='not a git tree')
     try:
