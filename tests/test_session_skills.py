@@ -30,11 +30,20 @@ def test_a_skill_is_its_directory_with_frontmatter(tmp_path):
         ('a', '---\nname: b\ndescription: x\n---\n', 'match its directory'),
         ('a', '---\nname: a\n---\n', 'description'),
         ('Bad_Name', skill_md('Bad_Name'), 'lowercase'),
+        # YAML (as pi reads it) takes ': ' in an unquoted value for a nested mapping.
+        ('a', '---\nname: a\ndescription: In a session: do this\n---\n', 'quoted'),
     ],
 )
 def test_malformed_skills_are_refused(tmp_path, name, text, problem):
     with pytest.raises(SkillError, match=problem):
         parse_skill(write(tmp_path, name, text))
+
+
+def test_a_quoted_value_may_hold_a_colon(tmp_path):
+    text = '---\nname: a\ndescription: "In a session: do this, it\'s fine"\n---\n'
+    assert parse_skill(write(tmp_path, 'a', text)).description == (
+        "In a session: do this, it's fine"
+    )
 
 
 def test_maintainer_skills_replace_built_ins_and_problems_are_reported(tmp_path):

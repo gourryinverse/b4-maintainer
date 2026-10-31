@@ -1,6 +1,6 @@
 ---
 name: b4m-branches
-description: How to leave commits and artifacts in a b4-maintainer session worktree so the maintainer's tools can find, review, and send them. Use whenever you commit in the worktree, write a fix, a fixup, or a test, or produce results worth keeping.
+description: "How to leave commits and artifacts in a b4-maintainer session worktree so the maintainer's tools can find, review, and send them. Use whenever you commit in the worktree, write a fix, a fixup, or a test, or produce results worth keeping."
 ---
 
 # Leaving work for the maintainer (b4-maintainer worktrees)

@@ -43,7 +43,12 @@ def _frontmatter(text: str) -> dict[str, str]:
     for line in lines[1:end]:
         key, sep, value = line.partition(':')
         if sep and not line.startswith((' ', '\t')):
-            fields[key.strip()] = value.strip().strip('"\'')
+            value = value.strip()
+            if ': ' in value and not value.startswith(('"', "'")):
+                # pi reads frontmatter as YAML, which takes this for a nested mapping
+                # and refuses the skill (and with it the session).
+                raise SkillError(f'its {key.strip()} has ": " in it, so it must be quoted')
+            fields[key.strip()] = value.strip('"\'')
     return fields
 
 

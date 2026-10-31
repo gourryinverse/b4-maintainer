@@ -1,6 +1,6 @@
 ---
 name: b4m-artifacts
-description: How to leave results for the maintainer in a b4-maintainer session: reports, comparisons, findings, reproducers, proposed diffs, logs, recorded in out/artifacts.toml. Use whenever you produce something worth keeping, with or without a worktree.
+description: "How to leave results for the maintainer in a b4-maintainer session: reports, comparisons, findings, reproducers, proposed diffs, logs, recorded in out/artifacts.toml. Use whenever you produce something worth keeping, with or without a worktree."
 ---
 
 # Leaving results for the maintainer (b4-maintainer sessions)

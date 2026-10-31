@@ -1,6 +1,6 @@
 ---
 name: vng
-description: Build the session's kernel tree and run selftests or reproducers in a virtme-ng (vng) VM. Use when a task needs the series running, not just read; covers the harness, capture, build rules, and the gotchas that make runs silently test nothing.
+description: "Build the session's kernel tree and run selftests or reproducers in a virtme-ng (vng) VM. Use when a task needs the series running, not just read; covers the harness, capture, build rules, and the gotchas that make runs silently test nothing."
 ---
 
 # Testing kernel changes under virtme-ng (vng)
