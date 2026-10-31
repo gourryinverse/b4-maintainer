@@ -65,6 +65,21 @@ def _b4(worktree: pathlib.Path, *args: str, stdin: Optional[str] = None) -> tupl
     return run.returncode, ANSI.sub('', run.stdout + run.stderr).strip()
 
 
+def b4_error(out: str) -> str:
+    """What went wrong, from b4's output: its critical and error lines (git's hints
+    left out), else its last line; not its first, which says what it was doing."""
+    marks = ('CRITICAL', 'error:', 'fatal:', 'Could not', 'Unable', 'patch failed')
+    found: list[str] = []
+    for line in (raw.strip() for raw in out.splitlines()):
+        if line and not line.startswith('hint:') and any(m in line for m in marks):
+            if line not in found:
+                found.append(line)
+    if found:
+        return ' · '.join(found[:4])
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    return lines[-1] if lines else 'no output'
+
+
 def sparse_patterns(repo: pathlib.Path, commit: str) -> str:
     """Top-level files, files directly in each top-level directory, all of scripts/."""
     dirs = _git(repo, 'ls-tree', '-d', '--name-only', commit).stdout.split()
@@ -118,12 +133,16 @@ def prep_from_thread(
     fork: str,
     msgid: str,
     tag: str = '',
+    cover_only: bool = False,
 ) -> str:
     """A new prep branch `b4/<name>` from *fork* for a posted series (`b4 prep -F`): b4
     imports its cover letter (to review), prepares the revision after the posted one,
-    and applies its patches with their authors; the change-id is the posting's when it
-    carried b4's tracking. b4 reads the thread from lore. On failure nothing is left."""
-    return _new_prep(repo, worktree, name, fork, ('-F', msgid, *_tagged(tag)), None)
+    and applies its patches with their authors (*cover_only*: none, for a revision whose
+    commits come from elsewhere; the posted ones may not apply at *fork*); the change-id
+    is the posting's when it carried b4's tracking. b4 reads the thread from lore. On
+    failure nothing is left."""
+    only = ('--cover-only',) if cover_only else ()
+    return _new_prep(repo, worktree, name, fork, ('-F', msgid, *only, *_tagged(tag)), None)
 
 
 def _new_prep(
@@ -154,7 +173,7 @@ def _new_prep(
         _sparse_worktree(repo, worktree, start)
         code, out = _b4(worktree, 'prep', '-n', name, '-f', fork_sha.stdout.strip(), *extra)
         if code != 0:
-            raise PrepError(f'b4 prep -n failed: {out}')
+            raise PrepError(f'b4 prep -n failed: {b4_error(out)}')
         _git(repo, 'branch', '--quiet', '-D', start)
         if cover:
             code, out = _b4(worktree, 'prep', '--cover-from-file', '-', stdin=cover)
@@ -166,6 +185,55 @@ def _new_prep(
         _git(repo, 'branch', '--quiet', '-D', start, check=False)
         raise
     return branch
+
+
+def reword_commit(repo: pathlib.Path, branch: str, sha: str, message: str, expected: str) -> str:
+    """*branch* with commit *sha*'s message replaced by *message*: it and the commits
+    after it made anew (the same trees, authors, and dates; you as committer), the
+    branch moved only if still at *expected*. Not b4's cover-letter commit (b4 prep
+    --edit-cover edits that), nor a branch checked out anywhere. The new tip."""
+    message = message.rstrip() + '\n'
+    if not message.strip():
+        raise PrepError('an empty message')
+    if _git(repo, 'rev-parse', f'refs/heads/{branch}').stdout.strip() != expected:
+        raise PrepError(f'{branch} moved meanwhile: reload and try again')
+    for line in _git(repo, 'worktree', 'list', '--porcelain').stdout.splitlines():
+        if line == f'branch refs/heads/{branch}':
+            raise PrepError(f'{branch} is checked out: switch that checkout away first')
+    full = _git(repo, 'rev-parse', '--verify', f'{sha}^{{commit}}').stdout.strip()
+    if TRACKING in _git(repo, 'log', '-1', '--format=%B', full).stdout:
+        raise PrepError("that is b4's cover letter: e edits it")
+    if _git(repo, 'merge-base', '--is-ancestor', full, expected, check=False).returncode:
+        raise PrepError(f'{sha[:12]} is not on {branch}')
+    chain = _git(repo, 'rev-list', '--reverse', '--topo-order', f'{full}^..{expected}')
+    parent = _git(repo, 'rev-parse', f'{full}^').stdout.strip()
+    for old in chain.stdout.split():
+        fields = _git(
+            repo, 'log', '-1', '--format=%an%x00%ae%x00%ad%x00%T%x00%P', '--date=raw', old
+        )
+        name, email, date, tree, parents = fields.stdout.rstrip('\n').split('\x00')
+        if len(parents.split()) != 1:
+            raise PrepError(f'{old[:12]} is a merge: not rewritten')
+        text = message if old == full else _git(repo, 'log', '-1', '--format=%B', old).stdout
+        env = {
+            **os.environ,
+            'GIT_AUTHOR_NAME': name,
+            'GIT_AUTHOR_EMAIL': email,
+            'GIT_AUTHOR_DATE': date,
+        }
+        made = subprocess.run(
+            ['git', 'commit-tree', tree, '-p', parent],
+            cwd=repo,
+            input=text,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if made.returncode != 0:
+            raise PrepError(made.stderr.strip() or 'git commit-tree failed')
+        parent = made.stdout.strip()
+    _git(repo, 'update-ref', f'refs/heads/{branch}', parent, expected)
+    return parent
 
 
 def remove_prep(repo: pathlib.Path, worktree: pathlib.Path, branch: str) -> None:

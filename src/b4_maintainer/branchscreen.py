@@ -110,6 +110,12 @@ class Branches(Protocol):
 
     def sign_off(self, workspace: Workspace, item: str, expected: str) -> SignResult: ...
 
+    def commit_message(self, workspace: Workspace, item: str, sha: str) -> tuple[str, str]: ...
+
+    def reword(
+        self, workspace: Workspace, item: str, sha: str, message: str, expected: str
+    ) -> str: ...
+
     def preview(self, workspace: Workspace, item: str) -> tuple[int, str]: ...
 
     def send_args(
@@ -298,6 +304,7 @@ class BranchesScreen(Screen[None]):
         Binding('t', 'prep_run("auto-to-cc")', 'to/cc', show=False),
         Binding('c', 'prep_run("check")', 'check', show=False),
         Binding('e', 'edit_cover', 'edit cover'),
+        Binding('E', 'edit_message', 'edit message'),
         Binding('s', 'sign_off', 'sign off'),
         Binding('o', 'preview', 'outgoing'),
         Binding('S', 'send', 'send'),
@@ -671,6 +678,10 @@ class BranchesScreen(Screen[None]):
             return self.service.reapable(self.data, key)
         if action == 'prep_run' and parameters == ('compare',):
             return bool(self.data.preps.get(key, {}).get('sent'))
+        if action == 'edit_message':
+            rows = self.query_one('#branch-rows', OptionList)
+            row = self.selected_row()
+            return key.startswith('prep:') and self.focused is rows and self._is_commit(row)
         if action in ('prep_run', 'edit_cover', 'sign_off', 'preview', 'send'):
             return key.startswith('prep:')
         return True
@@ -1211,6 +1222,43 @@ class BranchesScreen(Screen[None]):
                 return
             if worktree is not None:
                 self.app.call_from_thread(self._edit_cover, key, worktree)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def action_edit_message(self) -> None:
+        """E: the selected commit's message on a prep branch, in the editor (the app
+        suspended); saved changed, the branch is rewritten from that commit (the same
+        changes, authors, and dates)."""
+        key, row = self.selected_item(), self.selected_row()
+        editor: Any = getattr(self.app, 'edit_message', None)
+        if key is None or not key.startswith('prep:') or row is None or editor is None:
+            return
+        sha = row.key
+
+        def work() -> None:
+            try:
+                text, tip = self.service.commit_message(self.workspace, key, sha)
+            except Exception as exc:
+                self.app.call_from_thread(self._status, f'Cannot read the message: {exc}')
+                return
+            self.app.call_from_thread(edit, text, tip)
+
+        def edit(text: str, tip: str) -> None:
+            edited = editor(text)
+            if edited is None or edited.strip() == text.strip():
+                self._status('Message not changed')
+                return
+            self._status('Rewriting the branch…')
+
+            def rewrite() -> None:
+                try:
+                    self.service.reword(self.workspace, key, sha, edited, tip)
+                    note = f'Message of {sha[:12]} changed: the commits after it made anew'
+                except Exception as exc:
+                    note = f'Message not changed: {exc}'
+                self.app.call_from_thread(self._acted, note)
+
+            self.run_worker(rewrite, thread=True, group='branches-act')
 
         self.run_worker(work, thread=True, group='branches-act')
 

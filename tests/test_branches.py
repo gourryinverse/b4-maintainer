@@ -600,8 +600,8 @@ def test_folding_another_authors_series_makes_a_prep_branch_from_its_thread(
     series = dataclasses.replace(series, identity=record.series)
     calls = []
 
-    def from_thread(repo, worktree, name, fork, msgid, tag=''):  # b4 prep -F, without lore.
-        calls.append((name, fork, msgid))
+    def from_thread(repo, worktree, name, fork, msgid, tag='', cover_only=False):
+        calls.append((name, fork, msgid, cover_only))  # b4 prep -F, without lore.
         return cut_prep(repo, worktree, name, fork, 'mm/foo: their change\n\nImported.\n')
 
     monkeypatch.setattr(branches, 'prep_from_thread', from_thread)
@@ -609,7 +609,8 @@ def test_folding_another_authors_series_makes_a_prep_branch_from_its_thread(
     assert plan.error == '' and not plan.replaces and plan.target == 'their-change'
     result = service.fold_to_prep(workspace, plan, [], 'their-change')
     assert result.ok and result.branch == 'b4/their-change' and result.picked == 2
-    assert calls == [('their-change', record.worktree.base, 'cover@example.org')]
+    # Its cover letter only: the folded series replaces the posted patches.
+    assert calls == [('their-change', record.worktree.base, 'cover@example.org', True)]
     subjects = git('log', '--format=%s', f'{record.worktree.base}..b4/their-change', cwd=project)
     assert subjects.splitlines() == [
         'mm/foo: the series patch',

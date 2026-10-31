@@ -45,6 +45,7 @@ class FakeBranches:
         self.checked_out = ''  # Where the pluck target is checked out (git refuses it).
         self.into_checkout = False
         self.key = 'openpgp:ABCD'  # The key it would be signed with.
+        self.reworded = []
 
     def snapshot(self, workspace, trees=True):
         self.loads += 1
@@ -162,6 +163,13 @@ class FakeBranches:
     def prep_worktree(self, workspace, item):
         self.worktrees.append(item)
         return __import__('pathlib').Path('/w/prep')
+
+    def commit_message(self, workspace, item, sha):
+        return f'mm: fix p\n\nOld words for {sha}.\n', 'ptip'
+
+    def reword(self, workspace, item, sha, message, expected):
+        self.reworded.append((item, sha, message, expected))
+        return 'newtip'
 
     def pluck(self, workspace, item, rows, target, expected, into_checkout=False):
         from b4_maintainer.adapters.bases import PluckResult
@@ -711,3 +719,29 @@ async def test_p_onto_a_checked_out_base_offers_to_move_its_checkout(demo_root):
         await pilot.press('y')
         await settle(pilot)
         assert service.into_checkout and 'Plucked 1 onto me/base' in screen.status_text()
+
+
+async def test_capital_e_edits_a_prep_commits_message_in_the_editor(demo_root):
+    service = FakeBranches()
+    app = make_app(demo_root, service)
+    edited = []
+    app.edit_message = lambda text: edited.append(text) or text.replace('Old', 'New')
+    async with app.run_test(size=(180, 40)) as pilot:
+        await settle(pilot)
+        await pilot.press('f4')
+        await settle(pilot)
+        screen = app.screen
+        screen.select_item('base:linux:me/base')  # F4 starts folded.
+        await settle(pilot)
+        screen.select_item('prep:linux:b4/pa')
+        await settle(pilot)
+        await pilot.press('tab', 'down')  # Its commit (past the cover letter).
+        await settle(pilot)
+        assert screen.check_action('edit_message', ())
+        await pilot.press('E')
+        await settle(pilot)
+        assert edited == ['mm: fix p\n\nOld words for p1.\n']
+        assert service.reworded == [
+            ('prep:linux:b4/pa', 'p1', 'mm: fix p\n\nNew words for p1.\n', 'ptip')
+        ]
+        assert 'Message of p1 changed' in screen.status_text()

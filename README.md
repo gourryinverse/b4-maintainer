@@ -165,7 +165,8 @@ Python 3.11 or newer.
   commits) makes the next revision's prep branch:
   pick which other pull-aheads lead (those it conflicts without), then the series' own
   prep branch has its commits replaced (b4 keeps its cover letter and tracking), or a
-  new one is made from the posted thread (`b4 prep -F`, authors kept). F4 shows it with
+  new one is made from the posted thread (`b4 prep -F --cover-only`: its cover letter
+  and the next revision, none of the posted patches, which may no longer apply). F4 shows it with
   its cover letter, checks, sign-off, and send. Enter on a Mailboxes row opens that thread in the tab (its
   tree and the selected message; Escape closes it), where `r` replies to the selected
   message and `R` adds session output (with the tmux editor the draft opens beside the
@@ -297,7 +298,8 @@ Python 3.11 or newer.
   `n` makes a b4
   prep branch from the marked commits (name, fork point, cover drafted from the agents'
   summaries) in a sparse worktree under `var/branches/`; on it, `t` adds recipients,
-  `c` checks, `e` edits the cover letter, `s` adds your Signed-off-by (you certify the
+  `c` checks, `e` edits the cover letter, `E` edits the selected commit's message (the
+  commits after it made anew, the same changes), `s` adds your Signed-off-by (you certify the
   DCO), `o` previews exactly what would be sent (`b4 send -o`), `u` collects trailers
   from the list, `d` compares with the last sent revision, and `S` sends it: first one
   summary (revision, To/Cc, checks run then, commits without your Signed-off-by, the

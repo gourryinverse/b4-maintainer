@@ -343,6 +343,41 @@ def test_a_prep_branch_starts_from_a_posted_thread(project, tmp_path, lore):
     assert 'maintainer@example.org' not in authors.splitlines()[0]  # The patch authors.
 
 
+def test_a_prep_branch_from_a_thread_that_no_longer_applies(project, tmp_path, lore):
+    """The posted patches may not apply at the fork point any more (the base moved on):
+    taking only its cover letter and tracking still makes the branch, for the next
+    revision; taking its patches fails, saying why rather than b4's first line."""
+    import pytest
+
+    from b4_maintainer.adapters.prep import PrepError, prep_from_thread
+    from b4_maintainer.fixtures import PatchSpec, write_series_mbox
+
+    repo, _fix = project
+    served, midmask = lore
+    git('config', 'b4.midmask', midmask, cwd=repo)
+    mbox = tmp_path / 'thread.mbx'
+    sent = write_series_mbox(
+        mbox,
+        'mm: their series',
+        revision=2,
+        patches=[PatchSpec('mm/one.c'), PatchSpec('mm/two.c')],
+        change_id='20261001-their-series-0123456789ab',
+    )
+    served['mbox'] = mbox.read_bytes()
+    git('switch', '-q', '--detach', 'up/stable', cwd=repo)
+    base = commit(repo, 'mm/one.c', 'something else entirely\n', 'mm: one, rewritten')
+    git('switch', '-q', 'main', cwd=repo)
+    with pytest.raises(PrepError) as failed:
+        prep_from_thread(repo, tmp_path / 'wt', 'their-series', base, sent.msgids[0])
+    assert 'Looking up' not in str(failed.value) and 'apply' in str(failed.value)
+    branch = prep_from_thread(
+        repo, tmp_path / 'wt2', 'their-series', base, sent.msgids[0], cover_only=True
+    )
+    assert prep_tracking(repo, branch)['revision'] == 3
+    assert 'Imported from' in cover_text(repo, branch)
+    assert git('rev-list', '--count', f'{base}..{branch}', cwd=repo) == '1'  # The cover.
+
+
 def test_a_tagged_projects_prep_branch_puts_its_tag_before_patch(project, tmp_path):
     repo, fix = project
     branch = cut_prep(repo, tmp_path / 'wt', 'tagged', 'up/stable', 'x: y\n\nBody.\n', 'ndctl')
@@ -366,3 +401,47 @@ def test_a_cover_without_recipients_gets_the_list(project, tmp_path):
     assert [addr for _name, addr in to] == ['nvdimm@lists.linux.dev']
     assert not ensure_recipient(repo, tmp_path / 'wt', branch, 'other@example.org')  # Has one.
     assert cover_text(repo, branch).startswith('x: y')  # The cover kept.
+
+
+def test_a_prep_commits_message_is_reworded_keeping_its_change(project, tmp_path):
+    """A commit's message rewritten on its prep branch: the commits after it are made
+    anew on top with the same trees, authors, and dates; the cover letter's commit is
+    b4's (e edits it); a branch moved meanwhile, or checked out, is left alone."""
+    from b4_maintainer.adapters.prep import reword_commit
+
+    repo, _fix = project
+    branch = cut_prep(repo, tmp_path / 'wt', 'rw', 'up/stable', 'mm: rw\n\nCover.\n')
+    git('switch', '-q', '-c', 'tmp', branch, cwd=repo)
+    first = commit(repo, 'mm/a.c', 'a\n', 'mm: first\n\nOld words.')
+    git(
+        'commit',
+        '-q',
+        '--amend',
+        '--no-edit',
+        '--author',
+        'Other Author <other@example.org>',
+        cwd=repo,
+    )
+    first = git('rev-parse', 'HEAD', cwd=repo)
+    second = commit(repo, 'mm/b.c', 'b\n', 'mm: second')
+    git('branch', '-f', branch, 'tmp', cwd=repo)
+    git('switch', '-q', 'main', cwd=repo)
+    git('branch', '-q', '-D', 'tmp', cwd=repo)
+    trees = git('log', '--format=%T', f'{first}~1..{second}', cwd=repo)
+
+    tip = reword_commit(repo, branch, first, 'mm: first\n\nNew words.\n', second)
+    assert git('rev-parse', branch, cwd=repo) == tip != second
+    assert git('log', '--format=%T', f'{tip}~2..{tip}', cwd=repo) == trees  # Same changes.
+    assert git('log', '-1', '--format=%B', f'{tip}~1', cwd=repo) == 'mm: first\n\nNew words.'
+    assert git('log', '-1', '--format=%an <%ae>', f'{tip}~1', cwd=repo) == (
+        'Other Author <other@example.org>'
+    )
+    assert git('log', '-1', '--format=%s', tip, cwd=repo) == 'mm: second'
+    with pytest.raises(PrepError, match='moved'):
+        reword_commit(repo, branch, f'{tip}~1', 'mm: again\n', second)  # Not where it was.
+    cover = git('rev-parse', f'{tip}~2', cwd=repo)
+    with pytest.raises(PrepError, match='cover letter'):
+        reword_commit(repo, branch, cover, 'mm: no\n', tip)
+    git('worktree', 'add', '-q', str(tmp_path / 'out'), branch, cwd=repo)
+    with pytest.raises(PrepError, match='checked out'):
+        reword_commit(repo, branch, f'{tip}~1', 'mm: again\n', tip)

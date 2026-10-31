@@ -52,6 +52,7 @@ from .adapters.prep import (
     preview_send,
     remove_prep,
     reroll_prep,
+    reword_commit,
     run_b4,
     sign_off,
 )
@@ -1150,7 +1151,9 @@ class BranchService:
                 worktree = self.root / 'var' / 'branches' / project.id / name
                 tag = project.subject_tags[0] if project.subject_tags else ''
                 try:
-                    branch = prep_from_thread(repo, worktree, name, plan.base, plan.msgid, tag)
+                    branch = prep_from_thread(
+                        repo, worktree, name, plan.base, plan.msgid, tag, cover_only=True
+                    )  # The folded series replaces the posted patches.
                     self._list_when_unaddressed(project, repo, worktree, branch)
                 except PrepError as ex:
                     return CutResult(False, error=str(ex))
@@ -1322,6 +1325,27 @@ class BranchService:
         if not name or not email:
             return SignResult(False, error='no git user.name or user.email for the project')
         return sign_off(repo, branch, expected, name, email)
+
+    def commit_message(self, workspace: Workspace, item: str, sha: str) -> tuple[str, str]:
+        """(blocking) Commit *sha*'s message on prep branch *item*, and the branch's tip
+        (for reword_commit to check against)."""
+        _kind, pid, branch = item.split(':', 2)
+        project = workspace.project(pid)
+        if project is None:
+            raise PrepError(f'no project {pid}')
+        repo = self.root / project.path
+        return (
+            _git(repo, 'log', '-1', '--format=%B', sha),
+            _git(repo, 'rev-parse', f'refs/heads/{branch}').strip(),
+        )
+
+    def reword(self, workspace: Workspace, item: str, sha: str, message: str, expected: str) -> str:
+        """(blocking) Commit *sha* on prep branch *item* with *message*; the new tip."""
+        _kind, pid, branch = item.split(':', 2)
+        project = workspace.project(pid)
+        if project is None:
+            raise PrepError(f'no project {pid}')
+        return reword_commit(self.root / project.path, branch, sha, message, expected)
 
     def preview(self, workspace: Workspace, item: str) -> tuple[int, str]:
         """What b4 send would send (b4 send -o, nothing sent): subjects, recipients, and
