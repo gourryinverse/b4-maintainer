@@ -128,3 +128,17 @@ def test_a_summary_without_a_sender_reads_as_an_empty_one():
     series = series_from_dict(data)
     assert (series.author_name, series.author_email) == ('', '')
     assert VERSION == 4 and 3 in READABLE  # So a refresh reparses them.
+
+
+def test_a_thread_pruned_while_reading_is_skipped(tmp_path, monkeypatch):
+    """A refresh's prune can remove a thread between listing and reading it (a reload
+    running alongside): that thread is skipped, not a failed load."""
+    import shutil
+
+    cache = MailCache(tmp_path / 'mail')
+    fill(tmp_path, cache, 'mm: one')
+    fill(tmp_path, cache, 'mm: two')
+    listed = cache.sources()
+    shutil.rmtree(listed[0])
+    monkeypatch.setattr(cache, 'sources', lambda: listed)  # Listed before the prune.
+    assert len(cache.series(parse_mbox)) == 1

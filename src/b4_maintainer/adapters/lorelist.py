@@ -85,6 +85,14 @@ THREAD_BATCH = 25  # Message-IDs per whole-thread search.
 _REPLY = re.compile(r'^\s*(re|fwd?|aw)\s*:', re.I)
 
 
+def _messages(tdir: pathlib.Path) -> list[str]:
+    """A thread's message file names, sorted; none once a prune removed it."""
+    try:
+        return sorted(p.name for p in (tdir / 'cur').iterdir())
+    except FileNotFoundError:
+        return []
+
+
 def _posting(msg: email.message.Message) -> bool:
     """A message that posts work (a patch or cover letter), not a reply to one."""
     return not _REPLY.match(str(msg.get('Subject', '')))
@@ -130,7 +138,7 @@ class MailCache:
     def sources(self) -> list[pathlib.Path]:
         if not self._threads.is_dir():
             return []
-        return sorted(p for p in self._threads.iterdir() if any((p / 'cur').iterdir()))
+        return sorted(p for p in self._threads.iterdir() if _messages(p))
 
     def fetched_lists(self) -> list[str]:
         if not self._lists.is_dir():
@@ -236,9 +244,10 @@ class MailCache:
         accepted = {VERSION} if upgrade else READABLE
         result: list[Series] = []
         for tdir in self.sources():
-            stamp = hashlib.sha1(
-                '\n'.join(sorted(p.name for p in (tdir / 'cur').iterdir())).encode()
-            ).hexdigest()
+            names = _messages(tdir)
+            if not names:
+                continue  # Pruned since it was listed (a refresh alongside).
+            stamp = hashlib.sha1('\n'.join(names).encode()).hexdigest()
             path = self._summaries / f'{tdir.name}.json'
             try:
                 cached = json.loads(path.read_text())
@@ -247,7 +256,10 @@ class MailCache:
                     continue
             except (OSError, ValueError, KeyError, TypeError):
                 pass
-            parsed = parse(tdir)
+            try:
+                parsed = parse(tdir)
+            except FileNotFoundError:
+                continue  # Pruned while being parsed.
             self._summaries.mkdir(parents=True, exist_ok=True)
             data = {
                 'version': VERSION,
