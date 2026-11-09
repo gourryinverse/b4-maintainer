@@ -264,6 +264,13 @@ Python 3.11 or newer.
   finds, and removes cached ones (unless watched or on a workbench). The default drops
   stable `-rc` review postings (`6.12.117-rc1 review`): each backport copies its author,
   which would fetch the whole thread. `exclude = []` keeps everything.
+- List mail is kept for `[browse] window_days` (14). Series you posted (patches and
+  cover letters, not replies) reach back `[browse] own_days` (365; 0 for the window
+  only): `F5` fetches each one's whole thread and keeps it that long. Mainline is read
+  as far back to tell which have landed. Quiet since before the window, they are
+  listed in My Unmerged Submissions and the ref views, not the review queues, and skip
+  the MAINTAINERS and Sashiko checks. Replies that arrived with them already older than
+  the window are not Responses; a new reply brings the series back to the queues.
 - A ref's `authority` is `mainline`, `acceptance`, or `preliminary` (highest first); an
   unknown one is reported, and a reload with it keeps the current view.
 - When b4 cannot apply the series for an F1 worktree session, you choose: hand it to the

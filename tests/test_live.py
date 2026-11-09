@@ -4,6 +4,7 @@ import dataclasses
 import datetime
 import email.message
 import email.utils
+import re
 
 import b4
 import pytest
@@ -52,6 +53,8 @@ class Fakes:
         self.searches: list[tuple[str, str]] = []
         self.answers: dict[str, list] = {}
         self.mine: list = []
+        self.posts: list = []  # The maintainer's own messages (no thread expansion).
+        self.threads: list[list] = []  # Whole threads, for m: searches.
         self.track_calls: list[tuple[str, str]] = []
         self.archive_calls: list[tuple[str, str, str, int]] = []
         self.archive_result = (True, '/archive.tar.gz')
@@ -65,7 +68,18 @@ class Fakes:
             self.searches.append((checkout.name, query))
             if 'tc:' in query:
                 return list(self.mine)  # Mail from or addressed to the maintainer.
+            if 'm:"' in query:
+                wanted = set(re.findall(r'm:"([^"]+)"', query))
+                ids = [{b4.LoreMessage.get_clean_msgid(m) for m in t} for t in self.threads]
+                return [m for t, held in zip(self.threads, ids) if wanted & held for m in t]
             return next((v for k, v in self.answers.items() if f'l:{k} ' in query), [])
+
+        return search
+
+    def posts_for(self, checkout):
+        def search(query):
+            self.searches.append((checkout.name, query))
+            return list(self.posts)
 
         return search
 
@@ -828,3 +842,81 @@ def test_refresh_leaves_out_stable_reviews(live, tmp_path):
     )
     assert '3 new' in source.refresh()
     assert [i.series.subject for i in source.load().items] == ['mm: keep me']
+
+
+def test_my_own_series_reach_back_months_in_my_unmerged_submissions_alone(tmp_path):
+    """Own postings of the last [browse] own_days are fetched whole and kept: past the
+    browse window they are listed in My Unmerged Submissions only, checked against the
+    refs as far back, and replies that arrived with them long ago are not Responses."""
+    import os
+    import subprocess
+
+    root = tmp_path / 'ws'
+    checkout = make_checkout(root / 'projects' / 'demo')
+    config = CONFIG.replace(
+        'lists = ["linux-mm@kvack.org", "linux-cxl@vger.kernel.org"]\n',
+        (
+            'lists = ["linux-mm@kvack.org", "linux-cxl@vger.kernel.org"]\n'
+            'refs = [{ label = "m", name = "master", authority = "mainline" }]\n'
+        ),
+    )
+    (root / 'workspace.toml').write_text('me = ["me@example.org"]\n' + config + 'own_days = 365\n')
+    fakes, store = Fakes(), SeenStore()
+    source = LiveSource(
+        root,
+        tracked_series=fakes.tracked_series,
+        search_for=fakes.search_for,
+        posts_for=fakes.posts_for,
+        track=fakes.track,
+        b4_command=['b4'],
+        now=lambda: NOW,
+        identity=lambda checkout: None,
+        seen=store.seen,
+        mark_seen=store.mark_seen,
+    )
+
+    def own(name, subject, days_ago, patches=2):
+        path = tmp_path / 'src' / f'{name}.mbx'
+        path.parent.mkdir(exist_ok=True)
+        specs = [PatchSpec(f'mm/{name}{n}.c') for n in range(patches)]
+        date = NOW - datetime.timedelta(days=days_ago)
+        sent = write_series_mbox(path, subject, patches=specs, date=date)
+        msgs = b4.get_msgs_from_mailbox_or_maildir(str(path))
+        for m in msgs:
+            m.replace_header('From', 'Me <me@example.org>')
+        return sent, msgs
+
+    _, old = own('old', 'mm: my old series', 200)
+    review = reply_to(old[1], 'Reviewer <reviewer@example.org>', 'old-review@example.org', 199)
+    merged, landed = own('merged', 'mm: my merged series', 150, patches=1)
+    when = (NOW - datetime.timedelta(days=140)).isoformat()
+    body = f'mm: merged\n\nLink: https://lore.kernel.org/r/{merged.msgids[1]}\n'
+    subprocess.run(  # Merged long before the browse window (git log --since: committed).
+        [
+            'git',
+            '-c',
+            'user.name=U',
+            '-c',
+            'user.email=u@example.org',
+            'commit',
+            '-q',
+            '--allow-empty',
+            '-m',
+            body,
+        ],
+        cwd=checkout,
+        check=True,
+        env={**os.environ, 'GIT_COMMITTER_DATE': when, 'GIT_AUTHOR_DATE': when},
+    )
+    fakes.posts = [*old, *landed]
+    fakes.threads = [[*old, review], landed]
+    fakes.answers[MM] = mail(tmp_path, 'recent', 'mm: browse me')[1]
+    source.refresh()
+
+    index = ViewIndex(*_snap(source))
+    subjects = lambda view: sorted(i.series.subject for i in index.items(view))  # noqa: E731
+    assert subjects('unmerged') == ['mm: my old series']  # The merged one has landed.
+    assert subjects('profile:mm') == ['mm: browse me']
+    assert 'mm: my old series' not in subjects('all')
+    assert subjects('responses') == []  # The old review came with the history.
+    assert any(q.startswith('f:me@example.org AND s:PATCH AND rt:') for _, q in fakes.searches)

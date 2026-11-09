@@ -97,7 +97,7 @@ PROFILE_KEYS = frozenset({'id', 'label', 'project', 'lists', 'paths', 'enabled'}
 MODEL_KEYS = frozenset({'id', 'model', 'thinking', 'args', 'env', 'enabled'})
 TABLE_KEYS = {
     'layout': frozenset({'three_pane', 'single_pane', 'preview_width'}),
-    'browse': frozenset({'window_days', 'exclude'}),
+    'browse': frozenset({'window_days', 'exclude', 'own_days'}),
     'sashiko': frozenset({'senders', 'hide_clean'}),
     'drafts': frozenset({'editor', 'tmux_width'}),
     'refs': frozenset({'fetch'}),
@@ -235,6 +235,8 @@ class Workspace:
     profiles: tuple[Profile, ...] = ()
     breakpoints: Breakpoints = Breakpoints()
     window_days: int = 14
+    # The maintainer's own postings reach back this far (0: the browse window only).
+    own_days: int = 365
     # Threads refresh leaves out: patterns found in their first message's subject.
     exclude: tuple[str, ...] = STABLE_REVIEWS
     # Senders of automated review mail; their replies are findings, not Responses.
@@ -309,6 +311,7 @@ class Workspace:
             profiles=profiles,
             breakpoints=Breakpoints.from_config(config.get('layout', {})),
             window_days=int(config.get('browse', {}).get('window_days', 14)),
+            own_days=int(config.get('browse', {}).get('own_days', cls.own_days)),
             exclude=exclude,
             bots=tuple(
                 b.lower() for b in config.get('sashiko', {}).get('senders', SASHIKO_SENDERS)

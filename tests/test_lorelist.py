@@ -3,6 +3,7 @@
 import datetime
 import email.message
 import email.utils
+import re
 
 import b4
 
@@ -224,8 +225,6 @@ STABLE = r'\d+\.\d+(\.\d+)?-rc\d+ review$'
 def test_excluded_threads_are_not_cached(tmp_path):
     """A thread whose first message's subject an exclude pattern finds (a stable -rc
     review, fetched whole because one backport copies the maintainer) is left out."""
-    import re
-
     cache = MailCache(tmp_path / 'mail')
     cache.exclude = (re.compile(STABLE),)
     mail = thread(tmp_path, 'a', '6.12.117-rc1 review', 1) + thread(tmp_path, 'b', 'mm: x', 1)
@@ -234,8 +233,6 @@ def test_excluded_threads_are_not_cached(tmp_path):
 
 
 def test_excluded_threads_already_cached_go_unless_kept(tmp_path):
-    import re
-
     cache = MailCache(tmp_path / 'mail')
     review = thread(tmp_path, 'a', '7.3.4-rc1 review', 1)
     other = thread(tmp_path, 'b', '6.18.61-rc1 review', 1)
@@ -245,3 +242,81 @@ def test_excluded_threads_already_cached_go_unless_kept(tmp_path):
     cache.keep = frozenset({b4.LoreMessage.get_clean_msgid(other[0])})  # On a workbench.
     cache.refresh_query('mine', lambda since: 'q', 14, FakeSearch([]), now=NOW)
     assert subjects(cache) == ['6.18.61-rc1 review']
+
+
+def by_query(threads):
+    """A whole-thread search answering `m:"<msgid>"` terms with the threads holding them."""
+    asked = []
+
+    def search(query):
+        asked.append(query)
+        wanted = set(re.findall(r'm:"([^"]+)"', query))
+        return [
+            m for t in threads if wanted & {b4.LoreMessage.get_clean_msgid(x) for x in t} for m in t
+        ]
+
+    search.asked = asked
+    return search
+
+
+def from_me(msgs):
+    for m in msgs:
+        m.replace_header('From', 'Me <me@example.org>')
+    return msgs
+
+
+def reply(to, sender, msgid, days_ago):
+    msg = email.message.EmailMessage()
+    msg['From'] = sender
+    msg['Subject'] = f'Re: {to["Subject"]}'
+    msg['Message-ID'] = f'<{msgid}>'
+    parent = b4.LoreMessage.get_clean_msgid(to)
+    msg['In-Reply-To'] = f'<{parent}>'
+    msg['References'] = f'<{parent}>'
+    msg['Date'] = email.utils.format_datetime(NOW - datetime.timedelta(days=days_ago))
+    msg.set_content('Looks good.\n')
+    return msg
+
+
+def test_own_postings_of_months_back_are_fetched_whole_and_kept(tmp_path):
+    """The maintainer's own postings (not their replies) reach back *days*: each new one's
+    whole thread is fetched (one m: search for many), and kept past the browse window."""
+    cache = MailCache(tmp_path / 'mail')
+    mine = from_me(thread(tmp_path, 'a', 'mm: my old series', 100))
+    review = reply(mine[1], 'Reviewer <r@example.org>', 'old-review@x', 99)
+    theirs = thread(tmp_path, 'b', 'mm: their series', 50)
+    my_review = reply(theirs[1], 'Me <me@example.org>', 'my-review@x', 49)
+    posts = FakeSearch([*mine, my_review])  # Messages only: postings and a reply.
+    threads = by_query([[*mine, review], [*theirs, my_review]])
+    added = cache.refresh_own('own-me', lambda since: 'q', 365, 14, posts, threads, now=NOW)
+    assert added == 4  # Its three postings and the review: not the thread I only reviewed.
+    assert len(threads.asked) == 1
+    assert subjects(cache) == ['mm: my old series']
+    assert cache.history() == {*(b4.LoreMessage.get_clean_msgid(m) for m in mine), 'old-review@x'}
+    cache.own_since = NOW - datetime.timedelta(days=365)
+    cache.refresh(LIST, 14, FakeSearch([]), now=NOW)  # The browse window's prune keeps it,
+    assert subjects(cache) == ['mm: my old series']
+    cache.own_since = NOW - datetime.timedelta(days=90)
+    cache.refresh(LIST, 14, FakeSearch([]), now=NOW)  # until it is older than *days*.
+    assert subjects(cache) == [] and cache.history() == set()
+
+
+def test_own_postings_already_cached_are_not_fetched_again(tmp_path):
+    cache = MailCache(tmp_path / 'mail')
+    mine = from_me(thread(tmp_path, 'a', 'mm: my series', 2))
+    cache.refresh(LIST, 14, FakeSearch(mine), now=NOW)
+    threads = by_query([mine])
+    cache.refresh_own('own-me', lambda since: 'q', 365, 14, FakeSearch(mine), threads, now=NOW)
+    assert threads.asked == [] and cache.history() == set()  # Recent: not history.
+
+
+def test_an_own_thread_lore_did_not_return_is_asked_for_again(tmp_path):
+    cache = MailCache(tmp_path / 'mail')
+    mine = from_me(thread(tmp_path, 'a', 'mm: my old series', 100))
+    posts = FakeSearch(list(mine), list(mine))
+    cache.refresh_own('own-me', lambda since: 'q', 365, 14, posts, lambda q: None, now=NOW)
+    assert subjects(cache) == []  # Not its postings alone: its whole thread, next time,
+    threads = by_query([mine])
+    cache.refresh_own('own-me', lambda since: str(since), 365, 14, posts, threads, now=NOW)
+    assert subjects(cache) == ['mm: my old series']
+    assert posts.queries[1] == str((NOW - datetime.timedelta(days=365)).date())  # from as far.

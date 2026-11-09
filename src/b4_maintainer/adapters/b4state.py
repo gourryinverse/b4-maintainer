@@ -239,6 +239,16 @@ def lore_search(checkout: pathlib.Path) -> Search:
     return search
 
 
+def lore_posts(checkout: pathlib.Path) -> Search:
+    """b4's lore search, the matching messages alone (no whole threads)."""
+
+    def search(query: str):
+        with b4_repo(checkout):
+            return b4.get_pi_search_results(query, nocache=True, full_threads=False)
+
+    return search
+
+
 # State export/import: tracking rows and flags as plain records, through b4's own APIs.
 
 _SERIES_FIELDS = (

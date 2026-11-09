@@ -72,6 +72,21 @@ class MessageInfo:
     parent: Optional[str]
 
 
+THREAD_BATCH = 25  # Message-IDs per whole-thread search.
+_REPLY = re.compile(r'^\s*(re|fwd?|aw)\s*:', re.I)
+
+
+def _posting(msg: email.message.Message) -> bool:
+    """A message that posts work (a patch or cover letter), not a reply to one."""
+    return not _REPLY.match(str(msg.get('Subject', '')))
+
+
+def _root(msg: email.message.Message, msgid: str) -> str:
+    refs = [r for r in _refs(msg, 'References') if r != msgid]
+    parents = [r for r in _refs(msg, 'In-Reply-To') if r != msgid]
+    return refs[0] if refs else parents[0] if parents else msgid
+
+
 def _sender(msg: email.message.Message) -> str:
     return email.utils.parseaddr(str(msg.get('From', '')))[1].lower()
 
@@ -84,7 +99,9 @@ def _parent(msg: email.message.Message, msgid: str) -> Optional[str]:
 
 class MailCache:
     """var/mail: threads/<hash>/ maildirs, series/<hash>.json summaries,
-    index.json (msgid -> thread key, date, sender, parent), lists/<name>.json fetch state."""
+    index.json (msgid -> thread key, date, sender, parent), lists/<name>.json fetch state,
+    own.json (the maintainer's own threads -> their newest posting's date), history.json
+    (message-ids that arrived already older than the browse window with them)."""
 
     def __init__(self, root: 'pathlib.Path | str') -> None:
         self.root = pathlib.Path(root)
@@ -96,6 +113,10 @@ class MailCache:
         self.keep: frozenset[str] = frozenset()
         # Threads left out: patterns found in their first message's subject ([browse] exclude).
         self.exclude: tuple[re.Pattern[str], ...] = ()
+        # The maintainer's own threads stay cached while posted since this ([browse] own_days).
+        self.own_since: Optional[datetime.datetime] = None
+        self._own_path = self.root / 'own.json'
+        self._history_path = self.root / 'history.json'
 
     def sources(self) -> list[pathlib.Path]:
         if not self._threads.is_dir():
@@ -297,6 +318,87 @@ class MailCache:
         _write(self._index_path, self.root / '.index.json.tmp', json.dumps(index).encode())
         return added
 
+    def refresh_own(
+        self,
+        name: str,
+        make_query: Callable[[datetime.date], str],
+        days: int,
+        window_days: int,
+        posts: Search,
+        threads: Search,
+        now: Optional[datetime.datetime] = None,
+    ) -> int:
+        """Fetch the maintainer's own postings (patches, not replies) of the last *days*:
+        *posts* finds their messages; *threads* fetches each new posting's whole thread
+        (m: searches, many at once). Their threads stay cached for *days*; what arrives
+        already older than *window_days* is history, never an unread response."""
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        self.own_since = now - datetime.timedelta(days=days)
+        self._lists.mkdir(parents=True, exist_ok=True)
+        self._threads.mkdir(parents=True, exist_ok=True)
+        state_path = self._lists / f'{name}.json'
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        since = self.own_since
+        if 'fetched_at' in state:
+            since = max(since, datetime.datetime.fromisoformat(state['fetched_at']) - OVERLAP)
+        found = posts(make_query(since.date()))
+        if found is None:
+            return 0  # No answer: the next refresh asks again from the same point.
+        postings = [m for m in self._without_excluded(found) if _posting(m)]
+        index = self._load_index()
+        new: dict[str, str] = {}  # A posting not yet cached per thread root.
+        for msg in postings:
+            msgid = b4.LoreMessage.get_clean_msgid(msg)
+            if msgid and msgid not in index:
+                new.setdefault(_root(msg, msgid), msgid)
+        fetched: list[email.message.EmailMessage] = []
+        wanted = sorted(new.values())
+        unanswered: set[str] = set()  # Postings whose threads lore did not return.
+        for start in range(0, len(wanted), THREAD_BATCH):
+            batch = wanted[start : start + THREAD_BATCH]
+            got = threads(' OR '.join(f'm:"{m}"' for m in batch))
+            held = {b4.LoreMessage.get_clean_msgid(m) for m in got or ()}
+            unanswered |= set(batch) - held
+            fetched += got or []
+        if unanswered:  # Left for the next refresh, which asks again from the same point.
+            roots = {r for r, m in new.items() if m in unanswered}
+            postings = [
+                m
+                for m in postings
+                if _root(m, b4.LoreMessage.get_clean_msgid(m) or '') not in roots
+            ]
+        arrived: list[tuple[str, Optional[datetime.datetime]]] = []
+        added = self._add([*self._without_excluded(fetched), *postings], index, arrived)
+        cutoff = now - datetime.timedelta(days=window_days)
+        history = self.history() | {m for m, date in arrived if date is not None and date < cutoff}
+        own = self._own()
+        for msg in postings:
+            msgid = b4.LoreMessage.get_clean_msgid(msg)
+            if msgid in index:
+                key, date = index[msgid][0], index[msgid][1] or now.isoformat()
+                own[key] = max(own.get(key, ''), date)
+        self._prune(now - datetime.timedelta(days=window_days), index, own, history)
+        _write(self._index_path, self.root / '.index.json.tmp', json.dumps(index).encode())
+        if not unanswered:
+            state['fetched_at'] = now.isoformat()
+            _write(state_path, self._lists / f'.{name}.tmp', json.dumps(state).encode())
+        return added
+
+    def history(self) -> set[str]:
+        """Message-ids that arrived with the maintainer's own threads already older than
+        the browse window: read long ago, never unread responses."""
+        try:
+            return set(json.loads(self._history_path.read_text()))
+        except (OSError, ValueError, TypeError):
+            return set()
+
+    def _own(self) -> dict[str, str]:
+        try:
+            data = json.loads(self._own_path.read_text())
+            return {str(k): str(v) for k, v in data.items()}
+        except (OSError, ValueError, TypeError, AttributeError):
+            return {}
+
     def _excluded(self, subject: str) -> bool:
         subject = ' '.join(subject.split())
         return any(p.search(subject) for p in self.exclude)
@@ -317,12 +419,7 @@ class MailCache:
         if not roots:
             return msgs
 
-        def root(m: email.message.EmailMessage) -> str:
-            refs, parents = _refs(m, 'References'), _refs(m, 'In-Reply-To')
-            first = refs[0] if refs else parents[0] if parents else None
-            return first or b4.LoreMessage.get_clean_msgid(m) or ''
-
-        return [m for m in msgs if root(m) not in roots]
+        return [m for m in msgs if _root(m, b4.LoreMessage.get_clean_msgid(m) or '') not in roots]
 
     def _excluded_threads(self, index: Index) -> set[str]:
         """Cached threads whose first message an exclude pattern finds."""
@@ -341,7 +438,12 @@ class MailCache:
                 found.add(key)
         return found
 
-    def _add(self, msgs: Sequence[email.message.EmailMessage], index: Index) -> int:
+    def _add(
+        self,
+        msgs: Sequence[email.message.EmailMessage],
+        index: Index,
+        arrived: Optional[list[tuple[str, Optional[datetime.datetime]]]] = None,
+    ) -> int:
         epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
         dated = [(_date(m), m) for m in msgs]
         added = 0
@@ -360,14 +462,25 @@ class MailCache:
             utc = date.astimezone(datetime.timezone.utc).isoformat() if date else None
             index[msgid] = [key, utc, _sender(msg), _parent(msg, msgid)]
             added += 1
+            if arrived is not None:
+                arrived.append((msgid, date))
         return added
 
-    def _prune(self, start: datetime.datetime, index: Index) -> None:
+    def _prune(
+        self,
+        start: datetime.datetime,
+        index: Index,
+        own: Optional[dict[str, str]] = None,
+        history: Optional[set[str]] = None,
+    ) -> None:
         """Drop whole threads whose newest message is older than the window.
 
         Undated messages count as recent, so their threads are kept, as are
-        threads holding a message-id in *keep*. Excluded threads go whatever their age.
+        threads holding a message-id in *keep*, and the maintainer's own threads
+        posted since *own_since*. Excluded threads go whatever their age.
         """
+        own = self._own() if own is None else own
+        history = self.history() if history is None else history
         newest: dict[str, str] = {}
         for key, date, *_ in index.values():
             latest = date or '9999'
@@ -375,8 +488,12 @@ class MailCache:
                 newest[key] = latest
         kept = {index[m][0] for m in self.keep if m in index}
         cutoff = start.astimezone(datetime.timezone.utc).isoformat()
-        stale = {key for key, latest in newest.items() if latest < cutoff}
-        stale = (stale | self._excluded_threads(index)) - kept
+        since = (
+            self.own_since.astimezone(datetime.timezone.utc).isoformat() if self.own_since else ''
+        )
+        mine = {key for key, posted in own.items() if since and posted >= since}
+        aged = {key for key, latest in newest.items() if latest < cutoff} - mine
+        stale = (aged | self._excluded_threads(index)) - kept
         for key in stale:
             tdir = self._thread_dir(key)
             if tdir.is_dir():
@@ -386,5 +503,13 @@ class MailCache:
                     (tdir / sub).rmdir()
                 tdir.rmdir()
             (self._summaries / f'{tdir.name}.json').unlink(missing_ok=True)
-        for msgid in [m for m, (key, *_) in index.items() if key in stale]:
+        gone = [m for m, (key, *_) in index.items() if key in stale]
+        for msgid in gone:
             del index[msgid]
+        own = {k: v for k, v in own.items() if k in newest and k not in stale}
+        history = history - set(gone)
+        if own != self._own():
+            _write(self._own_path, self.root / '.own.json.tmp', json.dumps(own).encode())
+        if history != self.history():
+            data = json.dumps(sorted(history)).encode()
+            _write(self._history_path, self.root / '.history.json.tmp', data)

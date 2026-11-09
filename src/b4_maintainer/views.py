@@ -25,9 +25,12 @@ class ViewIndex:
         # Review queues drop series whose review is over (merged or otherwise landed)
         # and discussions, which are conversations rather than review work.
         talk = tuple(i for i in items if i.series.discussion)
-        active = tuple(
+        unmerged = tuple(
             i for i in items if not (i.state.mainline_complete or i.landed or i.series.discussion)
         )
+        # The maintainer's own quiet series (history) stay out of the queues; My Unmerged
+        # Submissions and the branch views keep them.
+        active = tuple(i for i in unmerged if not i.history)
         # A branch view lists what its branch holds: linux-next carries the staging
         # branches, so a series fully there has ended review but stays staged until
         # mainline has it.
@@ -79,7 +82,7 @@ class ViewIndex:
             (
                 View('unmerged', 'My Unmerged Submissions', 'builtin'),
                 lambda i: i.series.author_email.lower() in me,
-                active,
+                unmerged,
             ),
             (View('review', 'To Review', 'builtin'), lambda i: i.state.to_review, active),
             (View('cached', 'Cached', 'builtin'), _always, items),

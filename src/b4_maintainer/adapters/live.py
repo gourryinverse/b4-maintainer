@@ -78,6 +78,7 @@ class LiveSource:
         ),
         all_flags: Callable[[pathlib.Path], list[Any]] = b4state.all_flags,
         add_flags: Callable[[pathlib.Path, Sequence[Any]], None] = b4state.add_flags,
+        posts_for: Optional[Callable[[pathlib.Path], Search]] = None,
     ) -> None:
         self.root = pathlib.Path(root).resolve()
         self.cache = MailCache(self.root / 'var' / 'mail')
@@ -87,6 +88,11 @@ class LiveSource:
         self.drafts = DraftStore(self.root / 'var' / 'drafts')
         self._tracked_series = tracked_series
         self._search_for = search_for
+        # Messages alone (no whole threads), for the maintainer's own postings: b4's when
+        # the search is, else the injected search's.
+        if posts_for is None:
+            posts_for = b4state.lore_posts if search_for is b4state.lore_search else search_for
+        self._posts_for = posts_for
         self._track = track
         self._archive = archive
         self._unarchive = unarchive
@@ -310,6 +316,7 @@ class LiveSource:
         items = self._responses(ws, items)
         items = self._activity(items)
         items = self._tree_evidence(ws, items)
+        items = self._history(ws, items)
         items = _stable_pending(items)
         items = self._sashiko_reviews(items)
         items = self._drafted(items)
@@ -319,6 +326,22 @@ class LiveSource:
         )
         self._items = items  # For marking an item read: the items sharing its threads.
         return Snapshot(ws, items)
+
+    def _history(self, ws: Workspace, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
+        """The maintainer's own series quiet since before the browse window: kept only
+        for My Unmerged Submissions and the ref views (unless tracked, watched, or
+        answered and unread)."""
+        me = set(ws.me)
+        quiet = self._now() - datetime.timedelta(days=ws.window_days)
+        return tuple(
+            dataclasses.replace(i, history=True)
+            if i.series.author_email.lower() in me
+            and i.last_activity is not None
+            and i.last_activity < quiet
+            and not (i.state.to_review or i.watched or i.unread_msgids)
+            else i
+            for i in items
+        )
 
     def _layouts(self, ws: Workspace) -> dict[str, frozenset[str]]:
         """Each checked-out project's directories at its HEAD, for routing a series by
@@ -405,7 +428,7 @@ class LiveSource:
     def _fetch_sashiko(self, ws: Workspace, progress: Callable[[str], None]) -> str:
         """Status for each profile list whose project sets b4.sashiko-url, then details."""
         notes, listed = [], 0
-        cached = self.load().items
+        cached = [i for i in self.load().items if not i.history]
         for lst, project in self.browse_lists(ws):
             url = self._sashiko_url(self.checkout(project)) if self._enrolled(project) else None
             if not url:
@@ -448,7 +471,7 @@ class LiveSource:
     def _tree_evidence(self, ws: Workspace, items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
         """Per-ref coverage from the last ref scan; stage is the first viewed ref holding it."""
         caches = {p.id: (p, self.refs(p)) for p in ws.projects if p.refs and self._enrolled(p)}
-        since = self._now() - datetime.timedelta(days=ws.window_days + 30)
+        since = self._scan_since(ws)
         for project, cache in caches.values():
             # The maintainer's own branches (a base a series was just applied to or dropped
             # from) are rescanned on every load; fetched refs wait for a refresh.
@@ -474,8 +497,7 @@ class LiveSource:
         return tuple(result)
 
     def _scan_refs(self, ws: Workspace, progress: Callable[[str], None]) -> str:
-        # Mainline: commits since a month before the window, enough to see merges.
-        since = self._now() - datetime.timedelta(days=ws.window_days + 30)
+        since = self._scan_since(ws)  # Enough mainline to see merges.
         scanned = 0
         failures: list[str] = []
         for project in ws.projects:
@@ -541,6 +563,7 @@ class LiveSource:
         if checkout is None or not me:
             return items
         info = self.cache.messages()
+        history = self.cache.history()
         mine = {m for m, e in info.items() if e.sender in me}
         first_post: dict[str, str] = {}
         for m in mine:
@@ -560,7 +583,7 @@ class LiveSource:
             return False
 
         def responds(msgid: str, entry: MessageInfo) -> bool:
-            if entry.sender in others:
+            if entry.sender in others or msgid in history:
                 return False
             if self.cache.thread_name(entry.key) in followed:
                 return True
@@ -791,9 +814,7 @@ class LiveSource:
 
     def _refresh(self, progress: Callable[[str], None]) -> str:
         ws = self.workspace()
-        # Watched threads, and those workbenches name, outlive the window.
-        self.cache.keep = self.watched.msgids() | self.bench_msgids()
-        self.cache.exclude = tuple(re.compile(p) for p in ws.exclude)
+        self._scope_cache(ws)
         lists = self.browse_lists(ws)
         if not lists:
             return f'Nothing to browse: add a [[profiles]] entry with lists to {CONFIG_NAME}'
@@ -803,6 +824,7 @@ class LiveSource:
             search = self._search_for(self.checkout(project))
             added += self.cache.refresh(lst, ws.window_days, search, now=self._now())
         added += self._fetch_my_mail(self._with_identity(ws), progress)
+        added += self._fetch_own(self._with_identity(ws), progress)
         added += self._fetch_watched(ws, progress)
         progress('Parsing new threads…')
         self.cache.series(parse_mbox)  # So the reload that follows reads summaries only.
@@ -810,6 +832,37 @@ class LiveSource:
         scanned = self._scan_refs(ws, progress)
         reviews = self._fetch_sashiko(ws, progress)
         return f'Refreshed {len(lists)} list(s): {added} new message(s){checked}{scanned}{reviews}'
+
+    def _scope_cache(self, ws: Workspace, also: Iterable[str] = ()) -> None:
+        """What the cache keeps past the window and leaves out, before it fetches."""
+        # Watched threads, and those workbenches name, outlive the window.
+        self.cache.keep = self.watched.msgids() | self.bench_msgids() | set(also)
+        self.cache.exclude = tuple(re.compile(p) for p in ws.exclude)
+        own = max(ws.own_days, ws.window_days)
+        self.cache.own_since = self._now() - datetime.timedelta(days=own)
+
+    def _fetch_own(self, ws: Workspace, progress: Callable[[str], None]) -> int:
+        """The maintainer's own postings of the last [browse] own_days, whole threads."""
+        checkout = self._flags_checkout(ws)
+        if checkout is None or ws.own_days <= ws.window_days:
+            return 0
+        added = 0
+        for addr in ws.me:
+            progress(f'Fetching series you sent ({ws.own_days} days)…')
+            added += self.cache.refresh_own(
+                f'own-{addr}',
+                lambda since, a=addr: f'f:{a} AND s:PATCH AND rt:{since:%Y-%m-%d}..',
+                ws.own_days,
+                ws.window_days,
+                self._posts_for(checkout),
+                self._search_for(checkout),
+                now=self._now(),
+            )
+        return added
+
+    def _scan_since(self, ws: Workspace) -> datetime.datetime:
+        """How far back mainline is read: a month before the oldest series held."""
+        return self._now() - datetime.timedelta(days=max(ws.window_days, ws.own_days) + 30)
 
     def _fetch_watched(self, ws: Workspace, progress: Callable[[str], None]) -> int:
         """Whole threads of watched discussions, so replies that drop the maintainer arrive."""
@@ -842,7 +895,7 @@ class LiveSource:
         return added
 
     def _check_owners(self, ws: Workspace, progress: Callable[[str], None]) -> str:
-        items = self.load().items
+        items = [i for i in self.load().items if not i.history]  # Not review work.
         notes = []
         for project in ws.projects:
             cache = self.owners(project)
@@ -878,8 +931,7 @@ class LiveSource:
         checkout = self._flags_checkout(ws)
         if checkout is None:
             raise RuntimeError('no project checkout to fetch with')
-        self.cache.keep = self.watched.msgids() | self.bench_msgids() | {msgid}
-        self.cache.exclude = tuple(re.compile(p) for p in ws.exclude)
+        self._scope_cache(ws, {msgid})
         fetch = self._thread_for(checkout)
         self.cache.refresh_thread(msgid, fetch, ws.window_days, now=self._now())
         self.cache.series(parse_mbox)  # So the reload that follows reads summaries only.

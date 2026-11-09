@@ -267,6 +267,9 @@ class WorkItem:
     watched: bool = False
     # Its newest message (a posting or a reply), from the mail cache; None if unknown.
     last_activity: Optional[datetime.datetime] = None
+    # The maintainer's own series, quiet since before the browse window: kept for My
+    # Unmerged Submissions (and the ref views), out of the review queues.
+    history: bool = False
     # Each other revision's posting (oldest first), to read or compare; .series is the
     # latest.
     older: tuple[Series, ...] = ()

@@ -505,3 +505,9 @@ def test_threads_to_leave_out_default_to_stable_reviews_and_are_configurable():
     bad = Workspace.from_config({'browse': {'exclude': ['^ok', '(unclosed']}})
     assert bad.exclude == ('^ok',)
     assert bad.warnings and 'unclosed' in bad.warnings[0] and '[browse] exclude' in bad.warnings[0]
+
+
+def test_own_postings_reach_back_a_year_by_default():
+    assert Workspace.from_config({}).own_days == 365
+    ws = Workspace.from_config({'browse': {'own_days': 0}})
+    assert ws.own_days == 0 and ws.warnings == ()

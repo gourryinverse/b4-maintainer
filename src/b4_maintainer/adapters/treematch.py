@@ -85,6 +85,8 @@ class RefCache:
             if base is not None and self.tip(base) is None:
                 base = None
             key = f'{tip} {base and self.tip(base)}'
+            if base is None:
+                key += f' {since.date()}'  # Mainline read from there: rescanned if it moves.
             if self._refs.get(ref.name, {}).get('key') == key:
                 continue
             if base is not None:
