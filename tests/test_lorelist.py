@@ -216,3 +216,32 @@ def test_refresh_thread_adds_new_messages_to_the_thread(tmp_path):
     assert asked == [root]
     assert len(cache.sources()) == 1
     assert cache.refresh_thread(root, lambda m: None, 14, now=NOW) == 0  # Lookup failed.
+
+
+STABLE = r'\d+\.\d+(\.\d+)?-rc\d+ review$'
+
+
+def test_excluded_threads_are_not_cached(tmp_path):
+    """A thread whose first message's subject an exclude pattern finds (a stable -rc
+    review, fetched whole because one backport copies the maintainer) is left out."""
+    import re
+
+    cache = MailCache(tmp_path / 'mail')
+    cache.exclude = (re.compile(STABLE),)
+    mail = thread(tmp_path, 'a', '6.12.117-rc1 review', 1) + thread(tmp_path, 'b', 'mm: x', 1)
+    assert cache.refresh_query('mine', lambda since: 'q', 14, FakeSearch(mail), now=NOW) == 3
+    assert subjects(cache) == ['mm: x']
+
+
+def test_excluded_threads_already_cached_go_unless_kept(tmp_path):
+    import re
+
+    cache = MailCache(tmp_path / 'mail')
+    review = thread(tmp_path, 'a', '7.3.4-rc1 review', 1)
+    other = thread(tmp_path, 'b', '6.18.61-rc1 review', 1)
+    cache.refresh_query('mine', lambda since: 'q', 14, FakeSearch(review + other), now=NOW)
+    assert len(cache.sources()) == 2
+    cache.exclude = (re.compile(STABLE),)
+    cache.keep = frozenset({b4.LoreMessage.get_clean_msgid(other[0])})  # On a workbench.
+    cache.refresh_query('mine', lambda since: 'q', 14, FakeSearch([]), now=NOW)
+    assert subjects(cache) == ['6.18.61-rc1 review']

@@ -260,6 +260,10 @@ Python 3.11 or newer.
   series stays in the project b4 tracks it in: `$` then `t` moves it. Only
   `[[profiles]]` lists are fetched by `F5`; a profile labelled like its project stands in
   for that project's own sidebar view.
+- `F5` leaves out threads whose first message's subject a `[browse] exclude` pattern
+  finds, and removes cached ones (unless watched or on a workbench). The default drops
+  stable `-rc` review postings (`6.12.117-rc1 review`): each backport copies its author,
+  which would fetch the whole thread. `exclude = []` keeps everything.
 - A ref's `authority` is `mainline`, `acceptance`, or `preliminary` (highest first); an
   unknown one is reported, and a reload with it keeps the current view.
 - When b4 cannot apply the series for an F1 worktree session, you choose: hand it to the

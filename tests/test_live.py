@@ -818,3 +818,13 @@ def test_a_sent_series_is_tracked_on_refresh_once_lore_has_it(live):
     second = source.refresh()
     assert fakes.track_calls == [('demo', 'sent-v1@example.org')]
     assert 'tracked mm: x' in second and json.loads(pending.read_text()) == []
+
+
+def test_refresh_leaves_out_stable_reviews(live, tmp_path):
+    """Stable -rc reviews ([browse] exclude by default) never reach the series pool."""
+    source, fakes, _root = live
+    fakes.answers[MM] = (
+        mail(tmp_path, 'a', 'mm: keep me')[1] + mail(tmp_path, 'b', '6.12.117-rc1 review')[1]
+    )
+    assert '3 new' in source.refresh()
+    assert [i.series.subject for i in source.load().items] == ['mm: keep me']

@@ -15,6 +15,7 @@ In-Reply-To only. Remove when liblore offers a thread splitter.
 import datetime
 import email.message
 import email.parser
+import email.policy
 import email.utils
 import hashlib
 import json
@@ -93,6 +94,8 @@ class MailCache:
         self._index_path = self.root / 'index.json'
         # Message-ids whose threads stay cached past the window (watched discussions).
         self.keep: frozenset[str] = frozenset()
+        # Threads left out: patterns found in their first message's subject ([browse] exclude).
+        self.exclude: tuple[re.Pattern[str], ...] = ()
 
     def sources(self) -> list[pathlib.Path]:
         if not self._threads.is_dir():
@@ -257,7 +260,7 @@ class MailCache:
 
         msgs = search(make_query(since.date()))
         index = self._load_index()
-        added = self._add(msgs or (), index)
+        added = self._add(self._without_excluded(msgs or ()), index)
         self._prune(start, index)
         _write(self._index_path, self.root / '.index.json.tmp', json.dumps(index).encode())
         if msgs is not None:
@@ -294,6 +297,50 @@ class MailCache:
         _write(self._index_path, self.root / '.index.json.tmp', json.dumps(index).encode())
         return added
 
+    def _excluded(self, subject: str) -> bool:
+        subject = ' '.join(subject.split())
+        return any(p.search(subject) for p in self.exclude)
+
+    def _without_excluded(
+        self, msgs: Sequence[email.message.EmailMessage]
+    ) -> Sequence[email.message.EmailMessage]:
+        """*msgs* less the threads whose first message an exclude pattern finds."""
+        if not self.exclude:
+            return msgs
+        roots = {
+            b4.LoreMessage.get_clean_msgid(m)
+            for m in msgs
+            if not _refs(m, 'References')
+            and not _refs(m, 'In-Reply-To')
+            and self._excluded(str(m.get('Subject', '')))
+        }
+        if not roots:
+            return msgs
+
+        def root(m: email.message.EmailMessage) -> str:
+            refs, parents = _refs(m, 'References'), _refs(m, 'In-Reply-To')
+            first = refs[0] if refs else parents[0] if parents else None
+            return first or b4.LoreMessage.get_clean_msgid(m) or ''
+
+        return [m for m in msgs if root(m) not in roots]
+
+    def _excluded_threads(self, index: Index) -> set[str]:
+        """Cached threads whose first message an exclude pattern finds."""
+        if not self.exclude:
+            return set()
+        found = set()
+        parser = email.parser.BytesHeaderParser(policy=email.policy.default)
+        for key in {key for key, *_ in index.values()}:
+            path = self._thread_dir(key) / 'cur' / hashlib.sha1(key.encode()).hexdigest()
+            try:
+                with path.open('rb') as f:
+                    subject = str(parser.parse(f).get('Subject', ''))
+            except (OSError, ValueError):
+                continue  # Its first message never arrived: nothing to judge it by.
+            if self._excluded(subject):
+                found.add(key)
+        return found
+
     def _add(self, msgs: Sequence[email.message.EmailMessage], index: Index) -> int:
         epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
         dated = [(_date(m), m) for m in msgs]
@@ -319,7 +366,7 @@ class MailCache:
         """Drop whole threads whose newest message is older than the window.
 
         Undated messages count as recent, so their threads are kept, as are
-        threads holding a message-id in *keep*.
+        threads holding a message-id in *keep*. Excluded threads go whatever their age.
         """
         newest: dict[str, str] = {}
         for key, date, *_ in index.values():
@@ -328,7 +375,8 @@ class MailCache:
                 newest[key] = latest
         kept = {index[m][0] for m in self.keep if m in index}
         cutoff = start.astimezone(datetime.timezone.utc).isoformat()
-        stale = {key for key, latest in newest.items() if latest < cutoff and key not in kept}
+        stale = {key for key, latest in newest.items() if latest < cutoff}
+        stale = (stale | self._excluded_threads(index)) - kept
         for key in stale:
             tdir = self._thread_dir(key)
             if tdir.is_dir():

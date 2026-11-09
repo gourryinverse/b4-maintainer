@@ -493,3 +493,15 @@ def test_a_project_may_name_base_refs_and_branches_to_track():
     assert ws.warnings == ()
     assert project.base_refs == ('origin/v*-x',)
     assert project.track_branches == ('origin/scratch/me/*',)
+
+
+def test_threads_to_leave_out_default_to_stable_reviews_and_are_configurable():
+    import re
+
+    default = Workspace.from_config({})
+    assert any(re.search(p, '[PATCH 6.12 000/150] 6.12.117-rc1 review') for p in default.exclude)
+    assert not any(re.search(p, '[PATCH 6.12 042/150] mm: fix foo') for p in default.exclude)
+    assert Workspace.from_config({'browse': {'exclude': []}}).exclude == ()
+    bad = Workspace.from_config({'browse': {'exclude': ['^ok', '(unclosed']}})
+    assert bad.exclude == ('^ok',)
+    assert bad.warnings and 'unclosed' in bad.warnings[0] and '[browse] exclude' in bad.warnings[0]

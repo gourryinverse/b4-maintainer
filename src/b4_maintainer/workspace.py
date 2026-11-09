@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Workspace configuration, project routing, and series identity merging."""
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Collection, Iterable, Mapping, Optional
 
@@ -96,7 +97,7 @@ PROFILE_KEYS = frozenset({'id', 'label', 'project', 'lists', 'paths', 'enabled'}
 MODEL_KEYS = frozenset({'id', 'model', 'thinking', 'args', 'env', 'enabled'})
 TABLE_KEYS = {
     'layout': frozenset({'three_pane', 'single_pane', 'preview_width'}),
-    'browse': frozenset({'window_days'}),
+    'browse': frozenset({'window_days', 'exclude'}),
     'sashiko': frozenset({'senders', 'hide_clean'}),
     'drafts': frozenset({'editor', 'tmux_width'}),
     'refs': frozenset({'fetch'}),
@@ -210,6 +211,21 @@ class Profile:
 
 
 SASHIKO_SENDERS = ('sashiko-bot@kernel.org', 'netdev-bot+sashiko@kernel.org')
+# Stable -rc review postings ([PATCH 6.12 000/150] 6.12.117-rc1 review): each backport
+# copies its author, so the maintainer's mail fetches the whole enormous thread.
+STABLE_REVIEWS = (r'\d+\.\d+(\.\d+)?-rc\d+ review$',)
+
+
+def _patterns(config: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """[browse] exclude: the valid patterns, and a warning for each that is not."""
+    good, bad = [], []
+    for pattern in config.get('browse', {}).get('exclude', STABLE_REVIEWS):
+        try:
+            re.compile(str(pattern))
+            good.append(str(pattern))
+        except re.error as exc:
+            bad.append(f'bad pattern {pattern!r} in [browse] exclude: {exc}')
+    return tuple(good), tuple(bad)
 
 
 @dataclass(frozen=True)
@@ -219,6 +235,8 @@ class Workspace:
     profiles: tuple[Profile, ...] = ()
     breakpoints: Breakpoints = Breakpoints()
     window_days: int = 14
+    # Threads refresh leaves out: patterns found in their first message's subject.
+    exclude: tuple[str, ...] = STABLE_REVIEWS
     # Senders of automated review mail; their replies are findings, not Responses.
     bots: tuple[str, ...] = SASHIKO_SENDERS
     # Leave Sashiko replies that found nothing out of threads ([sashiko] hide_clean).
@@ -252,6 +270,7 @@ class Workspace:
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> 'Workspace':
+        exclude, bad_patterns = _patterns(config)
         projects = tuple(
             Project(
                 id=p['id'],
@@ -290,6 +309,7 @@ class Workspace:
             profiles=profiles,
             breakpoints=Breakpoints.from_config(config.get('layout', {})),
             window_days=int(config.get('browse', {}).get('window_days', 14)),
+            exclude=exclude,
             bots=tuple(
                 b.lower() for b in config.get('sashiko', {}).get('senders', SASHIKO_SENDERS)
             ),
@@ -314,7 +334,7 @@ class Workspace:
                 for g in config.get('guidance', [])
                 if isinstance(g, Mapping) and 'id' in g and 'path' in g
             ),
-            warnings=config_warnings(config),
+            warnings=bad_patterns + config_warnings(config),
         )
 
     def project(self, project_id: Optional[str]) -> Optional[Project]:

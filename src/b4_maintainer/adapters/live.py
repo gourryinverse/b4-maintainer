@@ -793,6 +793,7 @@ class LiveSource:
         ws = self.workspace()
         # Watched threads, and those workbenches name, outlive the window.
         self.cache.keep = self.watched.msgids() | self.bench_msgids()
+        self.cache.exclude = tuple(re.compile(p) for p in ws.exclude)
         lists = self.browse_lists(ws)
         if not lists:
             return f'Nothing to browse: add a [[profiles]] entry with lists to {CONFIG_NAME}'
@@ -878,6 +879,7 @@ class LiveSource:
         if checkout is None:
             raise RuntimeError('no project checkout to fetch with')
         self.cache.keep = self.watched.msgids() | self.bench_msgids() | {msgid}
+        self.cache.exclude = tuple(re.compile(p) for p in ws.exclude)
         fetch = self._thread_for(checkout)
         self.cache.refresh_thread(msgid, fetch, ws.window_days, now=self._now())
         self.cache.series(parse_mbox)  # So the reload that follows reads summaries only.
