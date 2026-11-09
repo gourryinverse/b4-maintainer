@@ -221,19 +221,36 @@ def test_a_thread_is_fetched_by_link_or_message_id_and_kept_for_its_workbench(tm
     assert 'root@example.org' in source.bench_msgids()  # Kept past the browse window.
 
 
-def test_list_discussions_are_fetched_and_syzbot_reports_listed_apart(tmp_path):
+def test_list_discussions_are_fetched_and_robot_reports_listed_apart(tmp_path):
     """Threads on a profile list without [PATCH] or [RFC] are fetched too: discussions,
-    except syzbot's reports, which have their own view below Discussions."""
+    except robots' reports (syzbot, the kernel test robot), which have their own view
+    below Discussions."""
     source, fakes, _ = responses_source(tmp_path)
     syzbot = 'syzbot <syzbot+0123abcd@syzkaller.appspotmail.com>'
     fakes.talk[MM] = [
         message('talk@example.org', 'Starter <starter@example.org>', 'MM: Firefighting mode', 1),
         message('bug@example.org', syzbot, '[syzbot] [mm?] BUG: bad page state in foo', 1),
+        message(
+            'build@example.org',
+            'kernel test robot <lkp@intel.com>',
+            '[akpm-mm:mm-new] BUILD REGRESSION 0123abcd',
+            1,
+        ),
+        message(
+            'perf@example.org',
+            'kernel test robot <tester@intel.com>',  # Performance reports: their own sender.
+            '[linus:master] [mm] 80047d84ee: will-it-scale 5% improvement',
+            1,
+        ),
     ]
     source.refresh()
     assert any('NOT s:PATCH AND NOT s:RFC' in q and f'l:{MM} ' in q for _, q in fakes.searches)
     _snapshot, index = snap(source)
     assert [i.series.subject for i in index.items('discussions')] == ['MM: Firefighting mode']
-    assert [i.series.subject for i in index.items('syzbot')] == ['BUG: bad page state in foo']
-    assert [v.id for v in index.views][:3] == ['all', 'discussions', 'syzbot']
-    assert [v.label for v in index.views][2] == 'Syzbot'
+    assert sorted(i.series.subject for i in index.items('robots')) == [
+        '80047d84ee: will-it-scale 5% improvement',
+        'BUG: bad page state in foo',
+        'BUILD REGRESSION 0123abcd',
+    ]
+    assert [v.id for v in index.views][:3] == ['all', 'discussions', 'robots']
+    assert [v.label for v in index.views][2] == 'Robots'

@@ -24,8 +24,8 @@ class ViewIndex:
         hidden = tuple(i for i in everything if i.hidden)
         # Review queues drop series whose review is over (merged or otherwise landed)
         # and discussions, which are conversations rather than review work.
-        talk = tuple(i for i in items if i.series.discussion and not _syzbot(i))
-        reports = tuple(i for i in items if i.series.discussion and _syzbot(i))
+        talk = tuple(i for i in items if i.series.discussion and not _robot(i))
+        reports = tuple(i for i in items if i.series.discussion and _robot(i))
         unmerged = tuple(
             i for i in items if not (i.state.mainline_complete or i.landed or i.series.discussion)
         )
@@ -44,7 +44,7 @@ class ViewIndex:
         if talk:  # Right under All, so conversations stand out.
             specs.append((View('discussions', 'Discussions', 'builtin'), _always, talk))
         if reports:
-            specs.append((View('syzbot', 'Syzbot', 'builtin'), _always, reports))
+            specs.append((View('robots', 'Robots', 'builtin'), _always, reports))
         # A profile carrying its project's label stands in for that project's view.
         named = {(prof.project, prof.label) for prof in ws.profiles if prof.enabled}
         for p in ws.projects:
@@ -119,8 +119,16 @@ def _always(item: WorkItem) -> bool:
 
 
 SYZBOT_DOMAIN = '@syzkaller.appspotmail.com'  # syzbot+<hash>@…: one sender per bug.
+ROBOT_SENDERS = frozenset({'lkp@intel.com'})  # The kernel test robot's build reports.
+ROBOT_NAMES = frozenset({'kernel test robot'})  # Its performance reports: testers' own.
 
 
-def _syzbot(item: WorkItem) -> bool:
-    """A syzbot report: its [syzbot] subject tag, or syzbot's sender."""
-    return 'syzbot' in item.series.prefixes or item.series.author_email.endswith(SYZBOT_DOMAIN)
+def _robot(item: WorkItem) -> bool:
+    """A robot's report: syzbot's ([syzbot] tag, or its sender) or the kernel test robot's."""
+    s = item.series
+    return (
+        'syzbot' in s.prefixes
+        or s.author_email.endswith(SYZBOT_DOMAIN)
+        or s.author_email in ROBOT_SENDERS
+        or s.author_name.lower() in ROBOT_NAMES
+    )
