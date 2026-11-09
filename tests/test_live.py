@@ -55,6 +55,7 @@ class Fakes:
         self.mine: list = []
         self.posts: list = []  # The maintainer's own messages (no thread expansion).
         self.threads: list[list] = []  # Whole threads, for m: searches.
+        self.talk: dict[str, list] = {}  # Per list: mail without [PATCH] or [RFC].
         self.track_calls: list[tuple[str, str]] = []
         self.archive_calls: list[tuple[str, str, str, int]] = []
         self.archive_result = (True, '/archive.tar.gz')
@@ -68,6 +69,8 @@ class Fakes:
             self.searches.append((checkout.name, query))
             if 'tc:' in query:
                 return list(self.mine)  # Mail from or addressed to the maintainer.
+            if 'NOT s:PATCH' in query:
+                return next((v for k, v in self.talk.items() if f'l:{k} ' in query), [])
             if 'm:"' in query:
                 wanted = set(re.findall(r'm:"([^"]+)"', query))
                 ids = [{b4.LoreMessage.get_clean_msgid(m) for m in t} for t in self.threads]
@@ -134,8 +137,8 @@ def test_refresh_fetches_profile_lists_into_the_workspace_cache(live, tmp_path):
     _, msgs = mail(tmp_path, 'a', 'mm: browse me')
     fakes.answers[MM] = msgs
     summary = source.refresh()
-    assert [name for name, _ in fakes.searches] == ['demo']
-    assert f'l:{MM} ' in fakes.searches[0][1]
+    assert [name for name, _ in fakes.searches] == ['demo', 'demo']  # Patches, then talk.
+    assert f'l:{MM} ' in fakes.searches[0][1] and 'NOT s:PATCH' in fakes.searches[1][1]
     assert '3 new' in summary
     assert MailCache(root / 'var' / 'mail').sources()
 

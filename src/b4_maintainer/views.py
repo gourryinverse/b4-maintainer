@@ -24,7 +24,8 @@ class ViewIndex:
         hidden = tuple(i for i in everything if i.hidden)
         # Review queues drop series whose review is over (merged or otherwise landed)
         # and discussions, which are conversations rather than review work.
-        talk = tuple(i for i in items if i.series.discussion)
+        talk = tuple(i for i in items if i.series.discussion and not _syzbot(i))
+        reports = tuple(i for i in items if i.series.discussion and _syzbot(i))
         unmerged = tuple(
             i for i in items if not (i.state.mainline_complete or i.landed or i.series.discussion)
         )
@@ -42,6 +43,8 @@ class ViewIndex:
         specs.append((View('all', 'All projects' if multi else 'All', 'all'), _always, active))
         if talk:  # Right under All, so conversations stand out.
             specs.append((View('discussions', 'Discussions', 'builtin'), _always, talk))
+        if reports:
+            specs.append((View('syzbot', 'Syzbot', 'builtin'), _always, reports))
         # A profile carrying its project's label stands in for that project's view.
         named = {(prof.project, prof.label) for prof in ws.profiles if prof.enabled}
         for p in ws.projects:
@@ -89,8 +92,10 @@ class ViewIndex:
             (View('review', 'To Review', 'builtin'), lambda i: i.state.to_review, active),
             (View('cached', 'Cached', 'builtin'), _always, items),
         ]
-        if any(i.watched for i in talk):
-            specs.append((View('watching', 'Watching', 'builtin'), lambda i: i.watched, talk))
+        if any(i.watched for i in talk + reports):
+            specs.append(
+                (View('watching', 'Watching', 'builtin'), lambda i: i.watched, talk + reports)
+            )
         if any(i.state.draft for i in items):
             specs.append((View('drafts', 'Drafts', 'builtin'), lambda i: i.state.draft, items))
         if hidden:
@@ -110,3 +115,11 @@ class ViewIndex:
 
 def _always(item: WorkItem) -> bool:
     return True
+
+
+SYZBOT_DOMAIN = '@syzkaller.appspotmail.com'  # syzbot+<hash>@…: one sender per bug.
+
+
+def _syzbot(item: WorkItem) -> bool:
+    """A syzbot report: its [syzbot] subject tag, or syzbot's sender."""
+    return 'syzbot' in item.series.prefixes or item.series.author_email.endswith(SYZBOT_DOMAIN)

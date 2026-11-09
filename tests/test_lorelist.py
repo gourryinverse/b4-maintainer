@@ -320,3 +320,10 @@ def test_an_own_thread_lore_did_not_return_is_asked_for_again(tmp_path):
     cache.refresh_own('own-me', lambda since: str(since), 365, 14, posts, threads, now=NOW)
     assert subjects(cache) == ['mm: my old series']
     assert posts.queries[1] == str((NOW - datetime.timedelta(days=365)).date())  # from as far.
+
+
+def test_talk_query_finds_list_mail_without_patch_or_rfc():
+    from b4_maintainer.adapters.lorelist import talk_query
+
+    since = datetime.date(2026, 10, 7)
+    assert talk_query(LIST, since) == f'l:{LIST} AND NOT s:PATCH AND NOT s:RFC AND rt:2026-10-07..'

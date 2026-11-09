@@ -31,7 +31,7 @@ from . import b4state, sashiko, statesync
 from .b4mbox import parse_mbox
 from .clientstate import HiddenStore, WatchedStore
 from .drafts import DraftStore
-from .lorelist import POSTED, MailCache, MessageInfo, Search
+from .lorelist import POSTED, MailCache, MessageInfo, Search, talk_query
 from .maintainers import OwnerCache, author_roles
 from .sashiko import SashikoCache
 from .scratch import track_branches
@@ -823,6 +823,13 @@ class LiveSource:
             progress(f'Fetching {lst} ({n}/{len(lists)})…')
             search = self._search_for(self.checkout(project))
             added += self.cache.refresh(lst, ws.window_days, search, now=self._now())
+            added += self.cache.refresh_query(  # Its discussions and reports.
+                f'{lst}+talk',
+                lambda since, lst=lst: talk_query(lst, since),
+                ws.window_days,
+                search,
+                now=self._now(),
+            )
         added += self._fetch_my_mail(self._with_identity(ws), progress)
         added += self._fetch_own(self._with_identity(ws), progress)
         added += self._fetch_watched(ws, progress)

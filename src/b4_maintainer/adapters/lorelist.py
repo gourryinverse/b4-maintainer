@@ -45,6 +45,11 @@ def list_query(list_id: str, since: datetime.date) -> str:
     return f'l:{list_id} AND {POSTED} AND rt:{since:%Y-%m-%d}..'
 
 
+def talk_query(list_id: str, since: datetime.date) -> str:
+    """A list's mail that posts no work: discussions, reports, and their replies."""
+    return f'l:{list_id} AND NOT s:PATCH AND NOT s:RFC AND rt:{since:%Y-%m-%d}..'
+
+
 def _date(msg: email.message.Message) -> Optional[datetime.datetime]:
     try:
         value = email.utils.parsedate_to_datetime(str(msg['Date']))
@@ -202,6 +207,7 @@ class MailCache:
                 Series(
                     identity=f'thread:{root}',
                     subject=subject.subject or '(no subject)',
+                    prefixes=tuple(p.lower() for p in subject.prefixes),
                     revision=0,
                     expected=0,
                     complete=True,
