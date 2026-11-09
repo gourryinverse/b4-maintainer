@@ -70,6 +70,7 @@ def test_threads_without_patches_become_discussions(tmp_path):
     assert item in index.items('cached')
     for view in ('all', 'profile:mm', 'project:demo', 'review', 'responsibilities'):
         assert item not in index.items(view), view
+    assert [v.id for v in index.views][:2] == ['all', 'discussions']  # Right under All.
 
 
 def test_discussion_responses_are_messages_to_me_after_my_first_post(tmp_path):

@@ -196,3 +196,15 @@ def test_a_series_without_its_first_patch_is_sent_by_the_patch_present(tmp_path)
     [series] = parse_mbox(mail.path)
     assert [p.counter for p in series.patches] == [3]
     assert series.author_email.endswith('@example.org') and series.author_name
+
+
+def test_an_rfc_without_patch_in_its_prefix_is_a_series(tmp_path):
+    mail = write_series_mbox(
+        tmp_path / 'r.mbx',
+        subject='mm: an idea',
+        patches=[PatchSpec('mm/a.c'), PatchSpec('mm/b.c')],
+    )
+    mail.path.write_text(mail.path.read_text().replace('[PATCH ', '[RFC '))
+    [series] = parse_mbox(mail.path)
+    assert not series.discussion and [p.counter for p in series.patches] == [1, 2]
+    assert 'rfc' in series.prefixes

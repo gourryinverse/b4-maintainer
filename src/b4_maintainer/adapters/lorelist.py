@@ -36,9 +36,13 @@ OVERLAP = datetime.timedelta(days=1)
 _MSGID = re.compile(r'<([^>]+)>')
 
 
+# Subjects that post work: [PATCH …], and [RFC …] without PATCH in its prefix.
+POSTED = '(s:PATCH OR s:RFC)'
+
+
 def list_query(list_id: str, since: datetime.date) -> str:
     # rt: takes git approxidate; ISO dates work, YYYYMMDD is silently ignored.
-    return f'l:{list_id} AND s:PATCH AND rt:{since:%Y-%m-%d}..'
+    return f'l:{list_id} AND {POSTED} AND rt:{since:%Y-%m-%d}..'
 
 
 def _date(msg: email.message.Message) -> Optional[datetime.datetime]:

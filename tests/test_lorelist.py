@@ -41,7 +41,7 @@ class FakeSearch:
 
 def test_query_limits_list_patches_and_received_time():
     since = datetime.date(2026, 10, 7)
-    assert list_query(LIST, since) == f'l:{LIST} AND s:PATCH AND rt:2026-10-07..'
+    assert list_query(LIST, since) == f'l:{LIST} AND (s:PATCH OR s:RFC) AND rt:2026-10-07..'
 
 
 def test_refresh_caches_series_for_the_window(tmp_path):

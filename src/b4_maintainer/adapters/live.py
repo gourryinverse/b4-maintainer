@@ -31,7 +31,7 @@ from . import b4state, sashiko, statesync
 from .b4mbox import parse_mbox
 from .clientstate import HiddenStore, WatchedStore
 from .drafts import DraftStore
-from .lorelist import MailCache, MessageInfo, Search
+from .lorelist import POSTED, MailCache, MessageInfo, Search
 from .maintainers import OwnerCache, author_roles
 from .sashiko import SashikoCache
 from .scratch import track_branches
@@ -851,7 +851,7 @@ class LiveSource:
             progress(f'Fetching series you sent ({ws.own_days} days)…')
             added += self.cache.refresh_own(
                 f'own-{addr}',
-                lambda since, a=addr: f'f:{a} AND s:PATCH AND rt:{since:%Y-%m-%d}..',
+                lambda since, a=addr: f'f:{a} AND {POSTED} AND rt:{since:%Y-%m-%d}..',
                 ws.own_days,
                 ws.window_days,
                 self._posts_for(checkout),

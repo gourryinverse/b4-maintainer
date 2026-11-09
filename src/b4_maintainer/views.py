@@ -40,6 +40,8 @@ class ViewIndex:
         specs: list[tuple[View, Callable[[WorkItem], bool], tuple[WorkItem, ...]]] = []
         multi = len(ws.projects) > 1
         specs.append((View('all', 'All projects' if multi else 'All', 'all'), _always, active))
+        if talk:  # Right under All, so conversations stand out.
+            specs.append((View('discussions', 'Discussions', 'builtin'), _always, talk))
         # A profile carrying its project's label stands in for that project's view.
         named = {(prof.project, prof.label) for prof in ws.profiles if prof.enabled}
         for p in ws.projects:
@@ -87,8 +89,6 @@ class ViewIndex:
             (View('review', 'To Review', 'builtin'), lambda i: i.state.to_review, active),
             (View('cached', 'Cached', 'builtin'), _always, items),
         ]
-        if talk:
-            specs.append((View('discussions', 'Discussions', 'builtin'), _always, talk))
         if any(i.watched for i in talk):
             specs.append((View('watching', 'Watching', 'builtin'), lambda i: i.watched, talk))
         if any(i.state.draft for i in items):

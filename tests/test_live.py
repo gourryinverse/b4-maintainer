@@ -919,4 +919,6 @@ def test_my_own_series_reach_back_months_in_my_unmerged_submissions_alone(tmp_pa
     assert subjects('profile:mm') == ['mm: browse me']
     assert 'mm: my old series' not in subjects('all')
     assert subjects('responses') == []  # The old review came with the history.
-    assert any(q.startswith('f:me@example.org AND s:PATCH AND rt:') for _, q in fakes.searches)
+    assert any(
+        q.startswith('f:me@example.org AND (s:PATCH OR s:RFC) AND rt:') for _, q in fakes.searches
+    )
