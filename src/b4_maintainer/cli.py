@@ -52,6 +52,13 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
         metavar='DIR',
         help='write a synthetic demo workspace to DIR and open it',
     )
+    group.add_argument(
+        '--showcase',
+        type=pathlib.Path,
+        metavar='DIR',
+        help='open the synthetic live showcase in DIR, writing it there first when DIR is '
+        'new (for trying the app and screenshots; replies are dry runs)',
+    )
     parser.add_argument(
         '--email-dry-run',
         action='store_true',
@@ -66,6 +73,16 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
         return MaintainerApp(
             FixtureSource(root).load, sessions=_sessions(root), app_pane=_app_pane()
         )
+    if args.showcase:
+        from .showcase import build_showcase
+
+        if not has_config(args.showcase):
+            try:
+                build_showcase(args.showcase)
+            except FileExistsError as exc:
+                parser.error(f'{exc}: give a new or empty directory, or an existing showcase')
+        args.email_dry_run = True  # Synthetic addresses: nothing is ever sent.
+        return _live_app(LiveSource(args.showcase), args)
     root = args.workspace or pathlib.Path('.')
     if has_config(root):
         return _live_app(LiveSource(root), args)
