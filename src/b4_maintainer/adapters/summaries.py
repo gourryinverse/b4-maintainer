@@ -6,9 +6,9 @@ from typing import Any
 
 from ..model import Patch, Series, Tag, Trailers
 
-VERSION = 3  # 2: per-patch Fixes and stable tags; 3: subject prefixes.
+VERSION = 4  # 2: per-patch Fixes and stable tags; 3: subject prefixes; 4: a sender always.
 # Older summaries still read (missing fields empty) until a refresh reparses them.
-READABLE = frozenset({1, 2, VERSION})
+READABLE = frozenset({1, 2, 3, VERSION})
 
 
 def _tags(tags: frozenset[Tag]) -> list[list[str]]:
@@ -67,8 +67,8 @@ def series_from_dict(d: dict[str, Any]) -> Series:
         expected=d['expected'],
         complete=d['complete'],
         has_cover=d['has_cover'],
-        author_name=d['author_name'],
-        author_email=d['author_email'],
+        author_name=d['author_name'] or '',
+        author_email=d['author_email'] or '',
         sent=datetime.datetime.fromisoformat(d['sent']) if d['sent'] else None,
         patches=tuple(
             Patch(

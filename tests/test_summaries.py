@@ -115,3 +115,16 @@ def test_subject_prefixes_survive_the_summary_cache():
 
     series = dataclasses.replace(make_series('cxl/list: x'), prefixes=('ndctl', 'patch'))
     assert series_from_dict(series_to_dict(series)) == series
+
+
+def test_a_summary_without_a_sender_reads_as_an_empty_one():
+    """Summaries written before a series' sender was taken from the patch present held
+    none (null): they load (empty) until a refresh reparses them."""
+    from b4_maintainer.adapters.summaries import READABLE, VERSION
+    from b4_maintainer.fixtures import make_series
+
+    data = series_to_dict(make_series('tools/mm: x'))
+    data['author_name'] = data['author_email'] = None
+    series = series_from_dict(data)
+    assert (series.author_name, series.author_email) == ('', '')
+    assert VERSION == 4 and 3 in READABLE  # So a refresh reparses them.

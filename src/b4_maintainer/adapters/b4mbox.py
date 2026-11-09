@@ -102,8 +102,9 @@ def _series(lser: 'b4.LoreSeries', source: str) -> Series:
         expected=lser.expected,
         complete=bool(lser.complete),
         has_cover=bool(lser.has_cover),
-        author_name=lser.fromname,
-        author_email=lser.fromemail,
+        # b4 names the sender from the cover or patch 1 only: else the first present's.
+        author_name=lser.fromname or present[0].fromname,
+        author_email=lser.fromemail or present[0].fromemail,
         sent=present[0].date,
         patches=tuple(
             Patch(p.counter, p.msgid, p.lsubject.subject, _replied(p), _carried(p), *_fix_tags(p))

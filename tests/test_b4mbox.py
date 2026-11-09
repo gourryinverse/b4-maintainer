@@ -181,3 +181,18 @@ def test_a_project_tag_in_the_subject_prefix_is_kept(tmp_path):
     assert 'ndctl' in series.prefixes and series.subject == 'cxl/list: show the region mode'
     untagged = write_series_mbox(tmp_path / 'k.mbx', subject='cxl: fix the region mode')
     assert 'ndctl' not in parse_mbox(untagged.path)[0].prefixes
+
+
+def test_a_series_without_its_first_patch_is_sent_by_the_patch_present(tmp_path):
+    """A lone [PATCH 3/3] (no cover letter, no 1/3): b4 names no sender (it reads the cover
+    or patch 1), so the sender is the first message present's."""
+    mail = write_series_mbox(
+        tmp_path / 'c.mbx',
+        subject='tools/mm: keep the scan inside the record',
+        patches=[PatchSpec('tools/mm/a.c'), PatchSpec('tools/mm/b.c'), PatchSpec('tools/mm/c.c')],
+        cover=False,
+        omit=(1, 2),
+    )
+    [series] = parse_mbox(mail.path)
+    assert [p.counter for p in series.patches] == [3]
+    assert series.author_email.endswith('@example.org') and series.author_name
