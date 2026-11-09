@@ -1,364 +1,380 @@
 # b4-maintainer
 
-Mailing-list maintainer workspace: patch review, bug triage, interactive agents, project tests.
+A terminal workspace for mailing-list maintainers, built on [b4](https://b4.docs.kernel.org/).
+It follows the lists you care about, tracks series through review and into upstream
+branches, drafts and sends replies through b4, and runs agent sessions over series and
+branches when you ask for them.
 
-Stage: fixture-backed interface prototype (browse screen).
+- **Browse** the lists you follow: series, discussions, and robot reports, with your
+  own work and the replies to you kept apart.
+- **Track** where each series is: which upstream branches hold it, fully or in part,
+  and when it has landed.
+- **Reply and send** through b4, in your own editor, with your identity and signing.
+- **Prepare** your own series as b4 prep branches: cover letter, checks, sign-off, send.
+- **Work with agents** on workbenches: series, branches, and files gathered for a
+  session, whose commits, findings, and results come back to you.
 
-Python, Textual, GPL-2.0-or-later.
+Agents start only when you launch them. Status: early, in daily use. Python 3.11+,
+[Textual](https://textual.textualize.io/), GPL-2.0-or-later.
 
-## Scope
+<!-- screenshot: the LKML tab (series list, sidebar, preview) -->
 
-- User-managed project repositories under projects/: Linux, QEMU, ndctl, and others.
-- Initial support: mailing-list patch workflows through b4.
-- Configurable subsystem subscriptions, ownership rules, refs, prompts, and tests.
-- Series browsing, review progress, discussion, and upstream tracking.
-- Management and per-series agent sessions; backend selected per session.
-- Findings linked to reviews, reproductions, tests, and responses.
-- Optional backlog repositories.
+## Contents
 
-Agents start or resume only on maintainer request. Approved work can continue
-in the background.
+- [Trying it out](#trying-it-out)
+- [Setup](#setup)
+- [Concepts](#concepts)
+- [The tabs](#the-tabs): [LKML](#lkml-f2), [Workbench](#workbench-f3),
+  [Branches](#branches-f4), [Settings](#settings-f6), [Sessions](#sessions-f1)
+- [Mail](#mail)
+- [Configuration](#configuration)
+- [Development](#development)
 
-## Contributing
+## Trying it out
 
-- [Contributor instructions](AGENTS.md)
+The showcase is a synthetic workspace with everything filled in: series on two lists,
+upstream branches holding some of them, discussions, robot reports, tracked series, a
+reply draft, a prep branch, and a workbench with two sessions.
 
-## Dependencies
+    ./setup.sh
+    ./b4-maintainer --showcase /tmp/b4m-showcase
 
-Pinned sources: b4, liblore, review-prompts, kernel-style, virtme-ng, kres, semcode, sashiko.
-See [setup](deps/README.md).
+The first run writes the workspace into the directory; later runs reopen it. Delete
+the directory to start again. Everything in it is made up (example.org people and
+lists): `F5` finds nothing new on lore, and replies are only ever dry runs. Use it to
+learn the keys, or to take screenshots.
 
-Development favors improvements in the owning dependencies, maintained through
-forks and upstream contributions. Client adapters stay focused on integration.
-
-Workspace paths, LLM providers/credentials, and backlogs are maintainer configuration.
-Mail configuration and delivery use b4's existing integrations.
+`./b4-maintainer --demo DIR` opens a smaller fixture workspace used by the tests.
 
 ## Setup
 
-Python 3.11 or newer.
-
     git clone <b4-maintainer repository> b4-maintainer && cd b4-maintainer
-    ./setup.sh        # first run creates setup.conf (optional STATE_REPO, PYTHON)
+    ./setup.sh
     ./b4-maintainer
 
-- `setup.conf` (ignored by Git; from `setup.conf.example`): `STATE_REPO`, a repository
-  cloned once as `state/` (optional; never pushed or pulled by the app); `PYTHON`, the interpreter (default: newest `python3.1x`); `DEV_TOOLS=yes` for
-  pytest and ruff.
-- An optional site file adapts setup to its environment without changes here:
-  `setup.site.conf` (ignored), or the file `SITE_CONF` names (e.g. one distributed inside an
-  organisation). `setup.sh` and `./b4-maintainer` source it: it may export environment
-  (proxies), set a default `PYTHON`, add `PIP_ARGS`, or define `site_install` to replace pip.
-  Without one, setup uses plain pip.
-- `./setup.sh` initializes submodules, creates `.venv` and installs the pinned packages,
-  clones `STATE_REPO` as `state/` when set, and runs `b4-maintainer setup`: missing project
-  checkouts are cloned blobless as recorded (Linux takes a while), enrolled with workspace
-  b4 state, and the tracked series and flags recorded in `state/` are imported. Existing
-  checkouts and `state/` are left as they are; safe to run again.
-- `./b4-maintainer` runs `.venv`'s b4-maintainer on this workspace from any directory,
-  active virtual environment or not; relative paths in its arguments are from the workspace.
-- Per machine, never exported: Git identity and b4's `sendemail.*` settings (SMTP
-  credentials), drafts, caches, and review branches.
+- `./setup.sh` initialises the submodules, creates `.venv`, installs the pinned
+  packages, and runs `b4-maintainer setup`, which clones missing project checkouts
+  (blobless; Linux takes a while), enrolls them with workspace-local b4 state, and
+  imports any tracked series recorded in `state/`. It is safe to run again.
+- The first run writes `setup.conf` (from `setup.conf.example`; ignored by Git):
+  - `STATE_REPO`: a repository cloned once as `state/`, holding your configuration
+    and workbenches. The app never pushes or pulls it.
+  - `PYTHON`: the interpreter (default: the newest `python3.1x`).
+  - `DEV_TOOLS=yes`: also install pytest and ruff.
+- An optional site file adapts setup to its environment: `setup.site.conf` (ignored),
+  or the file `SITE_CONF` names. Both `setup.sh` and `./b4-maintainer` source it. It
+  may export environment (proxies), set a default `PYTHON`, add `PIP_ARGS`, or define
+  `site_install` to replace pip.
+- `./b4-maintainer` runs the workspace's app from any directory. `./b4-maintainer
+  linux` opens on one project's view.
+- To register a checkout you already have: `b4-maintainer project add ID --list LIST
+  --ref LABEL:REF:AUTHORITY` (the checkout at `projects/ID`).
+
+Per machine, and never exported: your Git identity and b4's `sendemail.*` settings,
+drafts, caches, and review branches.
+
+## Concepts
+
+| Term | What it is |
+|---|---|
+| Workspace | This directory: `state/workspace.toml` (or `workspace.toml`), the project checkouts under `projects/`, and runtime data under `var/`. |
+| Project | A repository you maintain (Linux, QEMU, ndctl, …): its checkout, its lists, and its tracked branches. |
+| Profile | A set of lists you follow for a project (e.g. MM, CXL). Profiles are what `F5` fetches, and each has a sidebar view. |
+| Tracked branch | An upstream branch (a *ref*) checked for each series: mainline, linux-next, a subsystem's queues. |
+| Maintainer base | Your own integration branch on top of an upstream branch, where you apply and test series. |
+| Workbench | A recipe for agent sessions: per project, a base and the series, branches, and files to give the agent. |
+| Session | An agent (pi, in tmux) working on a workbench. Its results land in its `out/` folder. |
+
+Series are matched to projects by the lists they were sent to. On lists that projects
+share, a subject tag (`[ndctl PATCH]`) or the directories a series touches decide.
+
+## The tabs
+
+| Key | Tab |
+|---|---|
+| `F1` | Start an agent session on what is selected (see [Sessions](#sessions-f1)). |
+| `F2` | **LKML**: the series list and threads. |
+| `F3` | **Workbench**: workbenches, their contents, and their sessions. |
+| `F4` | **Branches**: bases, prep branches, session work, and sending. |
+| `F5` | Refresh: fetch mail and branches, from any tab. |
+| `F6` | **Settings**: signing and tracked branches. |
+| `?` | Every key on the current tab. |
+
+Each tab keeps its place when you switch away. The footer shows the common keys; `` ` ``
+opens the session drawer.
+
+### LKML (F2)
+
+<!-- screenshot: the LKML tab with both sidebar sections -->
+
+The sidebar has two sections.
+
+**Mailing lists**
+
+| View | Lists |
+|---|---|
+| All | Every series still in review. |
+| Discussions | Threads without `[PATCH]`: conversations on your lists. |
+| Robots | Reports from syzbot and the kernel test robot. |
+| *Project*, *profile* | Series for one project, or on one profile's lists. |
+| Responses | Series with unread replies to your mail. |
+| My Responsibilities | Series touching files you maintain (from MAINTAINERS). |
+| My Unmerged Submissions | Your own series that have not landed, up to a year back. |
+| To Review | Series you track in b4. |
+| Cached | Everything in the mail cache, landed or not. |
+| Drafts, Watching, Hidden | Series with a saved reply draft; discussions you watch; series you hid. |
+
+**Upstream branches** has a view for each tracked branch that has one, listing the
+series it holds. A series is listed in the first such view (in configuration order)
+and leaves the list views. A series fully in a branch that *ends review* (linux-next,
+mainline) leaves the queues.
+
+The pane on the right previews the selected series: its cover letter (or its only
+patch), trailers, Sashiko's review, and *Tree evidence*, the tracked branches holding
+it. `p` shrinks the preview to the summary, and back.
+
+| Key | In the series list |
+|---|---|
+| `Enter` | Read the thread. |
+| `p` | Shrink or expand the preview. |
+| `/` | Filter by regular expression. |
+| `l` | Order by latest activity (a Last column says how long ago), or by posting. |
+| `$` | Track the series in b4 (To Review), or untrack it; on a discussion, watch it or stop. `t` also tracks. |
+| `x` | Hide the series, or unhide it. |
+| `M` | Mark every message in it read. |
+| `r`, `R` | Reply to the cover letter; `R` first picks session output to add. |
+| `V` | Read an older revision. |
+| `w` | Add the series to a workbench. |
+| `a`, `d` | Apply the series to a base or prep branch; drop it from a base. |
+| `v` | Show or hide the sidebar on a medium-width terminal. |
+
+**Reading a thread.** The tree of messages is on the left and the selected message on
+the right. `[` and `]` move between messages, `n` jumps to the next comment, `!` to the
+next Sashiko finding, `-` and `=` fold replies, and `z` folds long quotes. `r` replies
+to the selected message. Escape goes back.
+
+**Revisions.** Each series is listed at its newest revision. `V` picks an older one to
+read, and the status line says when you are not on the newest. When the unread
+replies to you are on an older revision (an answer to your review of v1 after v2 is
+out), the series opens there; the top of the thread pane names each revision holding
+unread replies (`Thread · v2 · [v1 ●]`).
+
+**Applying.** `a` applies a series to a maintainer base or a b4 prep branch of any
+project, as `b4 am` would: authors kept, trailers collected, a Link added, no sign-off.
+The branch must not be checked out, and it moves only if every patch applies. When
+patches conflict, you can hand them to an agent: an apply session resolves them on a
+copy, and `A` in Branches accepts its result. `d` drops a series from a base again.
+
+### Workbench (F3)
+
+<!-- screenshot: the Workbench tab -->
+
+A workbench gathers what an agent session should see. Per project, it has a base and
+items applied on it in order: series (at a revision, or only some patches), local
+branches or commits, discussions (read, never applied), and files.
+
+The tab shows the workbenches and the selected one's sessions on the left; its
+contents in the middle (Items, Mailboxes, Trees, Artifacts); and the selected row on
+the right (for Items, a preview of what a launch prepares).
+
+| Key | |
+|---|---|
+| `n`, `r`, `x` | New, rename, or remove a workbench (or remove a project from it). |
+| `a` | Add a thread (by lore link or Message-ID), a file, a project, or session artifacts. |
+| `B`, `b` | Add a local branch; set a project's base. |
+| `m`, `shift+↑/↓` | Move an item to another project; reorder items. |
+| `v` | Take a series' newer revision. |
+| `u` | Apply items added since the space's trees were prepared. |
+| `F1` | Launch a session on the workbench. |
+| `o`, `Enter` | Open the live session; open a session (or a mailbox's thread) beside the app. |
+| `space`, `p`, `P` | On Trees: mark commits; pluck them onto a base, prep branch, or another session's tree; cut a prep branch from them. |
+| `f` | On a folded series (fixups squashed in): make the next revision's prep branch. |
+| `w` | Add commits, a branch, or a file artifact to a workbench. |
+| `/` | Search the contents. Groups open and close with `Enter`, `→`, and `←`. |
+
+`w` in the series list, a thread, or Branches adds to a workbench from there. Each
+workbench has a space, `var/workbenches/<id>/`, that its sessions work in: a live
+`context/` (the items, each thread's mail, files, and what changed), a repository per
+project sharing the project's objects, and one checkout per session tree. Mail or files
+added while a session runs reach it, with a note in its inbox.
+
+### Branches (F4)
+
+<!-- screenshot: the Branches tab with a prep branch selected -->
+
+Each project, in folding sections: Bases, Rebase and apply sessions, Prep, Session work
+(the branches agents left: pull-aheads, fixups, folded series, tests), Review, Other,
+and Checkouts. The middle pane lists the selected branch's commits; the right pane the
+selected commit; Details says the rest, and `*` marks a branch that needs attention.
+
+| Key | |
+|---|---|
+| `←`, `→` | Fold, unfold. |
+| `b` | Make a plain branch at a base, upstream branch, prep branch, or any ref. |
+| `r`, `a`, `A` | Rebase a base; on a conflict, rebase with an agent; accept its result. |
+| `space`, `p` | Mark commits; pluck them onto a base, prep branch, or branch. An agent's commits become yours with an `Assisted-by:` trailer. |
+| `n` | Make a b4 prep branch from the marked commits, with a drafted cover letter. |
+| `w` | Add the branch or commits to a workbench. |
+| `m` | Mail one commit as a patch (a fixup as a reply to the patch it fixes). |
+| `x` | Remove a branch, session work, or a session tree, after saying what goes. |
+
+On a prep branch:
+
+| Key | |
+|---|---|
+| `t` | Add recipients (`b4 prep --auto-to-cc`). |
+| `c` | Run the checks. |
+| `e`, `E` | Edit the cover letter; edit the selected commit's message. |
+| `s` | Add your Signed-off-by (you certify the DCO). |
+| `u` | Collect trailers from the list. |
+| `d` | Compare with the last revision sent. |
+| `o` | Preview exactly what would be sent (`b4 send -o`). |
+| `S` | Send. A summary comes first, and sending is refused while there are no recipients, the cover letter still says EDITME, a commit lacks your sign-off, or checks fail. Then b4 runs in the terminal and asks once more. |
+
+### Settings (F6)
+
+<!-- screenshot: Settings with the tracked branches -->
+
+**Signing.** Which key signs your mail, and setting one up in your global git
+configuration: an existing PGP key from gpg, a new patatt ed25519 key, or no signing.
+Without a key, mail goes out unsigned.
+
+**Upstream branches.** Each project's tracked branches, with what membership in each
+means:
+
+- **Authority**: `mainline` (where series land; one per project), `acceptance` (a
+  maintainer took the series, e.g. mm-stable or a for-next), or `preliminary` (queued
+  for testing, e.g. mm-unstable).
+- **View**: a sidebar view listing what the branch holds.
+- **Ends review**: a series fully in the branch leaves every queue.
+
+`Enter` on *Track a branch* picks a remote (or a new one by URL), a branch listed from
+it, then the settings above; the branch is fetched into the checkout and added to the
+configuration. `Enter` on a branch changes it; `d` untracks it, and its remote goes
+once nothing else uses it. Settings rewrites only that project's `refs = [...]` lines,
+and a branch that one of your bases builds on cannot be untracked.
+
+### Sessions (F1)
+
+`F1` launches an agent session (pi, in a tmux window beside the app). Every session
+runs in a workbench: on the Workbench tab it uses that one; on a series it makes one
+from the series, or offers the workbenches that already hold it.
+
+The launch dialog picks the goal and, for each project, how the agent gets it: a tree
+with the items applied, a tree at the base with the items to apply itself, the checkout
+to read, or the mail only. The prompt package holds each series' thread, Sashiko's
+reviews, and, only if you tick them, your unsent drafts on that thread.
+
+Sessions write their results under `out/` and list them in `out/artifacts.toml`:
+findings, reports, reproducers, results, and proposed changes. They appear under the
+workbench's Artifacts, and `R` can add them to a reply.
+
+| Key | In the drawer (`` ` ``) |
+|---|---|
+| `Enter` | Show the session beside the app. |
+| `s`, `x` | Stop it; end it. |
+| `o` | List its artifacts. |
+| `n` | Rename it. |
+
+Sessions have names (`mm-fix-foo-leak-v3`, a workbench's label), mapped from their
+timestamp ids in `var/sessions/names.toml`.
+
+## Mail
+
+**Refresh.** `F5` fetches, from lore:
+
+- each profile's lists for the last `[browse] window_days` (14): series (`[PATCH]` and
+  `[RFC]`), then the threads without `[PATCH]`, which are listed as discussions or
+  robot reports;
+- mail from or to you, as whole threads;
+- the series you posted in the last `[browse] own_days` (365), kept that long for My
+  Unmerged Submissions;
+- the threads you watch, whole. Threads a workbench names stay cached as long as it
+  does.
+
+It then fetches the remotes of your tracked branches and checks which series they
+hold. Threads whose first subject matches a `[browse] exclude` pattern are skipped;
+the default skips stable `-rc` review postings, which copy every backport's author.
+
+**Replies.** `r` drafts a reply in your editor (the one b4 runs: `core.editor`,
+`$EDITOR`): in a tmux pane beside the app when it runs in tmux, otherwise in the app's
+own terminal, the app suspended until you quit. When the editor exits, b4's preview
+of the reply opens, and it is sent from there with your identity and signing
+(`--email-dry-run` to test). Drafts stay in `var/drafts/` until sent or discarded.
+
+**Unread.** Responses uses b4's Seen flag. Replies that arrive with old threads of
+yours, already older than the browse window, count as read.
+
+## Configuration
+
+`state/workspace.toml` (or `workspace.toml` at the top) is the workspace's
+configuration. `var/workspace.toml` overrides it on one machine and is never exported
+unless asked: tables merge key by key, and `[[projects]]`, `[[profiles]]`, and
+`[[models]]` entries merge by `id`. Unknown keys are reported in the status line.
+
+```toml
+me = ["you@example.org"]
+
+[[projects]]
+id = "linux"
+path = "projects/linux"
+lists = ["linux-mm@kvack.org", "linux-cxl@vger.kernel.org"]
+refs = [
+  { label = "m", name = "mainline/master", authority = "mainline" },
+  { label = "n", name = "next/master", authority = "acceptance", ends_review = true },
+  { label = "s", name = "mm/mm-stable", authority = "acceptance", view = "MM-stable" },
+]
+bases = [{ branch = "you/base", upstream = "mm/mm-stable" }]
+
+[[profiles]]
+id = "mm"
+label = "MM"
+project = "linux"
+lists = ["linux-mm@kvack.org"]
+```
+
+| Key | Meaning |
+|---|---|
+| `me` | Your addresses: your own series and the replies to you. |
+| `[[projects]]` `id`, `label`, `path`, `lists` | A project, its checkout, and the lists its series are sent to. |
+| `refs` | Tracked branches: `label` (one character), `name`, `authority`, and optional `view` and `ends_review` (default: mainline only). Settings edits these. |
+| `bases` | Maintainer bases: `branch` on top of `upstream`. |
+| `subject_tags` | Subject tags that claim a series for this project on shared lists (`["ndctl", "daxctl"]`). |
+| `maintainers`, `get_maintainer` | The MAINTAINERS file and the command that answers ownership (default: `scripts/get_maintainer.pl`). |
+| `base_refs`, `track_branches` | Private, in `var/workspace.toml`: read-only bases (`["origin/v*-x"]`), and remote branches kept as local branches (`["origin/scratch/<you>/*"]`). |
+| `[[profiles]]` `id`, `label`, `project`, `lists`, `paths`, `enabled` | Lists you follow. A profile labelled like its project stands in for the project's view. |
+| `[browse]` `window_days`, `own_days`, `exclude` | How far back list mail (14) and your own series (365) are kept; subject patterns to skip. |
+| `[refs]` `fetch` | Fetch tracked branches' remotes on `F5` (default true). |
+| `[drafts]` `editor`, `tmux_width` | `auto` (tmux pane, else this terminal), `terminal`, or `app` (the in-app pane). |
+| `[sashiko]` `senders`, `hide_clean` | Sashiko's addresses; leave its replies that found nothing out of threads. |
+| `[layout]` `three_pane`, `single_pane`, `preview_width` | Terminal widths for the layouts (160, 100) and the expanded preview (100). |
+| `[sessions]` | Session limits (`max_live`, `max_builds`), `pi` and `pi_args`, `pane_width`, the agent's commit identity, sandbox priority, `assisted_by`. |
+| `[[models]]` | Model presets for the launch dialog. |
+| `[[guidance]]` `id`, `path` | Use another checkout of a guidance source (e.g. review-prompts). |
+
+**Moving between machines.** `b4-maintainer state export FILE` writes a tar.gz of the
+configuration, workbenches, tracked series, flags, and how each checkout was cloned,
+leaving private data out unless `--private`. `b4-maintainer state import FILE` adds
+what is missing on the other machine; then `b4-maintainer setup` clones any missing
+checkout.
+
+**Bases from the command line.** `b4-maintainer bases` shows how far behind each base
+is and which of its commits have landed; `--rebase BRANCH` replays the rest onto the
+upstream branch (never in a checkout; a conflict changes nothing).
 
 ## Development
 
-    ./setup.sh        # with DEV_TOOLS=yes in setup.conf
-    .venv/bin/python -m pytest -n auto        # in parallel; timing tests skipped
-    .venv/bin/python -m pytest -m serial      # the timing tests, alone
-    ./b4-maintainer --demo .local/demo
+    ./setup.sh                                 # with DEV_TOOLS=yes in setup.conf
+    .venv/bin/python -m pytest -n auto         # in parallel; timing tests skipped
+    .venv/bin/python -m pytest -m serial       # the timing tests, alone
+    ./b4-maintainer --showcase /tmp/b4m-showcase
 
-- Tabs across the top: `F2` LKML (the series list and threads), `F3` Workbench, `F4`
-  Branches, `F6` Settings; each keeps its place when you switch away and back. `F5
-  Refresh` sits among them: from any tab it fetches and reloads (its progress shows on
-  that tab, and the open tab rereads).
-- Settings shows which key patatt signs mail with for every project (and any checkout's
-  own), and sets one up in your global git configuration after a confirmation: an
-  existing PGP key from gpg (`patatt.signingkey = openpgp:<fingerprint>`), a new patatt
-  ed25519 key (`patatt genkey`; publish its public key), or no signing. Without a key,
-  mail goes unsigned instead of failing; sending a patch from F4 ends with a choice of
-  signed (first when a key is set up) or unsigned. The footer shows each
-  tab's common keys; `?` (Help, at the end of the tab bar) lists all of them.
-- Settings also lists each project's tracked upstream branches (label, authority, view,
-  ends review) and manages them. Enter on "Track a branch" picks a remote (or a new one by
-  URL), a branch listed from it, then its label, authority, view, and whether it ends
-  review; on confirming, the branch is fetched into the checkout (no tags, its
-  partial-clone filter) and added to `workspace.toml`. Enter on a branch changes one of
-  those; `d` untracks it, and its remote goes once nothing else uses it. Only the
-  project's `refs = [...]` lines are rewritten (or `var/workspace.toml`'s when it sets
-  them); a branch a maintainer base builds on stays.
-- The LKML sidebar heads the list views (Mailing lists) apart from the branch views
-  (Upstream branches). A summary's Tree evidence lists only the branches holding the
-  series.
-- `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
-  live: `F5` fetches profile lists and your own mail from lore (in a thread, the thread reloads
-  in place), `t` tracks the selected series
-  through b4 (To Review), `x` hides it, `M` marks it read, `/` filters by regex, `p` shrinks the preview beside the
-  list (its cover letter or lone patch, as wide as the list leaves room for) to the summary and back, `r` drafts a
-  reply beside the thread (in the list: to the cover letter), `R` does too after picking
-  session output to add at its end (any session's: the series' own first, then its
-  workbenches', then the rest; `/` filters) (their commits as inline
-  patches for `git am --scissors`, their results and reproducers as text), and `ctrl+s`
-  sends it through b4
-  (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
-  Drafts are kept in `var/drafts/` (`<hash>.eml`, the text; `<hash>.json`, the message it
-  answers) until sent or discarded.
-- Replies are written in your editor (the one b4 runs: `core.editor`, `$EDITOR`): inside
-  tmux in a pane beside the app; outside it in the app's own terminal, the app suspended
-  until the editor exits. `[drafts] editor` is `auto` (the default), `terminal` (never a
-  pane), or `app` (the in-app draft pane).
-- F1 on a series offers, in its prompt package, your unsent reply drafts on that series'
-  thread (any revision) for the session to review: private, so never ticked unless you
-  tick them; then a copy at launch goes to its `context/drafts.md`, marked not sent and
-  never to be quoted. Drafts on other threads never go.
-- The series list is newest posting first; `l` orders it by latest activity (its newest
-  message, a reply or a posting, from the cached mail) and back, keeping the selected
-  series, in every view and search; a Last column then says how long ago (5m, 3h, 12d).
-- A project ref with a `view` (e.g. `{ label = "s", name = "mm/mm-stable", authority =
-  "acceptance", view = "MM-stable" }`) lists the series that ref holds, each in the first
-  such view in config order, out of its profile's view. A series fully in a ref with
-  `ends_review` (e.g. linux-next) leaves the review queues but stays in its branch view,
-  since linux-next carries the staging branches; one merged into mainline leaves both.
-- Each series is listed at its latest revision; the older ones in the cache stay
-  readable: `V` (in the list or a thread, when there are any) picks the revision to read,
-  newest first, and the status line says when it is not the latest (it stays open across
-  `F5`). A series whose unread replies to you are all on an older revision (a reply to
-  your review of v1 after v2 is out) opens on that revision, at the first of them; the
-  thread pane's top then names the latest revision and each older one holding unread
-  replies, with a ● while it does (`Thread · v2 · [v1 ●]`, the one read in brackets),
-  and `V` marks them too. `w` while reading one adds that revision to a workbench, so two revisions of a
-  series can sit side by side to compare: a workbench session reads each revision's own
-  mail (no tree, or a tree at its base with them for the agent); one tree never holds
-  both applied, so a launch that asks for that is refused.
-- `a` in the series list or a thread applies that series to a maintainer base or a b4 prep
-  branch of any project (for a series routed to the wrong project, or none): pick the
-  project and branch (when there are several), then the patches (all ticked to start). b4 applies them as `b4 am` would: authors kept, trailers given on the list
-  (and, online, on other postings of the same patches) and a Link added (`b4.linkmask`),
-  you as committer, no sign-off added. The branch must not be checked out; it moves only
-  if every patch applies. Your FETCH_HEAD is left as it was; b4 records the series for
-  `b4 ty`. When the patches conflict you choose: hand them to an agent (an apply session
-  applies b4's mbox on a copy of the branch and resolves the conflicts; `A` on its tree in
-  Branches (`F4`) accepts the result, only while the branch has not moved), or leave the branch as
-  it is.
-- Workbenches are recipes for agent sessions over several projects (e.g. a Linux tree and an
-  ndctl tree, patched together): per project, a base and the series and local branches
-  applied on it in order, one file each in `state/workbenches/`. `w` in the
-  series list or a thread adds the series (or a discussion, which sessions read but never
-  apply) to one (or a new one); on a patch in a thread it asks: the whole series, or only
-  that patch. `w` in Branches (`F4`) adds the selected branch, or only the selected commit
-  (it asks), or only the marked commits, each alone; `a` on the Workbench tab adds a thread by lore link or
-  Message-ID (fetched into the cache, kept there while a workbench names it) or a file
-  from disk (applied if b4 finds patches in it, else read), under the selected project or
-  the one picked (the thread's own suggested first); `m` moves an item to another project (a project stays until `x` removes it); `a` also adds a
-  project, or artifacts from any session (any workbench's: a commit brings its tree
-  branch, a file joins as a file); `F3` lists them with a
-  preview of what a launch prepares: `n` new (named, with the projects ticked, each at
-  its first maintainer base: a project with no items still gets a tree at its base), `r` rename, `x` remove (a project, or a workbench with its sessions: live ones ended, their
-  trees removed, their records and output deleted, after a confirmation listing what
-  each tree would lose; a tree with changes asks again), `b` a project's base, `B` add a local branch (the
-  project's, or a session tree's), shift+up/down move an item, `v` takes a newer revision,
-  and `F1` launches a session over it, choosing for each project (in place of Mode): a
-  tree with its items applied; a tree at its base with its items for the agent (in its
-  context and as one mbox in the tree, to use as the task directs); or no tree (its
-  mail only). Every series' thread is in the context either way; trees sit side by side
-  in the workbench's space (`var/workbenches/<id>/sessions/<session>/`), where the agent
-  starts; no tree anywhere is a lightweight session (series that conflict are fine). The tab
-  shows, left, the workbenches and the selected one's sessions; middle, its Contents in
-  sections: Items (each project and its items, edited as above), Mailboxes (each
-  series), Trees (each session tree, then each of its branches by class and name with
-  its commits, open to start and collapsible as below), Artifacts (grouped by
-  kind: prompt, finding, analysis, diff, results, reproducer, file; a file left out of
-  a session's manifest takes its kind from its folder under `out/` or its extension;
-  each group collapsed to start, Enter or → opens it, ← closes it; a row names its
-  session only when several sessions left artifacts); right, the selected row's text
-  (for Items, the launch preview). `/` searches Contents by regex as you type (matches
-  in closed groups show with their group); Enter keeps it, Escape clears it. On Trees, space marks commits, `p` plucks them (or the
-  selected one) onto the project's base, a prep branch, or another session tree, `P` cuts
-  a prep branch from them, `w` adds them (each alone, or the selected one's whole
-  branch) or a file artifact to a workbench or a new one, to start sessions from, and
-  `x` on a tree removes it after saying what it would lose. A session that leaves fixups also leaves the series with
-  them folded in (`b4m/folded/<slug>`: from the base, the pull-aheads it needs first,
-  each fixup squashed into its patch); `f` on it (its branch's line, or any of its
-  commits) makes the next revision's prep branch:
-  pick which other pull-aheads lead (those it conflicts without), then the series' own
-  prep branch has its commits replaced (b4 keeps its cover letter and tracking), or a
-  new one is made from the posted thread (`b4 prep -F --cover-only`: its cover letter
-  and the next revision, none of the posted patches, which may no longer apply). F4 shows it with
-  its cover letter, checks, sign-off, and send. Enter on a Mailboxes row opens that thread in the tab (its
-  tree and the selected message; Escape closes it), where `r` replies to the selected
-  message and `R` adds session output (with the tmux editor the draft opens beside the
-  app and `ctrl+s` sends from the tab; otherwise the reply opens on LKML). Enter on a
-  session (or on it in the drawer) puts it
-  beside the app, `o` opens the workbench's live session from any pane, and one launched
-  from the tab joins beside at once. The column follows the tab: back on LKML the
-  workbench session returns to its own window.
-- Each workbench has a space, `var/workbenches/<id>/`, that its sessions work in. Its
-  `context/` follows the recipe as it is edited: `items.md` (each project, its base, and
-  its items, and where each is), `mail/` (each series' thread at the revision named, each
-  discussion's), `files/`, and `changes.md`. Sessions filed in the workbench read it live,
-  so a mailbox or file added after a session started reaches it, and a note in the
-  session's inbox says what changed. Each project has one repository in the space
-  (`repos/<project>.git`, sharing the project's objects); a session's tree is its own
-  checkout of it (`sessions/<id>/<project>`, on `b4m/session/<id>`), started from the
-  space's branch `b4m/bench/<id>`, which the first session that needs it prepares (base
-  and items applied). Items added to the workbench after that are marked "not in the
-  trees yet" (in Contents and in the space's `items.md`); `u` on the project applies them
-  to the space's branch, or, after an item was removed or moved, rebuilds it after a
-  confirmation. Running sessions keep their checkouts and are told; later ones start from
-  it. Every branch an agent makes is the space's at once: listed under
-  the checkout that made it, and under the space itself (in the Workbench tab's Trees
-  and in Branches) once that checkout is removed, so pluck, fold, and prep reach it
-  either way. Removing a session's checkout loses only uncommitted changes. Removing the
-  workbench removes its space, after listing the branches agents left there.
-- Every session runs in a workbench: it is started in one (F1 on the Workbench tab), or
-  starts one to launch into. F1 on a series no workbench holds makes one from it (named
-  after it, the series as its item, b4 choosing the base; saved when the session
-  launches, so a cancelled dialog leaves none); when workbenches hold it, a pick offers a
-  new one (first) or one of those. Either way it is the workbench's launch dialog, and
-  the session stays the series' own (beside its thread, first in its lists). Sessions
-  from before (or whose workbench is gone) are
-  listed under Unfiled sessions.
-- Sessions have names, shown wherever they appear (the drawer, the Workbench tab,
-  Branches, their tmux windows) in place of their ids. On disk a session's directory
-  (`var/sessions/<id>/`) and its trees (`var/workbenches/<workbench>/sessions/<id>/`, or
-  `var/worktrees/<id>/` for sessions from before spaces) keep the timestamp id;
-  `var/sessions/names.toml` maps each id to its name. A new session is named after what
-  it is pinned to (`mm-fix-foo-leak-v3`, a workbench's label, `rebase-…`), with `-2`
-  and so on when taken; sessions from before get theirs the first time they are listed.
-  `n` in the drawer, or `r` on a session in the Workbench tab, renames it (one line, at
-  most 40 characters, no other session's name).
-- A workbench launch offers every configured project in place of Mode: one with items
-  as a tree with them applied, a tree at its base with them for the agent, its checkout
-  to read, or its mail only (launched from a series, its own project follows the goal's
-  suggestion until you pick); any other as a tree at its base, its checkout to read, or
-  left out (e.g. a userland library tested against the kernel). Any tree makes a
-  worktree session (trees side by side); otherwise it reads the checkouts chosen, and its
-  prompt names them. A project you add is saved in the workbench (at its first maintainer
-  base) and, launching from a series, offered chosen to read the next time. Its prompt
-  package has each series' thread, Sashiko's reviews, and (unticked) your drafts.
-- Every session (lightweight too) writes its results under `out/` and records them in
-  `out/artifacts.toml` (the b4m-artifacts skill): findings, reports, comparisons,
-  reproducers, results, and, without a tree, proposed changes as `diff` files.
-  A tree whose items do not apply offers to hand that tree to the agent (it starts at
-  the base with every item as one mbox to `git am`), or to launch nothing.
-- `d` drops that series from a maintainer base again: its commits there (found by their
-  Link, else subject) are taken out and the later commits replayed onto what remains,
-  after a confirmation; if one does not replay without them, nothing changes. Your own
-  branches named in `refs` (e.g. a base with a view) are rescanned on every reload, so
-  `a` and `d` show in their views at once; fetched refs wait for `F5`.
-- `state/workspace.toml` is the workspace configuration. State moves between machines only
-  by hand: `b4-maintainer state export FILE` writes a tar.gz (configuration, workbenches,
-  client state, tracked series, flags, how each checkout was cloned), leaving private data
-  out unless `--private` (`var/workspace.toml`, projects only it defines, the remotes its
-  `base_refs` and `track_branches` name, workbenches and checkouts on private bases or
-  tracked branches); `state import FILE` on the other machine adds what is missing and
-  keeps what is there, then `b4-maintainer setup` clones any checkout still missing.
-- `var/workspace.toml` (optional, per machine, never exported by default) overrides it,
-  e.g. `[sessions] max_builds` or a checkout's `path`: tables merge key by key,
-  `[[projects]]`, `[[profiles]]`, and `[[models]]` entries by `id` (a new `id` is added);
-  any other value it sets replaces the shared one. `project add` writes the shared file.
-  Private settings go here: a project's `base_refs` (ref globs, e.g.
-  `["origin/v*-x"]`: each match is a read-only base, listed on F4 and offered as a
-  start for trees, prep branches, and new branches) and `track_branches` (remote branch
-  globs, e.g. `["origin/scratch/<you>/*"]`: `F5` fetches their remote and keeps a local
-  branch for each, fast-forwarded when not checked out, listed under Other; nothing is
-  pushed).
-- `b4-maintainer DIR` opens a fixture workspace: `workspace.json`, `mail/*.mbx`, `state.json`.
-- `b4-maintainer project add ID --list LIST --ref LABEL:REF:AUTHORITY` registers the
-  existing checkout at `projects/ID` in `workspace.toml`; b4 enrolls it with state in `var/`.
-- Threads leave out Sashiko replies that found nothing (its review of the patch has no
-  findings, or its mail says it found no issues), unless someone answered them;
-  `[sashiko] hide_clean = false` shows them.
-- Series go to the project whose `lists` they were sent to. On lists projects share, a
-  project's `subject_tags` (e.g. `["ndctl", "daxctl"]` for `[ndctl PATCH]`) claim the
-  series whose subject prefix carries one; untagged, the project whose checkout holds
-  the directories its patches touch takes it (each project's directories are read once
-  per HEAD tree, kept in `var/layouts/`), else the project without tags. A tracked
-  series stays in the project b4 tracks it in: `$` then `t` moves it. Only
-  `[[profiles]]` lists are fetched by `F5`; a profile labelled like its project stands in
-  for that project's own sidebar view.
-- `F5` fetches each profile list's threads without `[PATCH]` or `[RFC]` too: they are
-  listed in Discussions (right under All), out of the review queues. Robots' reports
-  have their own Robots view below it: syzbot's (a `[syzbot]` subject tag, or syzbot's
-  sender) and the kernel test robot's (`lkp@intel.com`, or that sender name).
-- `F5` leaves out threads whose first message's subject a `[browse] exclude` pattern
-  finds, and removes cached ones (unless watched or on a workbench). The default drops
-  stable `-rc` review postings (`6.12.117-rc1 review`): each backport copies its author,
-  which would fetch the whole thread. `exclude = []` keeps everything.
-- List mail is kept for `[browse] window_days` (14). Series you posted (patches and
-  cover letters, not replies) reach back `[browse] own_days` (365; 0 for the window
-  only): `F5` fetches each one's whole thread and keeps it that long. Mainline is read
-  as far back to tell which have landed. Quiet since before the window, they are
-  listed in My Unmerged Submissions and the ref views, not the review queues, and skip
-  the MAINTAINERS and Sashiko checks. Replies that arrived with them already older than
-  the window are not Responses; a new reply brings the series back to the queues.
-- A ref's `authority` is `mainline`, `acceptance`, or `preliminary` (highest first); an
-  unknown one is reported, and a reload with it keeps the current view.
-- When b4 cannot apply the series for an F1 worktree session, you choose: hand it to the
-  agent (the tree starts at that base without the series, with b4's mbox in its `.git`;
-  the agent applies it with `git am -3`, resolves the conflicts, records how, then does
-  the task), or launch nothing.
-- F1's Command field puts its text (e.g. `/goal`) at the very start of the session's
-  initial prompt, before the composed task.
-- Guidance: agent sessions get the review-prompts kernel skill (review, bug analysis,
-  debugging, inline replies) and kernel-style (code and changelog style) as pi skills,
-  from the pinned `deps/` checkouts, picked by the F1 choices (adjustable under Advanced);
-  `[[guidance]] id = "review-prompts", path = "~/git/review-prompts"` in `workspace.toml`
-  uses another checkout. Each session records the commits it was given.
-- Maintainer bases: a project's `bases = [{ branch = "BRANCH", upstream = "REMOTE/BRANCH" }]`
-  in `workspace.toml` names integration branches on top of upstream branches.
-  `b4-maintainer bases` shows how far behind each is and which of its commits have landed
-  upstream; `--rebase BRANCH` replays the rest onto the upstream (never in a checkout; a
-  conflict changes nothing). In the app, `F4` in a thread shows what its sessions
-  produced (their initial prompts, commits, results, reproducers) in place of the content
-  (`F4` or Escape returns), and elsewhere opens the Branches tab:
-  each project in folding sections, starting folded (← folds, → unfolds, Enter
-  toggles; kept across reloads): Bases, Rebase and apply sessions, Prep, Session work (every session
-  tree's agent branches: pull-ahead, fixup, folded, tests), Review, Other (local
-  branches with work not on any remote, and those made with `b`), and Checkouts. Labels
-  stay short; the Details pane under the list says the rest (upstream, how far behind,
-  where it is checked out, what was sent, uncommitted changes, problems), and `*` marks
-  a branch whose details need attention. The middle pane lists the selected branch's
-  commits, the right one the selected commit, and the footer the keys for its kind. `b` makes a plain branch at a base, an
-  upstream, a prep branch, or any ref, to pluck onto; `r` rebases
-  a base; when that stops at a conflict, `a` launches a rebase session on a copy, and `A`
-  on its tree (or an apply session's) moves the base to its result. Space marks commits and `p` plucks them onto
-  a base, a prep branch, or a branch made with `b` (one checked out is fast-forwarded in
-  its checkout after a confirmation, `git merge --ff-only`): an agent's become yours with
-  `Assisted-by:` (`[sessions] assisted_by`, default the session's model); others keep
-  their authors. `w` adds the branch, or its marked or selected commits, to a workbench.
-  `n` makes a b4
-  prep branch from the marked commits (name, fork point, cover drafted from the agents'
-  summaries) in a sparse worktree under `var/branches/`; on it, `t` adds recipients,
-  `c` checks, `e` edits the cover letter, `E` edits the selected commit's message (the
-  commits after it made anew, the same changes), `s` adds your Signed-off-by (you certify the
-  DCO), `o` previews exactly what would be sent (`b4 send -o`), `u` collects trailers
-  from the list, `d` compares with the last sent revision, and `S` sends it: first one
-  summary (revision, To/Cc, checks run then, commits without your Signed-off-by, the
-  cover letter), refused until fixed when it has no recipients, an EDITME cover letter,
-  a commit without your Signed-off-by, or failing checks; then send signed (first when a
-  key is set up), send unsigned (`--no-sign`), or not now. `b4 send` then runs in the
-  terminal, where b4 shows its own summary and asks before anything goes out
-  (`--email-dry-run` and `--no-sign` pass through); once sent, the series is tracked in
-  b4 when lore has it (on the next `F5`). A tagged project's prep branch carries its tag
-  before PATCH (`[ndctl PATCH v2 1/3]`), and one b4 cannot address (no get_maintainer)
-  gets its first list as To on the cover letter. All by running b4. `m` on a commit
-  mails it as one patch through b4 (as replies go: your identity, signing,
-  `--email-dry-run`): a fixup as a reply to the series patch it fixes (its manifest's
-  `fixes`, else the cover letter; To its author, Cc the rest), a pull-ahead as its own
-  thread addressed as b4 addresses a new patch (`send-auto-to/cc-cmd`, else
-  get_maintainer, plus `send-series-to/cc`; with none of those, the project's first
-  list) and tagged with the project's first subject tag (`[ndctl PATCH]`); any other
-  commit asks which. A message with no recipients is not sent. An agent's commit goes as yours, with
-  `Assisted-by:` and your `Signed-off-by:`. The whole `.eml` opens in your editor first,
-  and it goes after a last look at Subject, To, and Cc, signed or unsigned as you pick. `x` removes a prep
-  branch (`b4 prep --cleanup`, which archives it), another local branch, session work
-  (an agent branch, not while its session is live), a tracked branch (back on refresh
-  only once its remote moves), or a session tree,
-  after saying what goes; rebasing a base moves the prep branches cut from it. `p` onto
-  another session's tree copies commits there (same branch names, authors kept, a note in
-  that session's `context/inbox.md`): a fix back to the session that found the bug, or
-  work onto the tree of a series' next revision. To start a session from another's
-  output, `w` its commits, branches, or files onto a workbench and launch there.
-- Mail is parsed offline through pinned b4; keep real mail under ignored `.local/`.
+- [Contributor instructions](AGENTS.md).
+- Pinned dependencies, as submodules under `deps/`: b4, liblore, review-prompts,
+  kernel-style, virtme-ng, kres, semcode, sashiko. See [deps/README.md](deps/README.md).
+  Changes belong in the owning dependency where they can; the app's adapters stay
+  focused on integration.
+- Mail is parsed offline through the pinned b4. Keep real mail for testing under the
+  ignored `.local/`.
 - A hang: `kill -USR1 <pid>` writes every thread's stack to
   `/tmp/b4-maintainer-<pid>.stacks` without stopping the app.
