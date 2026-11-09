@@ -32,7 +32,7 @@ def rows(app):
     views = app._views
     return [
         (
-            Text.from_markup(str(views.get_option_at_index(i).prompt)).plain.split()[0],
+            Text.from_markup(str(views.get_option_at_index(i).prompt)).plain.strip('▌ ').split()[0],
             views.get_option_at_index(i).disabled,
         )
         for i in range(views.option_count)
@@ -44,9 +44,9 @@ async def test_list_views_and_branch_views_have_their_own_headings(tmp_path):
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         shown = rows(app)
-        assert shown[0] == ('Mailing', True)
+        assert shown[0] == ('MAILING', True)
         assert shown[1][0] == 'All'
-        heading = shown.index(('Upstream', True))
+        heading = shown.index(('UPSTREAM', True))
         assert [name for name, _ in shown[heading + 1 :]] == ['Queue']
         assert all(not disabled for _, disabled in shown[1:heading])
         assert [v.id for v in app.index.views][-1] == 'ref:linux:maint/queue'
@@ -74,7 +74,7 @@ async def test_counts_follow_a_filter_with_headings_in_place(tmp_path):
         await pilot.press('slash', *'zzzz-no-match', 'enter')
         await settle(pilot)
         shown = rows(app)
-        assert shown[0] == ('Mailing', True) and ('Upstream', True) in shown
+        assert shown[0] == ('MAILING', True) and ('UPSTREAM', True) in shown
         prompts = [
             Text.from_markup(str(app._views.get_option_at_index(i).prompt)).plain
             for i in range(app._views.option_count)

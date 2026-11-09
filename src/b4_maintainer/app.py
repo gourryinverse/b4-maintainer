@@ -364,6 +364,11 @@ class WorktreeList(DrawerList):
     ]
 
 
+def _heading(text: str) -> str:
+    """A sidebar section heading: an accent bar and capitals, apart from the views."""
+    return f'[b $accent]▌ {escape(text.upper())}[/]'
+
+
 @dataclass
 class Draft:
     """A reply being written beside the thread, to one message."""
@@ -766,15 +771,14 @@ class MaintainerApp(App[None]):
         members = self._view_members.get(view_id, frozenset())
         return len(members) if self._matches is None else len(members & self._matches)
 
-    def _view_options(self, index: ViewIndex) -> list[Option]:
-        """The sidebar: list views under one heading, upstream branch views under another
-        (headings are disabled options, so the cursor passes over them)."""
-        options = [Option('[b $text-muted]Mailing lists[/]', disabled=True)]
+    def _view_options(self, index: ViewIndex) -> list[Optional[Option]]:
+        """The sidebar: list views under one heading, upstream branch views under another,
+        a rule between them (headings are disabled options: the cursor passes over them)."""
+        options: list[Optional[Option]] = [Option(_heading('Mailing lists'), disabled=True)]
         for view in index.views:
-            if view.kind == 'ref' and not any(o.id == 'upstream' for o in options):
-                options.append(
-                    Option('[b $text-muted]Upstream branches[/]', id='upstream', disabled=True)
-                )
+            if view.kind == 'ref' and not any(o and o.id == 'upstream' for o in options):
+                options.append(None)  # A rule between the sections.
+                options.append(Option(_heading('Upstream branches'), id='upstream', disabled=True))
             options.append(Option(self._view_prompt(view.id, view.label), id=view.id))
         return options
 
