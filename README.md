@@ -1,27 +1,60 @@
 # b4-maintainer
 
-A terminal workspace for mailing-list maintainers, built on [b4](https://b4.docs.kernel.org/).
-It follows the lists you care about, tracks series through review and into upstream
-branches, drafts and sends replies through b4, and runs agent sessions over series and
-branches when you ask for them.
+Your mailing-list inbox as a maintainer, in the terminal. Built on
+[b4](https://b4.docs.kernel.org/), it shows what needs you, where every series is
+upstream, and lets you reply, or hand a series to an AI agent, without leaving it.
 
-- **Browse** the lists you follow: series, discussions, and robot reports, with your
-  own work and the replies to you kept apart.
-- **Track** where each series is: which upstream branches hold it, fully or in part,
-  and when it has landed.
-- **Reply and send** through b4, in your own editor, with your identity and signing.
-- **Prepare** your own series as b4 prep branches: cover letter, checks, sign-off, send.
-- **Work with agents** on workbenches: series, branches, and files gathered for a
-  session, whose commits, findings, and results come back to you.
+## How it works
 
-Agents start only when you launch them. Status: early, in daily use. Python 3.11+,
-[Textual](https://textual.textualize.io/), GPL-2.0-or-later.
+**1. See what needs you.** The series on the lists you follow, sorted into what is
+yours to act on: replies to your mail, files you maintain, series you track, your own
+unmerged work. Upstream branches (mm-stable, linux-next, …) get views of their own.
 
-![The LKML tab: views on the left, the series list, and the selected series' preview](docs/screenshots/lkml.png)
+![The series list, with views of what needs you and of each upstream branch](docs/screenshots/lkml.png)
+
+**2. Read the series.** Threads read like a mail client, with the review state at a
+glance: trailers, unread replies, and which upstream branches already carry it.
+
+![Reading a thread](docs/screenshots/series_view.png)
+
+**3. Keep up with the conversation.** Every revision stays readable, and a reply to
+your review of v3 is not lost when v4 is out: the series opens where it is.
+
+![Picking a revision; the newest holds an unread reply](docs/screenshots/version_selection.png)
+
+**4. Reply in your own editor.** The draft opens beside the thread; b4 sends it with
+your identity and signing.
+
+![A reply drafted in vim beside the thread](docs/screenshots/agent_inline_email_workbench.png)
+
+**5. Hand it to an agent, when you want one.** A review, a bug hunt, a reproducer, a
+retest: pick the goal and what the agent gets. It works beside you, on its own copy
+of the trees, reading the same threads. Agents start only when you launch them.
+
+![Launching a session](docs/screenshots/session_launch.png)
+
+![An agent working beside the app](docs/screenshots/agent_inline1.png)
+
+**6. Collect what comes back.** Workbenches gather series, branches, and files for
+agents, and keep what they leave: findings, reports, diffs, and test results, ready
+for your reply or your next revision.
+
+![A workbench, its sessions, and their artifacts](docs/screenshots/workbench.png)
+
+## Try it
+
+    ./setup.sh
+    ./b4-maintainer --showcase /tmp/b4m-showcase
+
+The showcase is a synthetic workspace with everything filled in: made-up people and
+lists, so nothing in it is real and nothing is ever sent. Delete the directory to start
+again. (`--demo DIR` opens the smaller workspace the tests use.)
+
+Status: early, in daily use. Python 3.11+, [Textual](https://textual.textualize.io/),
+GPL-2.0-or-later.
 
 ## Contents
 
-- [Trying it out](#trying-it-out)
 - [Setup](#setup)
 - [Concepts](#concepts)
 - [The tabs](#the-tabs): [LKML](#lkml-f2), [Workbench](#workbench-f3),
@@ -29,22 +62,6 @@ Agents start only when you launch them. Status: early, in daily use. Python 3.11
 - [Mail](#mail)
 - [Configuration](#configuration)
 - [Development](#development)
-
-## Trying it out
-
-The showcase is a synthetic workspace with everything filled in: series on two lists,
-upstream branches holding some of them, discussions, robot reports, tracked series, a
-reply draft, a prep branch, and a workbench with two sessions.
-
-    ./setup.sh
-    ./b4-maintainer --showcase /tmp/b4m-showcase
-
-The first run writes the workspace into the directory; later runs reopen it. Delete
-the directory to start again. Everything in it is made up (example.org people and
-lists): `F5` finds nothing new on lore, and replies are only ever dry runs. Use it to
-learn the keys, or to take screenshots.
-
-`./b4-maintainer --demo DIR` opens a smaller fixture workspace used by the tests.
 
 ## Setup
 
@@ -131,8 +148,6 @@ The pane on the right previews the selected series: its cover letter (or its onl
 patch), trailers, Sashiko's review, and *Tree evidence*, the tracked branches holding
 it. `p` shrinks the preview to the summary, and back.
 
-![The preview: a series' summary, tree evidence, patches, and cover letter](docs/screenshots/preview_pane.png)
-
 | Key | In the series list |
 |---|---|
 | `Enter` | Read the thread. |
@@ -153,15 +168,11 @@ the right. `[` and `]` move between messages, `n` jumps to the next comment, `!`
 next Sashiko finding, `-` and `=` fold replies, and `z` folds long quotes. `r` replies
 to the selected message. Escape goes back.
 
-![Reading a thread: the messages on the left, the cover letter on the right](docs/screenshots/series_view.png)
-
 **Revisions.** Each series is listed at its newest revision. `V` picks an older one to
 read, and the status line says when you are not on the newest. When the unread
 replies to you are on an older revision (an answer to your review of v1 after v2 is
 out), the series opens there; the top of the thread pane names each revision holding
 unread replies (`Thread · v2 · [v1 ●]`).
-
-![Picking a revision to read: the newest holds an unread reply to you](docs/screenshots/version_selection.png)
 
 **Applying.** `a` applies a series to a maintainer base or a b4 prep branch of any
 project, as `b4 am` would: authors kept, trailers collected, a Link added, no sign-off.
@@ -170,8 +181,6 @@ patches conflict, you can hand them to an agent: an apply session resolves them 
 copy, and `A` in Branches accepts its result. `d` drops a series from a base again.
 
 ### Workbench (F3)
-
-![The Workbench tab: a workbench's items, mailboxes, and the artifacts its sessions left](docs/screenshots/workbench.png)
 
 A workbench gathers what an agent session should see. Per project, it has a base and
 items applied on it in order: series (at a revision, or only some patches), local
@@ -202,11 +211,7 @@ workbench has a space, `var/workbenches/<id>/`, that its sessions work in: a liv
 project sharing the project's objects, and one checkout per session tree. Mail or files
 added while a session runs reach it, with a note in its inbox.
 
-![A workbench session beside the Workbench tab](docs/screenshots/agent_inline2.png)
-
 ### Branches (F4)
-
-<!-- screenshot: the Branches tab with a prep branch selected -->
 
 Each project, in folding sections: Bases, Rebase and apply sessions, Prep, Session work
 (the branches agents left: pull-aheads, fixups, folded series, tests), Review, Other,
@@ -239,8 +244,6 @@ On a prep branch:
 
 ### Settings (F6)
 
-<!-- screenshot: Settings with the tracked branches -->
-
 **Signing.** Which key signs your mail, and setting one up in your global git
 configuration: an existing PGP key from gpg, a new patatt ed25519 key, or no signing.
 Without a key, mail goes out unsigned.
@@ -271,10 +274,6 @@ with the items applied, a tree at the base with the items to apply itself, the c
 to read, or the mail only. The prompt package holds each series' thread, Sashiko's
 reviews, and, only if you tick them, your unsent drafts on that thread.
 
-![The launch dialog: goal, artifacts, prompt package, and a tree choice per project](docs/screenshots/session_launch.png)
-
-![A session working beside the app, reading the workbench it was launched in](docs/screenshots/agent_inline1.png)
-
 Sessions write their results under `out/` and list them in `out/artifacts.toml`:
 findings, reports, reproducers, results, and proposed changes. They appear under the
 workbench's Artifacts, and `R` can add them to a reply.
@@ -285,8 +284,6 @@ workbench's Artifacts, and `R` can add them to a reply.
 | `s`, `x` | Stop it; end it. |
 | `o` | List its artifacts. |
 | `n` | Rename it. |
-
-![The session drawer, with a session working beside the app](docs/screenshots/agent_drawer.png)
 
 Sessions have names (`mm-fix-foo-leak-v3`, a workbench's label), mapped from their
 timestamp ids in `var/sessions/names.toml`.
@@ -313,10 +310,6 @@ the default skips stable `-rc` review postings, which copy every backport's auth
 own terminal, the app suspended until you quit. When the editor exits, b4's preview
 of the reply opens, and it is sent from there with your identity and signing
 (`--email-dry-run` to test). Drafts stay in `var/drafts/` until sent or discarded.
-
-![Replying from a workbench thread: the draft in vim beside the app](docs/screenshots/agent_inline_email_workbench.png)
-
-![b4's preview of the reply, before sending](docs/screenshots/inline_email2.png)
 
 **Unread.** Responses uses b4's Seen flag. Replies that arrive with old threads of
 yours, already older than the browse window, count as read.
