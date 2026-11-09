@@ -132,7 +132,7 @@ async def test_view_labels_fit_on_one_line(demo_root):
         app.action_toggle_drawer()
         await pilot.pause()
         views = app.query_one('#views', OptionList)
-        assert views.virtual_size.height == len(app.index.views)
+        assert views.virtual_size.height == views.option_count  # Views and headings alike.
 
 
 def footer_keys(app):

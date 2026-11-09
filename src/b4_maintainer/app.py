@@ -40,7 +40,7 @@ from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
 from .launchdialog import ITEM_USES, OTHER_USES, SERIES_USES, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
-from .model import Reply, Series, SeriesThread, WorkItem
+from .model import Coverage, Reply, Series, SeriesThread, WorkItem
 from .package import SASHIKO, drafts_context, sashiko_text, series_context
 from .reader import (
     SASHIKO_PREFIX,
@@ -674,7 +674,7 @@ class MaintainerApp(App[None]):
         }
         self._by_activity = {}
         self._matches = self._compute_matches()
-        views.add_options(Option(self._view_prompt(v.id, v.label), id=v.id) for v in index.views)
+        views.add_options(self._view_options(index))
         self.select_view(view, force=True)
         if previous is not None:
             self._series_list.select_identity(previous.identity, fallback=position)
@@ -762,6 +762,18 @@ class MaintainerApp(App[None]):
     def _view_count(self, view_id: str) -> int:
         members = self._view_members.get(view_id, frozenset())
         return len(members) if self._matches is None else len(members & self._matches)
+
+    def _view_options(self, index: ViewIndex) -> list[Option]:
+        """The sidebar: list views under one heading, upstream branch views under another
+        (headings are disabled options, so the cursor passes over them)."""
+        options = [Option('[b $text-muted]Mailing lists[/]', disabled=True)]
+        for view in index.views:
+            if view.kind == 'ref' and not any(o.id == 'upstream' for o in options):
+                options.append(
+                    Option('[b $text-muted]Upstream branches[/]', id='upstream', disabled=True)
+                )
+            options.append(Option(self._view_prompt(view.id, view.label), id=view.id))
+        return options
 
     def _view_prompt(self, view_id: str, label: str) -> str:
         # Titles and option prompts are markup; labels are configured text.
@@ -1059,8 +1071,8 @@ class MaintainerApp(App[None]):
         self._query = compile_query(text)
         self._matches = self._compute_matches()
         previous = self._series_list.highlighted_item
-        for n, view in enumerate(self.index.views):
-            self._views.replace_option_prompt_at_index(n, self._view_prompt(view.id, view.label))
+        for view in self.index.views:
+            self._views.replace_option_prompt(view.id, self._view_prompt(view.id, view.label))
         self.select_view(self.current_view, force=True)
         if previous is not None:
             self._series_list.select_identity(previous.identity)
@@ -4255,9 +4267,12 @@ class MaintainerApp(App[None]):
         if not st.tree:
             lines.append('  unchecked')
         refs = {r.label: r for p in (ws.projects if ws else ()) for r in p.refs}
-        for label, authority, coverage in st.tree:
+        held = [(lb, a, c) for lb, a, c in st.tree if c in (Coverage.FULL, Coverage.PARTIAL)]
+        for label, authority, coverage in held:  # Branches without it are left out.
             name = refs[label].name if label in refs else label
             lines.append(f'  {label} {name} ({authority.name.lower()}): {coverage.value}')
+        if st.tree and not held:
+            lines.append(f'  in none of the {len(st.tree)} tracked branches')
         lines += ['', 'Patches:']
         for p in s.patches:
             t = p.trailers

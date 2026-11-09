@@ -67,16 +67,6 @@ class ViewIndex:
                         active,
                     )
                 )
-        for p in ws.projects:
-            for ref in p.refs:
-                if ref.view:
-                    specs.append(
-                        (
-                            View(f'ref:{p.id}:{ref.name}', ref.view, 'ref'),
-                            lambda i, pid=p.id, name=ref.name: i.project == pid and i.stage == name,
-                            staged,
-                        )
-                    )
         specs += [
             (View('responses', 'Responses', 'builtin'), lambda i: bool(i.unread_msgids), items),
             (
@@ -100,6 +90,17 @@ class ViewIndex:
             specs.append((View('drafts', 'Drafts', 'builtin'), lambda i: i.state.draft, items))
         if hidden:
             specs.append((View('hidden', 'Hidden', 'builtin'), _always, hidden))
+        # Upstream branches last: the sidebar heads them apart from the list views.
+        for p in ws.projects:
+            for ref in p.refs:
+                if ref.view:
+                    specs.append(
+                        (
+                            View(f'ref:{p.id}:{ref.name}', ref.view, 'ref'),
+                            lambda i, pid=p.id, name=ref.name: i.project == pid and i.stage == name,
+                            staged,
+                        )
+                    )
 
         self.views: tuple[View, ...] = tuple(v for v, _, _ in specs)
         self._members: dict[str, tuple[WorkItem, ...]] = {
