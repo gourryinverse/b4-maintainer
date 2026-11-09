@@ -191,6 +191,33 @@ def test_untrack_archives_through_b4(live, tmp_path):
         source.untrack(item)
 
 
+def test_untrack_finds_the_tracked_revision_behind_a_newer_one(live, tmp_path):
+    """b4 tracks v1; the list shows v2 (the newest posting): untracking archives v1's
+    record, found by any revision the item holds."""
+    source, fakes, _ = live
+    msgs = []
+    for revision in (1, 2):
+        path = tmp_path / 'src' / f'v{revision}.mbx'
+        path.parent.mkdir(exist_ok=True)
+        sent = write_series_mbox(
+            path,
+            'mm: various fixes',
+            revision=revision,
+            patches=[PatchSpec('mm/a.c'), PatchSpec('mm/b.c')],
+            change_id='20261021-fixes-0123456789ab',
+            date=NOW - datetime.timedelta(days=3 - revision),
+        )
+        msgs += b4.get_msgs_from_mailbox_or_maildir(str(path))
+        if revision == 1:
+            fakes.tracked = [tracked(sent.msgids[0], change_id='20261021-fixes-0123456789ab')]
+    fakes.answers[MM] = msgs
+    source.refresh()
+    [item] = source.load().items
+    assert item.series.revision == 2 and item.state.to_review
+    assert 'Archived' in source.untrack(item)
+    assert fakes.archive_calls == [('demo', 'demo', '20261021-fixes-0123456789ab', 1)]
+
+
 def test_untrack_requires_tracking(live, tmp_path):
     source, fakes, _ = live
     fakes.answers[MM] = mail(tmp_path, 'a', 'mm: never tracked')[1]

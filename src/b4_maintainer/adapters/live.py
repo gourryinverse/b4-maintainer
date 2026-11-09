@@ -1010,11 +1010,13 @@ def _stable_pending(items: Iterable[WorkItem]) -> tuple[WorkItem, ...]:
 def _tracked_entry(
     entries: Sequence[b4state.Tracked], item: WorkItem, status: Optional[str] = None
 ) -> Optional[b4state.Tracked]:
-    """The item's active tracking record (or one in *status*), matched by any message-id."""
-    msgids = set(item.series.msgids)
+    """The item's active tracking record (or one in *status*): by a message-id of any
+    revision it holds (b4 may track an older one than the list shows), or its change-id."""
+    msgids = {m for s in (item.series, *item.older) for m in s.msgids}
+    change_id = item.series.change_id
     for e in entries:
         wanted = e.status == status if status else e.status != 'archived'
-        if wanted and e.msgids & msgids:
+        if wanted and (e.msgids & msgids or (change_id and e.change_id == change_id)):
             return e
     return None
 
