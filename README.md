@@ -92,7 +92,8 @@ Python 3.11 or newer.
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
   live: `F5` fetches profile lists and your own mail from lore (in a thread, the thread reloads
   in place), `t` tracks the selected series
-  through b4 (To Review), `x` hides it, `M` marks it read, `/` filters by regex, `r` drafts a
+  through b4 (To Review), `x` hides it, `M` marks it read, `/` filters by regex, `p` shrinks the preview beside the
+  list (its cover letter or lone patch, as wide as the list leaves room for) to the summary and back, `r` drafts a
   reply beside the thread (in the list: to the cover letter), `R` does too after picking
   session output to add at its end (any session's: the series' own first, then its
   workbenches', then the rest; `/` filters) (their commits as inline

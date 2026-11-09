@@ -110,6 +110,8 @@ DRAWER_ACTIONS = frozenset({'toggle_drawer', 'back', 'cycle_pane', 'quit', 'focu
 LIVE_STATES = frozenset({'approval', 'waiting', 'working', 'starting'})
 GONE_STATES = frozenset({'stopped', 'failed', 'gone', 'ended'})  # No pane beside the app.
 UNREAD_STYLE = Style(color='green')
+VIEWS_WIDTH, SUMMARY_WIDTH = 34, 64  # As the CSS sets #views and #summary.
+SERIES_ROOM = 72  # Columns the series list keeps beside an expanded preview.
 CURSOR_STYLE = Style(reverse=True)
 HEADING_STYLE = Style(bold=True)
 # Author names by MAINTAINERS role; Sashiko findings by worst severity; missing patches.
@@ -458,7 +460,7 @@ class MaintainerApp(App[None]):
         Binding('right', 'expand_node', 'expand', show=False),
         Binding('left', 'collapse_node', 'collapse', show=False),
         Binding('z', 'toggle_quotes', 'quotes'),
-        Binding('p', 'toggle_preview', 'preview', show=False),
+        Binding('p', 'toggle_preview', 'preview'),
         Binding('slash', 'search', 'search', key_display='/'),
         # $ tracks, or untracks (archives in b4) after confirmation; t also tracks.
         Binding('dollar_sign', 'track', 'track', key_display='$'),
@@ -576,7 +578,7 @@ class MaintainerApp(App[None]):
         self._status = ' b4-maintainer — loading'
         self._drawer = drawer_line(Overview())
         self._mode: Mode = 'wide'
-        self._preview = False
+        self._preview = True  # The summary pane shows the cover letter (or patch); p shrinks it.
         self._item: Optional[WorkItem] = None
         self._reading: Optional[WorkItem] = None
         self._pinned = 0  # Reading an older revision (V): its number; 0 follows the latest.
@@ -621,7 +623,7 @@ class MaintainerApp(App[None]):
         self._summary_pane = self.query_one('#summary', TextPane)
         self._views.border_title = 'Views'
         self._series_list.border_title = 'Series'
-        self._summary_pane.border_title = 'Summary'
+        self._summary_pane.border_title = 'Preview' if self._preview else 'Summary'
         self._tree = self.query_one('#tree', OptionList)
         self._content = self.query_one('#content', TextPane)
         self._tree.border_title = 'Thread'
@@ -860,20 +862,23 @@ class MaintainerApp(App[None]):
         self._mode = layout_mode(width, self._breakpoints or Breakpoints())
         for name in ('wide', 'medium', 'narrow'):
             self.screen.set_class(self._mode == name, f'-{name}')
-        self._apply_preview_width()
+        self._apply_preview_width(width)
         if self._reading is not None and self._mode != previous:
             self._set_reader_pane('tree' if self._mode == 'narrow' else self._reader_pane)
         self.refresh_bindings()
 
-    def _apply_preview_width(self) -> None:
-        """Expanded preview gets preview_width text columns; narrow mode is full width."""
+    def _apply_preview_width(self, total: Optional[int] = None) -> None:
+        """Expanded preview gets up to preview_width text columns, leaving the series
+        list SERIES_ROOM (never narrower than the summary); narrow mode is full width."""
         pane = getattr(self, '_summary_pane', None)
         if pane is None:
             return  # Resize can arrive before mount; on_mount reapplies the layout.
         if self._preview and self._mode != 'narrow':
             chrome = pane.styles.gutter.width + pane.styles.scrollbar_size_vertical
-            width = (self._breakpoints or Breakpoints()).preview_width
-            pane.styles.width = width + chrome
+            views = self._mode == 'wide' or self.screen.has_class('-show-views')
+            room = (total or self.size.width) - (VIEWS_WIDTH if views else 0) - SERIES_ROOM
+            wanted = (self._breakpoints or Breakpoints()).preview_width + chrome
+            pane.styles.width = max(SUMMARY_WIDTH, min(wanted, room))
         else:
             pane.styles.width = None
 
@@ -1041,6 +1046,7 @@ class MaintainerApp(App[None]):
 
     def action_toggle_views(self) -> None:
         self.screen.toggle_class('-show-views')
+        self._apply_preview_width()
 
     def action_open_summary(self) -> None:
         self.screen.add_class('-show-summary')
@@ -2365,10 +2371,12 @@ class MaintainerApp(App[None]):
         return self.screen.prompt if isinstance(self.screen, Confirm) else None
 
     def action_toggle_preview(self) -> None:
-        self._preview = not self._preview
+        narrow_closed = self._mode == 'narrow' and not self.screen.has_class('-show-summary')
+        # Narrow, with the summary closed, p opens it on the preview.
+        self._preview = True if narrow_closed else not self._preview
         self._summary_pane.border_title = 'Preview' if self._preview else 'Summary'
         self._apply_preview_width()
-        if self._preview and self._mode == 'narrow':
+        if narrow_closed:
             self.action_open_summary()
         self._show_summary()
 

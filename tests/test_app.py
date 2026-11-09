@@ -152,8 +152,8 @@ async def test_footer_shows_only_applicable_keys(demo_root):
         assert {'enter', 'grave_accent', 'tab', 'p', 'Q'} <= keys
         assert not {'v', 'escape'} & keys
         # The less common ones act but stay off the footer (? lists them).
-        assert {'enter', 'Q'} <= footer_keys(app)  # ? is in the tab bar.
-        assert not {'grave_accent', 'tab', 'p'} & footer_keys(app)
+        assert {'enter', 'Q', 'p'} <= footer_keys(app)  # ? is in the tab bar.
+        assert not {'grave_accent', 'tab'} & footer_keys(app)
 
         await pilot.resize_terminal(130, 40)
         await pilot.pause()
@@ -172,32 +172,47 @@ async def test_footer_shows_only_applicable_keys(demo_root):
         assert {'escape', 'enter', 'grave_accent'} <= keys
 
 
-async def test_cover_letter_hidden_until_preview_expands_pane(demo_root):
+async def test_the_preview_starts_expanded_and_p_shrinks_it(demo_root):
     app = make_app(demo_root)
-    async with app.run_test(size=(180, 30)) as pilot:
+    async with app.run_test(size=(220, 30)) as pilot:
         series_list = await loaded(pilot)
         summary = app.query_one('#summary')
-        default_width = summary.scrollable_content_region.width
         assert series_list.highlighted_item.series.preview_label == 'Cover letter'
+        assert 'Synthetic cover letter' in app.summary_text()
+        assert summary.scrollable_content_region.width == 100
+        assert summary.border_title == 'Preview'
+
+        await pilot.press('p')
+        await pilot.pause()
         assert 'Synthetic cover letter' not in app.summary_text()
-        assert default_width < 100
+        assert summary.scrollable_content_region.width < 100
+        assert summary.border_title == 'Summary'
 
         await pilot.press('p')
         await pilot.pause()
         assert 'Synthetic cover letter' in app.summary_text()
         assert summary.scrollable_content_region.width == 100
 
-        await pilot.press('p')
+
+async def test_the_expanded_preview_leaves_the_series_list_room(demo_root):
+    """On a narrower wide terminal the preview gives way (down to the summary's own
+    width) so the series list keeps room for its subjects."""
+    app = make_app(demo_root)
+    async with app.run_test(size=(180, 30)) as pilot:
+        await loaded(pilot)
+        series = app.query_one('#series')
+        summary = app.query_one('#summary')
+        assert series.outer_size.width >= 72
+        assert 64 <= summary.outer_size.width < 100
+        await pilot.resize_terminal(165, 30)  # Still wide: the views show.
         await pilot.pause()
-        assert 'Synthetic cover letter' not in app.summary_text()
-        assert summary.scrollable_content_region.width == default_width
+        assert summary.outer_size.width == 64  # Never narrower than the summary.
 
 
 async def test_preview_follows_selection_and_shows_single_patch_message(demo_root):
     app = make_app(demo_root)
     async with app.run_test(size=(180, 30)) as pilot:
         series_list = await loaded(pilot)
-        await pilot.press('p')
         while not series_list.highlighted_item.series.subject.startswith('selftests/mm'):
             await pilot.press('down')
         await pilot.pause()
@@ -210,7 +225,6 @@ async def test_expanded_preview_scrolls_and_resets_on_selection(demo_root):
     app = make_app(demo_root)
     async with app.run_test(size=(180, 30)) as pilot:
         await loaded(pilot)
-        await pilot.press('p')
         summary = app.query_one('#summary')
         await pilot.press('tab')
         assert app.focused is summary
@@ -233,7 +247,6 @@ async def test_summary_strips_terminal_control_sequences():
     app = MaintainerApp(lambda: snapshot)
     async with app.run_test(size=(180, 30)) as pilot:
         await loaded(pilot)
-        await pilot.press('p')
         text = app.summary_text()
         assert 'before' in text and 'after' in text
         assert '\x1b' not in text and '\x07' not in text
@@ -284,7 +297,7 @@ async def test_quit_requires_shift_q_and_confirmation(demo_root):
             await pilot.pause()
             assert app.quit_prompt() is None, cancel
         assert exits == []
-        assert 'Synthetic cover letter' not in app.summary_text()
+        assert 'Synthetic cover letter' in app.summary_text()  # p never reached the list.
 
         await pilot.press('Q')
         await pilot.press('y')
