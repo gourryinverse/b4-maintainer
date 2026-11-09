@@ -202,6 +202,8 @@ workbench has a space, `var/workbenches/<id>/`, that its sessions work in: a liv
 project sharing the project's objects, and one checkout per session tree. Mail or files
 added while a session runs reach it, with a note in its inbox.
 
+![A workbench session beside the Workbench tab](docs/screenshots/agent_inline2.png)
+
 ### Branches (F4)
 
 <!-- screenshot: the Branches tab with a prep branch selected -->
@@ -284,6 +286,8 @@ workbench's Artifacts, and `R` can add them to a reply.
 | `o` | List its artifacts. |
 | `n` | Rename it. |
 
+![The session drawer, with a session working beside the app](docs/screenshots/agent_drawer.png)
+
 Sessions have names (`mm-fix-foo-leak-v3`, a workbench's label), mapped from their
 timestamp ids in `var/sessions/names.toml`.
 
@@ -309,6 +313,10 @@ the default skips stable `-rc` review postings, which copy every backport's auth
 own terminal, the app suspended until you quit. When the editor exits, b4's preview
 of the reply opens, and it is sent from there with your identity and signing
 (`--email-dry-run` to test). Drafts stay in `var/drafts/` until sent or discarded.
+
+![Replying from a workbench thread: the draft in vim beside the app](docs/screenshots/agent_inline_email_workbench.png)
+
+![b4's preview of the reply, before sending](docs/screenshots/inline_email2.png)
 
 **Unread.** Responses uses b4's Seen flag. Replies that arrive with old threads of
 yours, already older than the browse window, count as read.
