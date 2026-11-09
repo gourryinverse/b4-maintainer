@@ -90,6 +90,10 @@ Python 3.11 or newer.
   (`--email-dry-run` to test); Responses lists unread replies to your mail (b4's Seen flag).
   Drafts are kept in `var/drafts/` (`<hash>.eml`, the text; `<hash>.json`, the message it
   answers) until sent or discarded.
+- Replies are written in your editor (the one b4 runs: `core.editor`, `$EDITOR`): inside
+  tmux in a pane beside the app; outside it in the app's own terminal, the app suspended
+  until the editor exits. `[drafts] editor` is `auto` (the default), `terminal` (never a
+  pane), or `app` (the in-app draft pane).
 - F1 on a series offers, in its prompt package, your unsent reply drafts on that series'
   thread (any revision) for the session to review: private, so never ticked unless you
   tick them; then a copy at launch goes to its `context/drafts.md`, marked not sent and

@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The maintainer's own editor in a tmux pane beside the app.
+"""The maintainer's own editor: in a tmux pane beside the app, or in the app's terminal.
 
 The editor is the one b4 would run (b4.get_editor_cmd). Panes are watched by
 polling, never waited on, so a killed pane is noticed like an exited editor.
-All calls block on tmux briefly; callers run them off the UI thread.
+All calls block on tmux briefly; callers run them off the UI thread. Outside
+tmux the editor takes the app's own terminal while the app is suspended.
 """
 
 import os
@@ -105,3 +106,14 @@ class TmuxEditor:
             self._tmux('kill-pane', '-t', pane)
         except EditorError:
             pass
+
+
+class TerminalEditor:
+    """The editor in the app's own terminal (outside tmux): run while the app is
+    suspended, returning when it exits, as git commit runs it."""
+
+    def __init__(self, command: Callable[[pathlib.Path], list[str]] = b4_editor) -> None:
+        self._command = command
+
+    def edit(self, path: pathlib.Path, checkout: pathlib.Path) -> None:
+        subprocess.run([*self._command(checkout), str(path)], cwd=checkout, check=False)

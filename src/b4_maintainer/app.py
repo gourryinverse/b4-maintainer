@@ -14,7 +14,7 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
@@ -97,6 +97,7 @@ from .workspace import Snapshot, Workspace
 
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult  # b4: only when applying.
+    from .adapters.tmux import TerminalEditor
     from .patchmail import ReplyTo
     from .workbench import WorkbenchService
 
@@ -500,6 +501,7 @@ class MaintainerApp(App[None]):
         drafts: Optional[DraftStore] = None,
         editor: Optional[ExternalEditor] = None,
         app_pane: str = '',
+        terminal_editor: Optional['TerminalEditor'] = None,
     ) -> None:
         super().__init__()
         self._loader = loader
@@ -508,6 +510,8 @@ class MaintainerApp(App[None]):
         self._drafts = drafts
         # Drafts go to the maintainer's editor when there is one and a store for its file.
         self._editor = editor if drafts is not None else None
+        # Outside tmux (or when its pane cannot open): the editor in this terminal.
+        self._terminal_editor = terminal_editor if drafts is not None else None
         self._save_timer: Any = None
         self._editor_timer: Any = None
         self._drafts_changed = False
@@ -1665,13 +1669,21 @@ class MaintainerApp(App[None]):
                     pane, start = self._open_editor(
                         editor, drafts, msgid, target, quote, saved, below
                     )
-                except Exception as exc:  # tmux trouble: the in-app pane still works
-                    note = f'Editor unavailable ({exc}); drafting in the app'
+                except Exception as exc:  # tmux trouble: this terminal, or the in-app pane
+                    where = 'this terminal' if self._terminal_editor else 'the app'
+                    note = f'Editor pane unavailable ({exc}); drafting in {where}'
                     self.call_from_thread(self._set_notice, note)
                     saved = drafts.get(msgid)
                 else:
                     self.call_from_thread(self._editor_opened, item, msgid, target, start, pane)
                     return
+            if self._terminal_editor is not None and drafts is not None:
+                edited = self.call_from_thread(
+                    self._edit_in_terminal, item, msgid, target, quote, saved
+                )
+                if edited:
+                    return
+                saved = drafts.get(msgid)
             self.call_from_thread(self._compose_reply, item, msgid, target, quote, saved, added)
 
         self.run_worker(work, thread=True, group='action', exclusive=True)
@@ -1697,6 +1709,37 @@ class MaintainerApp(App[None]):
         pane = editor.open(path, pathlib.Path(target.checkout), below)
         drafts.set_pane(msgid, pane)
         return pane, start
+
+    def _edit_in_terminal(
+        self,
+        item: WorkItem,
+        msgid: str,
+        target: Any,
+        quote: Optional[str],
+        saved: Optional[SavedDraft],
+    ) -> bool:
+        """The draft in the maintainer's editor in this terminal, the app suspended until
+        it exits; then b4's preview and send, as when a tmux pane's editor exits. False
+        where the app cannot suspend (it drafts in the app instead)."""
+        editor, drafts = self._terminal_editor, self._drafts
+        if editor is None or drafts is None or self._draft is not None:
+            return False
+        start = saved.quote if saved else (quote or reply_quote(target.lmsg))
+        if saved is None:
+            drafts.save(msgid, start, start)
+        try:
+            with self.suspend():
+                editor.edit(drafts.text_path(msgid), pathlib.Path(target.checkout))
+        except SuspendNotSupported:
+            return False
+        except OSError as exc:
+            self._set_notice(f'Cannot run your editor ({exc}); drafting in the app')
+            return False
+        self.refresh()  # The terminal is the app's again.
+        draft = Draft(item, msgid, target, start)
+        self._draft = draft
+        self._editor_exited(draft)
+        return True
 
     def _editor_opened(
         self, item: WorkItem, msgid: str, target: Any, quote: str, pane: str

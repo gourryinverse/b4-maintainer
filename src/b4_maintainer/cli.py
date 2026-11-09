@@ -15,7 +15,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
-from .adapters.tmux import TmuxEditor
+from .adapters.tmux import TerminalEditor, TmuxEditor
 from .model import Authority
 from .workspace import Project, Ref, Workspace, list_id, make_ref
 
@@ -100,7 +100,8 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
         source.load,
         actions=source,
         drafts=source.drafts,
-        editor=_draft_editor(source),
+        editor=(editors := _draft_editors(source))[0],
+        terminal_editor=editors[1],
         sessions=(hub := _sessions(source.root, workspace, private=True)),
         branches=BranchService(
             source.root,
@@ -191,15 +192,18 @@ def _sessions(
     )
 
 
-def _draft_editor(source: 'LiveSource') -> Optional[TmuxEditor]:
-    """The tmux editor when configured (or auto) and running inside tmux; else in-app drafts."""
+def _draft_editors(source: 'LiveSource') -> tuple[Optional[TmuxEditor], Optional[TerminalEditor]]:
+    """Where replies are written ([drafts] editor): auto (or tmux) uses a tmux pane
+    beside the app inside tmux, else the app's own terminal; terminal always the
+    terminal; app the in-app draft pane."""
     try:
         ws = source.workspace()
     except (OSError, ValueError):
-        return None
-    if ws.drafts_editor not in ('auto', 'tmux') or not os.environ.get('TMUX'):
-        return None
-    return TmuxEditor(width=ws.tmux_width)
+        return None, None
+    if ws.drafts_editor == 'app':
+        return None, None
+    tmux = ws.drafts_editor != 'terminal' and bool(os.environ.get('TMUX'))
+    return (TmuxEditor(width=ws.tmux_width) if tmux else None), TerminalEditor()
 
 
 def parse_ref(value: str) -> Ref:
