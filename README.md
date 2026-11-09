@@ -78,6 +78,17 @@ Python 3.11 or newer.
   mail goes unsigned instead of failing; sending a patch from F4 ends with a choice of
   signed (first when a key is set up) or unsigned. The footer shows each
   tab's common keys; `?` (Help, at the end of the tab bar) lists all of them.
+- Settings also lists each project's tracked upstream branches (label, authority, view,
+  ends review) and manages them. Enter on "Track a branch" picks a remote (or a new one by
+  URL), a branch listed from it, then its label, authority, view, and whether it ends
+  review; on confirming, the branch is fetched into the checkout (no tags, its
+  partial-clone filter) and added to `workspace.toml`. Enter on a branch changes one of
+  those; `d` untracks it, and its remote goes once nothing else uses it. Only the
+  project's `refs = [...]` lines are rewritten (or `var/workspace.toml`'s when it sets
+  them); a branch a maintainer base builds on stays.
+- The LKML sidebar heads the list views (Mailing lists) apart from the branch views
+  (Upstream branches). A summary's Tree evidence lists only the branches holding the
+  series.
 - `b4-maintainer` in a workspace with `workspace.toml` (or `state/workspace.toml`) opens it
   live: `F5` fetches profile lists and your own mail from lore (in a thread, the thread reloads
   in place), `t` tracks the selected series

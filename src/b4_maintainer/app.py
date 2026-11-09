@@ -99,6 +99,7 @@ if TYPE_CHECKING:
     from .adapters.apply import ApplyResult  # b4: only when applying.
     from .adapters.tmux import TerminalEditor
     from .patchmail import ReplyTo
+    from .upstreams import UpstreamService
     from .workbench import WorkbenchService
 
 SESSION_ACTIONS = frozenset(
@@ -502,6 +503,7 @@ class MaintainerApp(App[None]):
         editor: Optional[ExternalEditor] = None,
         app_pane: str = '',
         terminal_editor: Optional['TerminalEditor'] = None,
+        upstreams: Optional['UpstreamService'] = None,
     ) -> None:
         super().__init__()
         self._loader = loader
@@ -512,6 +514,7 @@ class MaintainerApp(App[None]):
         self._editor = editor if drafts is not None else None
         # Outside tmux (or when its pane cannot open): the editor in this terminal.
         self._terminal_editor = terminal_editor if drafts is not None else None
+        self._upstreams = upstreams  # Settings tracks and untracks upstream branches with it.
         self._save_timer: Any = None
         self._editor_timer: Any = None
         self._drafts_changed = False
@@ -2643,7 +2646,7 @@ class MaintainerApp(App[None]):
             elif tab == 'branches' and self._branches is not None:
                 screen = BranchesScreen(self._branches, snapshot.workspace)
             elif tab == 'settings':
-                screen = SettingsScreen(self._project_checkouts)
+                screen = SettingsScreen(self._project_checkouts, self._upstreams)
             else:
                 return
             self.install_screen(screen, tab)
@@ -2664,6 +2667,10 @@ class MaintainerApp(App[None]):
         else:
             self.push_screen(tab)
         self.call_after_refresh(self._place_pane)  # The column follows the tab.
+
+    def reload_snapshot(self) -> None:
+        """Read the workspace again (its configuration changed, e.g. in Settings)."""
+        self.run_worker(self._load, thread=True, name='load', exclusive=True)
 
     def _project_checkouts(self) -> list[tuple[str, pathlib.Path]]:
         """(project, checkout) of each project of a live workspace (blocking-safe)."""
