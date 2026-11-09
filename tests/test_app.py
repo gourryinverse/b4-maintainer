@@ -476,3 +476,24 @@ async def test_a_config_error_on_reload_keeps_the_view_and_says_why(demo_root):
         await pilot.pause()
         assert app.is_running and app.snapshot is shown
         assert "workspace.toml: ref me/base: unknown authority 'x'" in app.status_text()
+
+
+async def test_a_stale_view_highlight_does_not_switch_back(demo_root):
+    """A highlight event that arrives after the sidebar moved on (a rebuild, or two moves
+    in quick succession) is ignored: acting on it moved the highlight back, queueing the
+    other again, and the selection flickered between two views."""
+    from textual.widgets import OptionList
+
+    app = make_app(demo_root)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await loaded(pilot)
+        views = app._views
+        app.select_view('cached')
+        await pilot.pause()
+        at = views.get_option_index('all')
+        stale = OptionList.OptionHighlighted(views, views.get_option_at_index(at), at)
+        app.post_message(stale)
+        for _ in range(5):
+            await pilot.pause()
+        assert app.current_view == 'cached'
+        assert views.highlighted == views.get_option_index('cached')

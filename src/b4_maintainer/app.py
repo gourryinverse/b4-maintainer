@@ -783,7 +783,9 @@ class MaintainerApp(App[None]):
             self._show_row(event.option_index)
         elif event.option_list.id == 'artifact-list':
             self._preview_artifact(event.option_index)
-        elif event.option_id:
+        elif event.option_id and event.option_index == event.option_list.highlighted:
+            # Only where the highlight is now: acting on a stale event moved it back,
+            # queueing another, and the selection flickered between two views.
             self.select_view(event.option_id)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
