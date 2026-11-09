@@ -17,7 +17,7 @@ branches when you ask for them.
 Agents start only when you launch them. Status: early, in daily use. Python 3.11+,
 [Textual](https://textual.textualize.io/), GPL-2.0-or-later.
 
-<!-- screenshot: the LKML tab (series list, sidebar, preview) -->
+![The LKML tab: views on the left, the series list, and the selected series' preview](docs/screenshots/lkml.png)
 
 ## Contents
 
@@ -105,8 +105,6 @@ opens the session drawer.
 
 ### LKML (F2)
 
-<!-- screenshot: the LKML tab with both sidebar sections -->
-
 The sidebar has two sections.
 
 **Mailing lists**
@@ -133,6 +131,8 @@ The pane on the right previews the selected series: its cover letter (or its onl
 patch), trailers, Sashiko's review, and *Tree evidence*, the tracked branches holding
 it. `p` shrinks the preview to the summary, and back.
 
+![The preview: a series' summary, tree evidence, patches, and cover letter](docs/screenshots/preview_pane.png)
+
 | Key | In the series list |
 |---|---|
 | `Enter` | Read the thread. |
@@ -153,11 +153,15 @@ the right. `[` and `]` move between messages, `n` jumps to the next comment, `!`
 next Sashiko finding, `-` and `=` fold replies, and `z` folds long quotes. `r` replies
 to the selected message. Escape goes back.
 
+![Reading a thread: the messages on the left, the cover letter on the right](docs/screenshots/series_view.png)
+
 **Revisions.** Each series is listed at its newest revision. `V` picks an older one to
 read, and the status line says when you are not on the newest. When the unread
 replies to you are on an older revision (an answer to your review of v1 after v2 is
 out), the series opens there; the top of the thread pane names each revision holding
 unread replies (`Thread · v2 · [v1 ●]`).
+
+![Picking a revision to read: the newest holds an unread reply to you](docs/screenshots/version_selection.png)
 
 **Applying.** `a` applies a series to a maintainer base or a b4 prep branch of any
 project, as `b4 am` would: authors kept, trailers collected, a Link added, no sign-off.
@@ -167,7 +171,7 @@ copy, and `A` in Branches accepts its result. `d` drops a series from a base aga
 
 ### Workbench (F3)
 
-<!-- screenshot: the Workbench tab -->
+![The Workbench tab: a workbench's items, mailboxes, and the artifacts its sessions left](docs/screenshots/workbench.png)
 
 A workbench gathers what an agent session should see. Per project, it has a base and
 items applied on it in order: series (at a revision, or only some patches), local
@@ -264,6 +268,10 @@ The launch dialog picks the goal and, for each project, how the agent gets it: a
 with the items applied, a tree at the base with the items to apply itself, the checkout
 to read, or the mail only. The prompt package holds each series' thread, Sashiko's
 reviews, and, only if you tick them, your unsent drafts on that thread.
+
+![The launch dialog: goal, artifacts, prompt package, and a tree choice per project](docs/screenshots/session_launch.png)
+
+![A session working beside the app, reading the workbench it was launched in](docs/screenshots/agent_inline1.png)
 
 Sessions write their results under `out/` and list them in `out/artifacts.toml`:
 findings, reports, reproducers, results, and proposed changes. They appear under the
