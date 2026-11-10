@@ -299,6 +299,9 @@ def test_read_only_items_reach_the_context_and_never_a_tree(tmp_path, store):
     talk = write_series_mbox(tmp_path / 'talk.mbx', subject='RFC: tiers')
     notes = tmp_path / 'notes.md'
     notes.write_text('ideas\n')
+    race = tmp_path / 'race'  # A folder (a kept reproducer).
+    race.mkdir()
+    (race / 'README.md').write_text('# race\n')
     plans = (
         TreePlan(
             'linux',
@@ -306,6 +309,7 @@ def test_read_only_items_reach_the_context_and_never_a_tree(tmp_path, store):
             (
                 TreeItem('RFC: tiers (discussion)', str(talk.path), apply=False),
                 TreeItem('notes.md (file)', file=str(notes), apply=False),
+                TreeItem('race (file)', file=str(race), apply=False),
             ),
         ),
     )
@@ -316,6 +320,7 @@ def test_read_only_items_reach_the_context_and_never_a_tree(tmp_path, store):
     context = store.directory(record.id) / 'work' / 'context'
     assert (context / 'linux-1.mbx').is_file()
     assert (context / 'files' / 'notes.md').read_text() == 'ideas\n'
+    assert (context / 'files' / 'race' / 'README.md').read_text() == '# race\n'
     system = (store.directory(record.id) / 'system.md').read_text()
     assert 'files/notes.md (notes.md (file) (linux))' in system
 

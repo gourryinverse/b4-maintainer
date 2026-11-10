@@ -33,6 +33,7 @@ from textual.widgets.selection_list import Selection
 from .attachdialog import AttachDialog
 from .attachments import Attachment
 from .branchscreen import Ask, Pick
+from .kept import Kept, describe
 from .model import Reply, Series, SeriesThread, WorkItem
 from .reader import (
     TreeRow,
@@ -67,6 +68,7 @@ from .workspace import Workspace
 
 TYPE_BASE = '\0type'  # The base picker's "type one" entry.
 UNFILED = '\0unfiled'  # Sessions from before workbenches: listed, not editable.
+KEPT = '\0kept'  # Kept artifacts (var/kept/): listed apart from every workbench.
 TITLES = {
     'bench-list': 'Workbenches',
     'bench-sessions': 'Sessions',
@@ -81,13 +83,35 @@ def _count(n: int, one: str) -> str:
     return f'{n} {one}' + ('' if n == 1 else 's')
 
 
+def kept_rows(kept: Sequence[Kept]) -> list[ContentRow]:
+    """Kept artifacts under a heading per commit they go with, then per shelf."""
+    groups: dict[tuple[int, str], list[Kept]] = {}
+    for k in kept:
+        if k.commit:
+            key = (0, f'With {k.subject or k.commit[:12]} ({k.project})')
+        else:
+            key = (1, f'Shelf: {k.shelf}')
+        groups.setdefault(key, []).append(k)
+    rows: list[ContentRow] = []
+    for (_order, heading), held in sorted(groups.items()):
+        rows.append(ContentRow(heading, 'heading'))
+        rows += [
+            ContentRow(f'  {k.kind}: {k.title}', 'kept', k.project, session=k.session, kept=k.id)
+            for k in held
+        ]
+    return rows
+
+
 class PickMany(ModalScreen[Optional[list[str]]]):
     """Tick any of several: space ticks, Enter takes the ticked (none is fine), Escape
     cancels."""
 
     DEFAULT_CSS = """
     PickMany { align: center middle; }
-    PickMany > Vertical { width: auto; height: auto; border: solid $accent; background: $panel; }
+    PickMany > Vertical {
+        width: auto; min-width: 64; max-width: 90%; height: auto;
+        border: solid $accent; background: $panel;
+    }
     PickMany SelectionList { width: auto; height: auto; border: none; }
     """
     BINDINGS = [
@@ -95,15 +119,20 @@ class PickMany(ModalScreen[Optional[list[str]]]):
         Binding('enter', 'confirm', 'take them', priority=True),
     ]
 
-    def __init__(self, title: str, choices: Sequence[tuple[str, str]]) -> None:
+    def __init__(
+        self, title: str, choices: Sequence[tuple[str, str]], ticked: Sequence[str] = ()
+    ) -> None:
         super().__init__()
         self.title_text = title
         self.choices = list(choices)  # (key, label)
+        self.ticked = set(ticked)  # Keys ticked to start with.
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self.title_text, markup=False)
-            yield SelectionList[str](*(Selection(label, key) for key, label in self.choices))
+            yield SelectionList[str](
+                *(Selection(label, key, key in self.ticked) for key, label in self.choices)
+            )
 
     def on_mount(self) -> None:
         self.query_one(SelectionList).focus()
@@ -190,6 +219,7 @@ class WorkbenchScreen(Screen[None]):
         Binding('P', 'new_prep', 'new prep branch'),
         Binding('f', 'fold', 'fold to prep'),
         Binding('w', 'add_to_workbench', 'to workbench'),
+        Binding('k', 'keep', 'keep'),  # An artifact: kept past its session and workbench.
         # Contents: a group (Artifacts by kind) opens and closes; / searches.
         Binding('enter', 'toggle_group', 'open/close', priority=True),
         Binding('right', 'open_group', 'open', show=False),
@@ -225,6 +255,7 @@ class WorkbenchScreen(Screen[None]):
         self._sessions_of = UNFILED + '?'  # The workbench they are of (none yet).
         self._pending: tuple[str, str] = ('', '')  # (workbench, session) to select.
         self._unfiled = False  # Sessions without a workbench exist: list them apart.
+        self._kept: list[Kept] = []  # Kept artifacts: listed apart when there are any.
         self._keep: tuple[str, str, int] = ('', '', -1)  # The row to keep after a reload.
         self._thread: Optional[SeriesThread] = None  # A thread opened from Mailboxes.
         self._thread_item: Optional[WorkItem] = None
@@ -273,18 +304,25 @@ class WorkbenchScreen(Screen[None]):
         if rows is None:
             return
 
+        kept_of = getattr(self.app, 'bench_kept', None)
+
         def work() -> None:
             try:
                 unfiled = bool(rows(''))
             except Exception:
                 return
-            self.app.call_from_thread(self._show_unfiled, unfiled)
+            try:
+                kept = kept_of() if kept_of is not None else []
+            except Exception:
+                kept = []
+            self.app.call_from_thread(self._show_unfiled, unfiled, kept)
 
         self.run_worker(work, thread=True, group='bench-unfiled', exclusive=True)
 
-    def _show_unfiled(self, unfiled: bool) -> None:
-        if unfiled != self._unfiled:
-            self._unfiled = unfiled
+    def _show_unfiled(self, unfiled: bool, kept: Optional[list[Kept]] = None) -> None:
+        kept = self._kept if kept is None else kept
+        if unfiled != self._unfiled or kept != self._kept:
+            self._unfiled, self._kept = unfiled, kept
             self._fill_benches(self._pending[0] or self._bench_id())
 
     def _bench_id(self) -> str:
@@ -295,11 +333,13 @@ class WorkbenchScreen(Screen[None]):
         wid = self._bench_id()
         if wid == UNFILED:
             return Workbench(UNFILED, 'Unfiled sessions')
+        if wid == KEPT:
+            return Workbench(KEPT, 'Kept artifacts')
         return next((b for b in self.benches if b.id == wid), None)
 
     def _editable(self) -> bool:
         bench = self.bench()
-        return bench is not None and bench.id != UNFILED
+        return bench is not None and bench.id not in (UNFILED, KEPT)
 
     def _fill_benches(self, select: str) -> None:
         lists = self.query_one('#bench-list', OptionList)
@@ -308,7 +348,10 @@ class WorkbenchScreen(Screen[None]):
             lists.add_option(Option(f'{b.label} · {_count(len(b.entries), "project")}', id=b.id))
         if self._unfiled:
             lists.add_option(Option('Unfiled sessions', id=UNFILED))
+        if self._kept:
+            lists.add_option(Option(f'Kept artifacts · {len(self._kept)}', id=KEPT))
         ids = [b.id for b in self.benches] + ([UNFILED] if self._unfiled else [])
+        ids += [KEPT] if self._kept else []
         if ids:
             with self.prevent(OptionList.OptionHighlighted):
                 lists.highlighted = ids.index(select) if select in ids else 0
@@ -319,6 +362,15 @@ class WorkbenchScreen(Screen[None]):
 
     def _load_contents(self) -> None:
         bench = self.bench()
+        if bench is not None and bench.id == KEPT:
+            self._fill_contents(KEPT, kept_rows(self._kept))
+            self._set_preview(
+                'Session output kept apart from its workbench (k on an artifact keeps it; '
+                'a pluck offers it): with the commit it goes with, or on a shelf. It stays '
+                'when its sessions and workbench are removed. w puts one on a workbench, '
+                'for its session to read; x removes it.'
+            )
+            return
         if bench is None or bench.id == UNFILED:
             self._fill_contents('', [])
             note = (
@@ -505,10 +557,14 @@ class WorkbenchScreen(Screen[None]):
             self._show_text(known, row.text.strip())
             return
         workspace, series, latest = self.workspace, self.series, self.latest
+        kept = next((k for k in self._kept if k.id == row.kept), None)
 
         def work() -> None:
             try:
-                text = self.service.show(workspace, bench, row, series, latest)
+                if kept is not None:
+                    text = describe(kept)
+                else:
+                    text = self.service.show(workspace, bench, row, series, latest)
             except Exception as exc:
                 text = f'Cannot show it: {exc}'
             self.app.call_from_thread(self._row_shown, row, text)
@@ -559,8 +615,8 @@ class WorkbenchScreen(Screen[None]):
             return  # Not composed yet (a session poll just after F3): it reads them then.
         bench = self.bench()
         rows = getattr(self.app, 'workbench_sessions', None)
-        if bench is None or rows is None:
-            self._fill_sessions('', [])
+        if bench is None or rows is None or bench.id == KEPT:
+            self._fill_sessions(bench.id if bench is not None else '', [])
             return
         wid = bench.id
 
@@ -836,7 +892,7 @@ class WorkbenchScreen(Screen[None]):
                     if yes:
                         self._act(
                             lambda: pluck(item, rows, target, tips.get(target, '')),
-                            lambda r: self._plucked(r, label),
+                            lambda r: self._plucked(r, label, item, target),
                             f'{verb}ing {commits}…',
                         )
 
@@ -846,18 +902,106 @@ class WorkbenchScreen(Screen[None]):
 
         self._act(lambda: targets_of(item), pick, 'Listing where they can go…')
 
-    def _plucked(self, result: object, label: str) -> None:
+    def _plucked(self, result: object, label: str, item: str = '', target: str = '') -> None:
         ok = getattr(result, 'ok', False)
         if ok:
-            n = len(getattr(result, 'picked', ()))
+            picked = getattr(result, 'picked', ())
             dropped = getattr(result, 'dropped', ())
             extra = f'; already there: {len(dropped)}' if dropped else ''
-            self._status(f'Plucked {_count(n, "commit")} onto {label}{extra}')
+            note = f'Plucked {_count(len(picked), "commit")} onto {label}{extra}'
+            self._status(note)
+            offer_of = getattr(self.app, 'bench_keep_offer', None)
+            if offer_of is not None and picked and not target.startswith('tree:'):
+
+                def offer() -> tuple[list[Any], list[tuple[str, str]]]:
+                    try:
+                        return offer_of(item, target, picked)
+                    except Exception:
+                        return [], []  # Keeping is offered, not needed.
+
+                def offered(found: tuple[list[Any], list[tuple[str, str]]]) -> None:
+                    self._status(note)
+                    self._offer_keep(item, *found)
+
+                self._act(offer, offered, note)
         else:
             failed = getattr(result, 'failed', '')
             why = f'{failed} does not apply' if failed else getattr(result, 'error', 'failed')
             self._status(f'Not plucked: {why}; nothing changed')
         self._load_contents()
+
+    # Keeping session output (var/kept/).
+
+    def _offer_keep(self, item: str, artifacts: list[Any], commits: list[tuple[str, str]]) -> None:
+        from .keepflow import offer_after_pluck
+
+        keep: Any = getattr(self.app, 'bench_keep', None)
+        if keep is None:
+            return
+        offer_after_pluck(
+            self,
+            artifacts,
+            commits,
+            lambda chosen, t: self._act(lambda: keep(item, chosen, t), self._kept_now, 'Keeping…'),
+        )
+
+    def _kept_now(self, note: str) -> None:
+        self._note = note
+        self._reload()
+
+    def _keepable(self) -> Optional[Attachment]:
+        """The selected artifact row's file or text, from a session."""
+        row = self.row()
+        if self._pane() != 'bench-contents' or row is None or row.kind != 'artifact':
+            return None
+        a = row.attachment
+        return a if a is not None and a.kind in ('file', 'text') and a.session else None
+
+    def action_keep(self) -> None:
+        """k: the selected artifact kept (var/kept/) with a commit on a maintainer base or
+        on a shelf; it stays when its sessions and workbench go."""
+        from .keepflow import choose_target
+
+        attachment = self._keepable()
+        targets_of = getattr(self.app, 'bench_keep_targets', None)
+        keep: Any = getattr(self.app, 'bench_keep_attachment', None)
+        if attachment is None or targets_of is None or keep is None:
+            return
+
+        def listed(targets: list[tuple[str, str]]) -> None:
+            choose_target(
+                self,
+                targets,
+                lambda t: self._act(lambda: keep(attachment, t), self._kept_now, 'Keeping…'),
+                f'Keep {attachment.title or "it"} with…',
+            )
+
+        self._act(targets_of, listed, 'Listing where it can be kept…')
+
+    def _kept_row(self) -> Optional[Kept]:
+        row = self.row()
+        if self._pane() != 'bench-contents' or row is None or row.kind != 'kept':
+            return None
+        return next((k for k in self._kept if k.id == row.kept), None)
+
+    def _unkeep(self, kept: Kept) -> None:
+        from .app import Confirm
+
+        unkeep: Any = getattr(self.app, 'bench_unkeep', None)
+        if unkeep is None:
+            return
+
+        def answered(yes: Optional[bool]) -> None:
+            if yes:
+                self._act(
+                    lambda: unkeep(kept.id),
+                    lambda _gone: self._kept_now(f'Removed the kept {kept.title}'),
+                    'Removing…',
+                )
+
+        copy = f' and its copy ({kept.path})' if kept.path is not None else ''
+        prompt = f'Remove the kept {kept.kind} {kept.title}{copy}? [y|N]'
+        self.app.push_screen(Confirm(prompt), answered)
 
     def _folded(self) -> Optional[tuple[str, str]]:
         """(tree item, branch) of a session's folded series: its branch's row selected,
@@ -1128,13 +1272,19 @@ class WorkbenchScreen(Screen[None]):
         pane, bench = self._pane(), self.bench()
         edits = ('rename', 'remove', 'base', 'add_branch', 'move', 'reroll', 'launch', 'add')
         edits += ('move_project',)
+        kept = self._kept_row()
+        if action == 'remove' and kept is not None:
+            return True
         if action in edits and not self._editable():
             return False
+        if action == 'keep':
+            return self._keepable() is not None and hasattr(self.app, 'bench_keep_attachment')
         if action == 'rename':
             return pane == 'bench-list' and bench is not None and not self.thread_open()
         if action == 'add_to_workbench':
             row = self.row()
             artifact = row is not None and row.kind == 'artifact' and row.attachment is not None
+            artifact = artifact or (kept is not None and kept.path is not None)
             return pane == 'bench-contents' and (bool(self._chosen()) or artifact)
         if action in ('toggle_group', 'open_group'):
             row = self.row()
@@ -1256,6 +1406,11 @@ class WorkbenchScreen(Screen[None]):
             if a.path is not None:
                 add([('', Item(file=str(a.path)))], a.title or a.path.name)
             return
+        kept = self._kept_row()
+        if kept is not None:
+            if kept.path is not None:
+                add([(kept.project, Item(file=str(kept.path)))], kept.title)
+            return
         rows = [r for r in self._chosen() if r.attachment is not None]
         if not rows:
             return
@@ -1345,6 +1500,10 @@ class WorkbenchScreen(Screen[None]):
         bench = self.bench()
         if bench is None:
             return
+        kept = self._kept_row()
+        if kept is not None:
+            self._unkeep(kept)
+            return
         row = self.row()
         if self._pane() == 'bench-contents' and row is not None and row.kind == 'tree':
             self._remove_tree(row)
@@ -1398,6 +1557,9 @@ class WorkbenchScreen(Screen[None]):
             lines = [f'Remove the workbench {bench.label} and its sessions?']
             lines.append(f'  Sessions, deleted with their output: {listed}')
             lines += [f'  {path}: {state.describe()}' for path, state in losses.items()]
+            mine = [k for k in self._kept if k.session in sids]
+            kept = f'{_count(len(mine), "artifact")} kept from them stay' if mine else 'none kept'
+            lines.append(f'  Kept artifacts stay ({kept}); k on an artifact keeps it first')
         else:
             lines = [f'Remove the workbench {bench.label} (no sessions)?']
         if branches:

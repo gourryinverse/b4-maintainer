@@ -299,10 +299,15 @@ def prepare_session(
     for name, thread, what in threads:
         if write_thread(pathlib.Path(thread), context / name):
             listed.append((name, what))
-    for name, path, what in files:  # Files from disk, as they are.
+    for name, path, what in files:  # Files (or folders) from disk, as they are.
         try:
             (context / 'files').mkdir(exist_ok=True)
-            shutil.copyfile(path, context / 'files' / name)
+            if pathlib.Path(path).is_dir():
+                shutil.copytree(
+                    path, context / 'files' / name, ignore=shutil.ignore_patterns('.git')
+                )
+            else:
+                shutil.copyfile(path, context / 'files' / name)
         except OSError:
             continue
         listed.append((f'files/{name}', what))

@@ -120,7 +120,7 @@ def _sync(context: pathlib.Path, label: str, entries: Sequence[SpaceEntry], now:
         changes.append(f'added {name} ({info["label"]}, {info["project"]})')
     for name, info in old.items():
         if name not in wanted:
-            (context / name).unlink(missing_ok=True)
+            _drop(context / name)
             changes.append(f'removed {name} ({info.get("label", "")}, {info.get("project", "")})')
     for sub in ('mail', 'files'):
         folder = context / sub
@@ -136,22 +136,34 @@ def _sync(context: pathlib.Path, label: str, entries: Sequence[SpaceEntry], now:
 
 
 def _copy(source: str, target: pathlib.Path) -> bool:
-    """*source* at *target*: a thread as one mbox (as sessions get it), a file as it is."""
+    """*source* at *target*: a thread as one mbox (as sessions get it), a file or a
+    folder as it is."""
     from .sessions.pi import write_thread
 
     path = pathlib.Path(source).expanduser()
     tmp = target.with_name(f'.{target.name}.tmp')
     try:
-        if path.is_dir() or target.suffix == '.mbx':
+        _drop(tmp)
+        if target.suffix == '.mbx':
             if not write_thread(path, tmp):
                 return False
+        elif path.is_dir():  # A folder item (a kept reproducer): as it is, modes kept.
+            shutil.copytree(path, tmp, symlinks=True, ignore=shutil.ignore_patterns('.git'))
+            _drop(target)
         else:
             shutil.copyfile(path, tmp)
         os.replace(tmp, target)
         return True
     except OSError:
-        tmp.unlink(missing_ok=True)
+        _drop(tmp)
         return False
+
+
+def _drop(path: pathlib.Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _items_text(

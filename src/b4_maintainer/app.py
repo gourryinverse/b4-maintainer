@@ -38,6 +38,7 @@ from .attachments import Attachment, gather, gather_all, git_identity, preview, 
 from .branches import ApplyChoices, CutResult, DetailRow, DropChoices, FoldPlan
 from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
+from .kept import Kept
 from .launchdialog import ITEM_USES, OTHER_USES, SERIES_USES, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Coverage, Reply, Series, SeriesThread, WorkItem
@@ -65,6 +66,7 @@ from .reader import (
 )
 from .rows import DEFAULT_SYMBOLS, Segments, Symbols, heading, row_segments
 from .search import compile_query, match_texts, texts
+from .sessions.artifacts import Artifact
 from .sessions.hub import Overview, SessionError, SessionHub, TreePlan
 from .sessions.launch import LaunchChoice, Situation, Target, plan
 from .sessions.pane import pane_for
@@ -3571,6 +3573,34 @@ class MaintainerApp(App[None]):
     ) -> PluckResult:
         branches, workspace = self._bench_branches()
         return branches.pluck(workspace, item, self._branch_rows(rows), target, expected)
+
+    def bench_keep_offer(
+        self, item: str, target: str, picked: Sequence[tuple[str, str]]
+    ) -> tuple[list[Artifact], list[tuple[str, str]]]:
+        branches, workspace = self._bench_branches()
+        return branches.pluck_keep_offer(workspace, item, target, picked)
+
+    def bench_keep_targets(self) -> list[tuple[str, str]]:
+        branches, workspace = self._bench_branches()
+        return branches.keep_targets(workspace)
+
+    def bench_keep(self, item: str, artifacts: Sequence[Artifact], target: str) -> str:
+        branches, workspace = self._bench_branches()
+        return branches.keep(workspace, item, artifacts, target)
+
+    def bench_keep_attachment(self, attachment: Attachment, target: str) -> str:
+        """A Workbench artifact row (a reply attachment) kept at *target*."""
+        branches, workspace = self._bench_branches()
+        artifact = branches.as_artifact(attachment)
+        return branches.keep(workspace, attachment.session, [artifact], target)
+
+    def bench_kept(self) -> list[Kept]:
+        branches, _workspace = self._bench_branches()
+        return branches.kept_items()
+
+    def bench_unkeep(self, kid: str) -> bool:
+        branches, _workspace = self._bench_branches()
+        return branches.unkeep(kid)
 
     def bench_fork_points(self, item: str) -> list[str]:
         branches, workspace = self._bench_branches()

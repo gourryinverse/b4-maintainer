@@ -59,7 +59,9 @@ from .adapters.prep import (
 from .adapters.scratch import base_refs as match_refs
 from .adapters.scratch import forget_tracked, tracked_branches
 from .attachments import Attachment, preview
-from .sessions.artifacts import Artifact, load_artifacts
+from .kept import KEPT, Kept, KeptStore, keep_label
+from .kept import patch_id as change_id
+from .sessions.artifacts import COMMIT_KINDS, Artifact, load_artifacts
 from .sessions.hub import SessionError, SessionHub
 from .sessions.launch import Target
 from .sessions.rebase import RESULT
@@ -222,6 +224,7 @@ class BranchService:
         self._sessions = sessions  # Launches rebase sessions; None: not offered.
         self.email_dryrun = email_dryrun  # b4 send -d: print instead of sending.
         self.no_sign = no_sign  # b4 send --no-sign.
+        self.kept = KeptStore(root / KEPT)
 
     def snapshot(self, workspace: Workspace, trees: bool = True) -> BranchesSnapshot:
         """Everything Branches lists; without *trees*, session trees are left out (the
@@ -982,6 +985,131 @@ class BranchService:
         tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
         os.replace(tmp, path)
 
+    # Kept artifacts (var/kept/): session output saved apart from its workbench.
+
+    def kept_items(self) -> list[Kept]:
+        return self.kept.items()
+
+    def unkeep(self, kid: str) -> bool:
+        return self.kept.remove(kid)
+
+    def keepable(self, item: str) -> list[Artifact]:
+        """What session *item* (`tree:<sid>[/<project>]`, or a session id) can keep: its
+        manifest's artifacts other than commits."""
+        sid = item.removeprefix('tree:').partition('/')[0]
+        artifacts, _problems = load_artifacts(self._out(sid) / 'work' / 'out', ())
+        return [a for a in artifacts if a.kind not in COMMIT_KINDS]
+
+    def as_artifact(self, attachment: Attachment) -> Artifact:
+        """A reply attachment (file or text) as its manifest artifact, else as itself."""
+        for a in self.keepable(attachment.session):
+            if attachment.path is not None and a.path is not None:
+                if a.path.resolve() == attachment.path.resolve():
+                    return a
+            elif attachment.path is None and a.path is None and a.title == attachment.title:
+                return a
+        return Artifact(
+            attachment.group or 'file',
+            attachment.title or (attachment.path.name if attachment.path else 'artifact'),
+            attachment.text,
+            path=attachment.path,
+        )
+
+    def keep_targets(self, workspace: Workspace) -> list[tuple[str, str]]:
+        """Where an artifact can be kept: each commit on a maintainer base that its
+        upstream does not have yet (`commit:<project>:<sha>`), newest first; each shelf
+        (`shelf:<name>`); a new shelf (`shelf:`)."""
+        found: list[tuple[str, str]] = []
+        for project in workspace.projects:
+            repo = self.root / project.path
+            for base in project.bases:
+                if not base.upstream:
+                    continue
+                try:
+                    log = _git(
+                        repo,
+                        'log',
+                        '--max-count=40',
+                        '--format=%H%x00%s',
+                        f'{base.upstream}..{base.branch}',
+                        '--',
+                    )
+                except OSError:
+                    continue
+                for line in log.splitlines():
+                    sha, _, subject = line.partition('\x00')
+                    found.append((f'commit:{project.id}:{sha}', f'{subject}  ({base.branch})'))
+        found += [(f'shelf:{s}', f'Shelf: {s}') for s in self.kept.shelves()]
+        found.append(('shelf:', 'A new shelf…'))
+        return found
+
+    def pluck_keep_offer(
+        self, workspace: Workspace, item: str, target: str, picked: Sequence[tuple[str, str]]
+    ) -> tuple[list[Artifact], list[tuple[str, str]]]:
+        """After commits of session *item* were plucked onto *target* (a base, prep
+        branch, or branch): what the session can keep, and the new commits to keep it
+        with (`commit:<project>:<sha>`, its subject). Nothing for other plucks."""
+        kind, _, rest = target.partition(':')
+        project = workspace.project(rest.partition(':')[0])
+        if not item.startswith('tree:') or kind not in ('base', 'prep', 'branch') or not project:
+            return [], []
+        artifacts = self.keepable(item)
+        if not artifacts:
+            return [], []
+        repo = self.root / project.path
+        commits = []
+        for _source, new in picked:
+            subject = _git(repo, 'log', '-1', '--format=%s', new).strip()
+            commits.append((f'commit:{project.id}:{new}', subject or new[:12]))
+        return artifacts, commits
+
+    def keep(
+        self, workspace: Workspace, item: str, artifacts: Sequence[Artifact], target: str
+    ) -> str:
+        """Copies of *artifacts* (of session *item*) kept at *target* (see keep_targets;
+        a shelf: `shelf:<name>`)."""
+        sid = item.removeprefix('tree:').partition('/')[0]
+        record = self._record(sid)
+        name = session_name(record) if record is not None else sid
+        bench = record.workbench if record is not None else ''
+        kind, _, rest = target.partition(':')
+        pid = sha = subject = patch = shelf = ''
+        if kind == 'commit':
+            pid, _, sha = rest.partition(':')
+            project = workspace.project(pid)
+            if project is None or not sha:
+                raise SessionError(f'no commit {target}')
+            repo = self.root / project.path
+            subject = _git(repo, 'log', '-1', '--format=%s', sha).strip()
+            patch = change_id(repo, sha)
+        elif kind == 'shelf' and rest.strip():
+            shelf = rest.strip()
+        else:
+            raise SessionError('keep it with a commit or on a named shelf')
+        out = (self._out(sid) / 'work' / 'out').resolve()
+        kept: list[Kept] = [
+            self.kept.keep(
+                a.kind,
+                a.title,
+                a.summary,
+                a.tested,
+                a.path,
+                out,
+                project=pid,
+                commit=sha,
+                subject=subject,
+                patch_id=patch,
+                shelf=shelf,
+                session=sid,
+                session_name=name,
+                workbench=bench,
+            )
+            for a in artifacts
+        ]
+        if not kept:
+            return 'Nothing kept'
+        return f'Kept {len(kept)} {kept[0].where()} (Workbench tab: Kept artifacts)'
+
     def cover_draft(self, project: Project, item: str, rows: Sequence[DetailRow]) -> str:
         """A cover letter to edit: the subject marked EDITME (b4 then reports it as
         needing edits), each artifact's summary, the commits without one."""
@@ -1578,7 +1706,8 @@ class BranchService:
             return f'Cannot show {row.key[:12]}: {ex}'
         lines = text.splitlines()
         cut = f'\n… {len(lines) - SHOW_LINES} more lines' if len(lines) > SHOW_LINES else ''
-        return '\n'.join(lines[:SHOW_LINES]) + cut
+        kept = keep_label(self.kept.with_commit(pathlib.Path(row.repo), row.key))
+        return (kept.lstrip('\n') + '\n\n' if kept else '') + '\n'.join(lines[:SHOW_LINES]) + cut
 
     def rebase(self, workspace: Workspace, key: str, expected: str) -> RebaseResult:
         """Rebase the base named by *key*, if it is still at *expected* (its tip as shown),

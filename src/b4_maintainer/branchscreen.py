@@ -45,8 +45,11 @@ from .workspace import Workspace
 
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult
+    from .attachments import Attachment
+    from .kept import Kept
     from .model import Series
     from .patchmail import ReplyTo
+    from .sessions.artifacts import Artifact
 
 
 class Branches(Protocol):
@@ -73,6 +76,22 @@ class Branches(Protocol):
     ) -> PluckResult: ...
 
     def fork_points(self, workspace: Workspace, item: str) -> list[str]: ...
+
+    def pluck_keep_offer(
+        self, workspace: Workspace, item: str, target: str, picked: Sequence[tuple[str, str]]
+    ) -> tuple[list['Artifact'], list[tuple[str, str]]]: ...
+
+    def keep_targets(self, workspace: Workspace) -> list[tuple[str, str]]: ...
+
+    def as_artifact(self, attachment: 'Attachment') -> 'Artifact': ...
+
+    def kept_items(self) -> list['Kept']: ...
+
+    def unkeep(self, kid: str) -> bool: ...
+
+    def keep(
+        self, workspace: Workspace, item: str, artifacts: Sequence['Artifact'], target: str
+    ) -> str: ...
 
     def tree_targets(
         self, workspace: Workspace, item: str
@@ -311,6 +330,7 @@ class BranchesScreen(Screen[None]):
         Binding('u', 'prep_run("trailers")', 'trailers', show=False),
         Binding('d', 'prep_run("compare")', 'compare', show=False),
         Binding('w', 'add_to_workbench', 'to workbench'),
+        Binding('k', 'keep', 'keep'),  # A session's artifact: kept past its workbench.
         Binding('x', 'reap', 'remove'),
     ]
 
@@ -676,6 +696,8 @@ class BranchesScreen(Screen[None]):
             return bool(key) and (key.partition(':')[0] in WHOLE_KINDS or bool(self._chosen()))
         if action == 'reap':
             return self.service.reapable(self.data, key)
+        if action == 'keep':
+            return self._keepable() is not None
         if action == 'prep_run' and parameters == ('compare',):
             return bool(self.data.preps.get(key, {}).get('sent'))
         if action == 'edit_message':
@@ -909,6 +931,16 @@ class BranchesScreen(Screen[None]):
             if result.ok:
                 dropped = f'; already there: {", ".join(result.dropped)}' if result.dropped else ''
                 note = f'Plucked {len(result.picked)} onto {branch}{dropped}'
+                try:
+                    keeping = self.service.pluck_keep_offer(
+                        self.workspace, key, target, result.picked
+                    )
+                except Exception:
+                    keeping = ([], [])  # Keeping is offered, not needed.
+                if keeping[0] and keeping[1]:
+                    self.app.call_from_thread(self._acted, note)
+                    self.app.call_from_thread(self._offer_keep, key, *keeping)
+                    return
             elif result.failed:
                 first = result.detail.splitlines()[0] if result.detail else ''
                 note = f'Not plucked: {result.failed} does not apply onto {branch}' + (
@@ -917,6 +949,63 @@ class BranchesScreen(Screen[None]):
             else:
                 note = f'Not plucked: {result.error}'
             self.app.call_from_thread(self._acted, note)
+
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _offer_keep(
+        self, key: str, artifacts: list['Artifact'], commits: list[tuple[str, str]]
+    ) -> None:
+        from .keepflow import offer_after_pluck
+
+        offer_after_pluck(self, artifacts, commits, lambda chosen, t: self._keep(key, chosen, t))
+
+    def _keep(self, key: str, artifacts: Sequence['Artifact'], target: str) -> None:
+        def work() -> None:
+            try:
+                note = self.service.keep(self.workspace, key, artifacts, target)
+            except Exception as exc:
+                note = f'Not kept: {exc}'
+            self.app.call_from_thread(self._acted, note)
+
+        self._status('Keeping…')
+        self.run_worker(work, thread=True, group='branches-act')
+
+    def _keepable(self) -> Optional['Artifact']:
+        """The selected row's artifact, when it is a session's (not a commit branch)."""
+        from .sessions.artifacts import COMMIT_KINDS
+
+        row, key = self.selected_row(), self.selected_item() or ''
+        rows = self.query_one('#branch-rows', OptionList)
+        if not key.startswith('tree:') or row is None or row.artifact is None:
+            return None
+        if self.focused is not rows or row.artifact.kind in COMMIT_KINDS:
+            return None
+        return row.artifact
+
+    def action_keep(self) -> None:
+        """k: the selected artifact kept (var/kept/) with a commit on a maintainer base or
+        on a shelf, past its session and workbench."""
+        from .keepflow import choose_target
+
+        artifact, key = self._keepable(), self.selected_item() or ''
+        if artifact is None:
+            return
+
+        def listed(targets: list[tuple[str, str]]) -> None:
+            choose_target(
+                self,
+                targets,
+                lambda t: self._keep(key, [artifact], t),
+                f'Keep {artifact.title} with…',
+            )
+
+        def work() -> None:
+            try:
+                targets = self.service.keep_targets(self.workspace)
+            except Exception as exc:
+                self.app.call_from_thread(self._status, f'Not kept: {exc}')
+                return
+            self.app.call_from_thread(listed, targets)
 
         self.run_worker(work, thread=True, group='branches-act')
 

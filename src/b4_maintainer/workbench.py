@@ -449,7 +449,7 @@ class ContentRow:
     """One row of a workbench's contents (the Workbench tab's middle pane)."""
 
     text: str  # As listed, indented under its section.
-    kind: str  # heading, entry (a project), item, mailbox, tree, commit, or artifact
+    kind: str  # heading, entry (a project), item, mailbox, tree, commit, artifact, or kept
     project: str = ''
     index: int = -1  # An item's place in its project's entry.
     session: str = ''
@@ -459,6 +459,7 @@ class ContentRow:
     path: str = ''  # A tree's path.
     item: str = ''  # A tree's or commit's Branches item key (tree:<sid>[/<project>]).
     group: str = ''  # A collapsible group it heads (kind group) or sits in (artifact:<kind>).
+    kept: str = ''  # A kept artifact's id (kind kept, under Kept artifacts).
 
 
 # The Artifacts groups, in order; any other kind follows, by name.
@@ -767,9 +768,9 @@ class WorkbenchService:
                     continue
                 if item.file:
                     path = pathlib.Path(item.file).expanduser()
-                    if not path.is_file():
+                    if not path.exists():
                         problems.append(f'{item.label}: {path} does not exist')
-                    elif _has_patches(path):
+                    elif path.is_file() and _has_patches(path):
                         items.append(TreeItem(item.label, str(path)))  # b4 applies it.
                     else:
                         items.append(TreeItem(item.label, file=str(path), apply=False))
@@ -1018,9 +1019,10 @@ class WorkbenchService:
             return f'{item.label} · read by the session, not applied'
         if item.file:
             path = pathlib.Path(item.file).expanduser()
-            if not path.is_file():
+            if not path.exists():
                 return f'{item.label} · {path} does not exist'
-            how = 'patches: b4 applies them' if _has_patches(path) else 'read by the session'
+            patches = path.is_file() and _has_patches(path)
+            how = 'patches: b4 applies them' if patches else 'read by the session'
             return f'{item.label} · {how}'
         if item.series:
             text = item.label

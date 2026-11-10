@@ -338,3 +338,31 @@ def test_the_workbench_says_which_items_its_trees_lack_and_u_brings_them(tmp_pat
     assert service.space_status(workspace, bench, {}) == {'linux': ((), False)}
     main = git('rev-parse', 'main', cwd=checkout)  # The space carries no project branches.
     assert git('log', '--format=%s', f'{main}..b4m/bench/cmp', cwd=repo) == 'linux: me/b'
+
+
+def test_a_folder_item_reaches_the_space_whole_and_leaves_it(tmp_path):
+    """A kept reproducer (a folder: its README, sources, scripts) as a file item."""
+    race = tmp_path / 'kept' / 'race'
+    race.mkdir(parents=True)
+    (race / 'README.md').write_text('# race\n')
+    (race / 'run.sh').write_text('#!/bin/sh\n')
+    (race / 'run.sh').chmod(0o755)
+    service = service_for(tmp_path)
+    bench = add_file(Workbench('fix', 'Fix', ()), 'linux', str(race))
+    changes = service.sync_space(Workspace.from_config({}), bench, {})
+    assert changes == ['added files/race (race, linux)']
+    copy = space_dir(tmp_path, 'fix') / 'context' / 'files' / 'race'
+    assert (copy / 'README.md').read_text() == '# race\n' and (
+        copy / 'run.sh'
+    ).stat().st_mode & 0o111
+    (race / 'race.c').write_text('int main(void) {}\n')  # Changed: refreshed.
+    assert service.sync_space(Workspace.from_config({}), bench, {}) == []
+    assert (copy / 'race.c').is_file()
+    entry = bench.entries[0]
+    said = service._describe(Workspace.from_config({}), entry, entry.items[0], None, {}, {})
+    assert said == 'race (file) · read by the session'  # Not "does not exist".
+    bench = Workbench(bench.id, bench.label, (bench.entries[0].__class__('linux', '', ()),))
+    assert service.sync_space(Workspace.from_config({}), bench, {}) == [
+        'removed files/race (race, linux)'
+    ]
+    assert not copy.exists()

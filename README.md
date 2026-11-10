@@ -101,6 +101,7 @@ drafts, caches, and review branches.
 | Maintainer base | Your own integration branch on top of an upstream branch, where you apply and test series. |
 | Workbench | A recipe for agent sessions: per project, a base and the series, branches, and files to give the agent. |
 | Session | An agent (pi, in tmux) working on a workbench. Its results land in its `out/` folder. |
+| Kept artifact | A copy of session output (a reproducer, a report, logs) kept with a commit or on a shelf. It outlives its session and workbench. |
 
 Series are matched to projects by the lists they were sent to. On lists that projects
 share, a subject tag (`[ndctl PATCH]`) or the directories a series touches decide.
@@ -203,6 +204,7 @@ the right (for Items, a preview of what a launch prepares).
 | `space`, `p`, `P` | On Trees: mark commits; pluck them onto a base, prep branch, or another session's tree; cut a prep branch from them. |
 | `f` | On a folded series (fixups squashed in): make the next revision's prep branch. |
 | `w` | Add commits, a branch, or a file artifact to a workbench. |
+| `k` | Keep an artifact with a commit on a base, or on a shelf (see below). |
 | `/` | Search the contents. Groups open and close with `Enter`, `→`, and `←`. |
 
 `w` in the series list, a thread, or Branches adds to a workbench from there. Each
@@ -210,6 +212,19 @@ workbench has a space, `var/workbenches/<id>/`, that its sessions work in: a liv
 `context/` (the items, each thread's mail, files, and what changed), a repository per
 project sharing the project's objects, and one checkout per session tree. Mail or files
 added while a session runs reach it, with a note in its inbox.
+
+**Keeping artifacts.** Removing a workbench deletes its sessions and their output. To
+keep a result for later (say, the reproducer for a pull-ahead fix you have applied), keep
+it first. After you pluck a session's commits onto a base or prep branch, you are offered
+the session's other artifacts, all ticked, to keep with the new commit. `k` keeps any
+artifact, anytime, with a commit on a maintainer base or on a named shelf. A file inside
+a folder (`out/reproducers/<name>/README.md`) keeps its whole folder.
+
+Kept copies live in `var/kept/`, on this machine only. They are listed under **Kept
+artifacts** at the bottom of the workbench list, grouped by commit and shelf. A commit
+in Branches shows what was kept with it, even after a rebase (matched by patch-id, else
+subject). When you come back to re-validate, `w` puts a kept artifact on a workbench for
+a session to read, and `x` removes it.
 
 ### Branches (F4)
 
@@ -226,6 +241,7 @@ selected commit; Details says the rest, and `*` marks a branch that needs attent
 | `space`, `p` | Mark commits; pluck them onto a base, prep branch, or branch. An agent's commits become yours with an `Assisted-by:` trailer. |
 | `n` | Make a b4 prep branch from the marked commits, with a drafted cover letter. |
 | `w` | Add the branch or commits to a workbench. |
+| `k` | On a session's artifact: keep it with a commit or on a shelf (see [Keeping artifacts](#workbench-f3)). |
 | `m` | Mail one commit as a patch (a fixup as a reply to the patch it fixes). |
 | `x` | Remove a branch, session work, or a session tree, after saying what goes. |
 
