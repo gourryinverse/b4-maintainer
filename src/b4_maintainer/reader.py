@@ -6,7 +6,9 @@ import re
 from dataclasses import dataclass
 from typing import Collection, Optional
 
+from b4._textwidth import pad_display
 from rich.style import Style
+from rich.text import Text
 
 from .model import (
     Finding,
@@ -267,6 +269,20 @@ class TreeRow:
     key: str
     node: int
     label: str
+    upstream: bool = False  # A patch an upstream branch holds: its number is green.
+
+
+UPSTREAM_STYLE = 'green'
+
+
+def tree_prompt(row: TreeRow, width: int) -> Text:
+    """A tree row as listed, padded to *width*; a patch upstream has its NN/MM green."""
+    text = Text(pad_display(row.label, width).rstrip())
+    if row.upstream:
+        start = 2  # After the ▸/▾ marker.
+        end = text.plain.find(' ', start)
+        text.stylize(UPSTREAM_STYLE, start, end if end > 0 else len(text.plain))
+    return text
 
 
 def initially_expanded(thread: SeriesThread, unread: Collection[str]) -> set[str]:
@@ -312,7 +328,9 @@ def tree_rows(
         label = marker + post_label(thread, key, item, absent)
         if not is_open and any(r.message.msgid in unread for r in replies):
             label += ' ●'
-        rows.append(TreeRow(key, 0, label))
+        post = find_post(thread, key) if key != UNATTACHED else None
+        upstream = post is not None and post.counter in item.state.upstream_patches
+        rows.append(TreeRow(key, 0, label, upstream and post.counter > 0))
         if is_open:
             labels = reply_labels(replies, unread, bots)
             n = 0

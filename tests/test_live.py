@@ -952,3 +952,64 @@ def test_my_own_series_reach_back_months_in_my_unmerged_submissions_alone(tmp_pa
     assert any(
         q.startswith('f:me@example.org AND (s:PATCH OR s:RFC) AND rt:') for _, q in fakes.searches
     )
+
+
+UPSTREAM_CONFIG = """\
+[[projects]]
+id = "demo"
+path = "projects/demo"
+lists = ["linux-mm@kvack.org"]
+refs = [
+  { label = "u", name = "up/unstable", authority = "preliminary" },
+  { label = "g", name = "mine", authority = "preliminary", view = "Mine" },
+]
+
+[[profiles]]
+id = "mm"
+label = "MM"
+project = "demo"
+lists = ["linux-mm@kvack.org"]
+"""
+
+
+def test_each_item_knows_which_patches_an_upstream_branch_holds(tmp_path):
+    """Upstream: fetched branches. The maintainer's own (a local base) do not count."""
+    from gitutil import git
+
+    root = tmp_path / 'ws'
+    checkout = make_checkout(root / 'projects' / 'demo')
+    (root / 'workspace.toml').write_text(UPSTREAM_CONFIG)
+    fakes = Fakes()
+    source = LiveSource(
+        root,
+        tracked_series=fakes.tracked_series,
+        search_for=fakes.search_for,
+        track=fakes.track,
+        b4_command=['b4'],
+        now=lambda: NOW,
+        identity=lambda c: None,
+    )
+    half, msgs_h = mail(tmp_path, 'h', 'mm: half upstream')
+    local, msgs_l = mail(tmp_path, 'l', 'mm: only mine')
+    fakes.answers[MM] = msgs_h + msgs_l
+    ident = ['-c', 'user.name=A', '-c', 'user.email=a@example.org']
+
+    def pick(sent, n):
+        link = f'Link: https://lore.kernel.org/{sent.msgids[n]}'
+        git(*ident, 'commit', '-q', '--allow-empty', '-m', f'patch {n}\n\n{link}', cwd=checkout)
+
+    git('checkout', '-q', '-b', 'fetched', cwd=checkout)
+    pick(half, 2)
+    git('update-ref', 'refs/remotes/up/unstable', 'HEAD', cwd=checkout)  # As a fetch leaves it.
+    git('checkout', '-q', '-b', 'mine', cwd=checkout)
+    pick(local, 1)
+    pick(local, 2)
+    git('checkout', '-q', 'master', cwd=checkout)
+    git('branch', '-q', '-D', 'fetched', cwd=checkout)
+
+    source.refresh()
+    items = {i.series.subject: i for i in source.load().items}
+    assert items['mm: half upstream'].state.upstream_patches == frozenset({2})
+    mine = items['mm: only mine']
+    assert ('g', 'full') in [(label, cov.value) for label, _, cov in mine.state.tree]
+    assert mine.state.upstream_patches == frozenset()  # Only on the maintainer's branch.

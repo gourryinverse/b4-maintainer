@@ -20,8 +20,6 @@ import re
 from dataclasses import replace
 from typing import Any, Callable, Mapping, Optional, Sequence, TypeVar
 
-from b4._textwidth import pad_display
-from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -42,6 +40,7 @@ from .reader import (
     post_keys,
     root_blocks,
     thread_replies,
+    tree_prompt,
     tree_rows,
 )
 from .widgets import Block, TabBar, TextPane, tree_width
@@ -748,9 +747,7 @@ class WorkbenchScreen(Screen[None]):
         with self.prevent(OptionList.OptionHighlighted):
             tree.clear_options()
             width = tree_width(tree)
-            tree.add_options(
-                [Option(Text(pad_display(r.label, width).rstrip())) for r in self._thread_rows]
-            )
+            tree.add_options([Option(tree_prompt(r, width)) for r in self._thread_rows])
             if self._thread_rows:
                 tree.highlighted = 0
         tree.focus()

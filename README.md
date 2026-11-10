@@ -146,8 +146,9 @@ and leaves the list views. A series fully in a branch that *ends review* (linux-
 mainline) leaves the queues.
 
 The pane on the right previews the selected series: its cover letter (or its only
-patch), trailers, Sashiko's review, and *Tree evidence*, the tracked branches holding
-it. `p` shrinks the preview to the summary, and back.
+patch), trailers, how many `Fixes:` tags and Cc-stable patches it carries, Sashiko's
+review, and *Tree evidence*, the tracked branches holding it. `p` shrinks the preview
+to the summary, and back.
 
 | Key | In the series list |
 |---|---|
@@ -167,7 +168,8 @@ it. `p` shrinks the preview to the summary, and back.
 **Reading a thread.** The tree of messages is on the left and the selected message on
 the right. `[` and `]` move between messages, `n` jumps to the next comment, `!` to the
 next Sashiko finding, `-` and `=` fold replies, and `z` folds long quotes. `r` replies
-to the selected message. Escape goes back.
+to the selected message. Escape goes back. A patch's number (`3/12`) is green when a
+tracked upstream branch already holds it (your own local branches do not count).
 
 **Revisions.** Each series is listed at its newest revision. `V` picks an older one to
 read, and the status line says when you are not on the newest. When the unread

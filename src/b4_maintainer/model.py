@@ -230,6 +230,8 @@ class SeriesState:
     draft: bool = False
     to_review: bool = False
     tree: tuple[RefEvidence, ...] = ()
+    # Patches (by number) a tracked upstream branch holds; the maintainer's own are not.
+    upstream_patches: frozenset[int] = frozenset()
 
     @property
     def mainline_complete(self) -> bool:

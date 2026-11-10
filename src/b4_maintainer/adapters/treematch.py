@@ -116,18 +116,34 @@ class RefCache:
         os.replace(tmp, self.path)
         return scanned
 
+    def _matched(self, ref: Ref) -> Optional[tuple[frozenset[str], frozenset[str]]]:
+        """The ref's message IDs and subjects as last scanned (None: unscanned or stale)."""
+        entry = self._refs.get(ref.name)
+        if entry is None or entry['tip'] != self.tip(ref.name):
+            return None
+        if ref.name not in self._sets:
+            self._sets[ref.name] = (frozenset(entry['msgids']), frozenset(entry['subjects']))
+        return self._sets[ref.name]
+
+    def held(self, series: Series, ref: Ref) -> frozenset[int]:
+        """The numbers of the series' patches *ref* holds (none when not scanned)."""
+        matched = self._matched(ref)
+        if matched is None:
+            return frozenset()
+        msgids, subjects = matched
+        return frozenset(
+            p.counter
+            for p in series.patches
+            if p.msgid in msgids or subject_key(p.subject) in subjects
+        )
+
     def coverage(self, series: Series, ref: Ref) -> Coverage:
         entry = self._refs.get(ref.name)
         if entry is None or not series.patches:
             return Coverage.UNCHECKED
-        if entry['tip'] != self.tip(ref.name):
+        if self._matched(ref) is None:
             return Coverage.STALE
-        if ref.name not in self._sets:
-            self._sets[ref.name] = (frozenset(entry['msgids']), frozenset(entry['subjects']))
-        msgids, subjects = self._sets[ref.name]
-        found = sum(
-            1 for p in series.patches if p.msgid in msgids or subject_key(p.subject) in subjects
-        )
+        found = len(self.held(series, ref))
         if found == len(series.patches):
             return Coverage.FULL
         return Coverage.PARTIAL if found else Coverage.NONE

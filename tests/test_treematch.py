@@ -79,6 +79,21 @@ def test_coverage_per_ref(tmp_path):
     assert cache.coverage(upstream, UNSTABLE) == Coverage.NONE
 
 
+def test_held_names_the_patches_a_ref_holds(tmp_path):
+    path = repo(tmp_path)
+    cache = RefCache(tmp_path / 'refs.json', path)
+    cache.update([MAIN, UNSTABLE, NEW], since=NOW - datetime.timedelta(days=30))
+    mixed = series(
+        ('p1@example.org', 'mm: first patch'),
+        ('px@example.org', 'mm: not merged'),
+        ('other@example.org', 'mm: picked by subject only'),
+    )
+    assert cache.held(mixed, UNSTABLE) == frozenset({1})
+    assert cache.held(mixed, NEW) == frozenset({1, 3})
+    assert cache.held(mixed, MAIN) == frozenset()
+    assert cache.held(mixed, Ref('x', 'unscanned', Authority.PRELIMINARY)) == frozenset()
+
+
 def test_unchanged_tips_are_not_rescanned_and_moved_tips_are_stale(tmp_path):
     path = repo(tmp_path)
     since = NOW - datetime.timedelta(days=30)

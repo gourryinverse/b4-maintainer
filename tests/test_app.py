@@ -421,7 +421,7 @@ async def test_summary_says_which_patches_carry_fixes_or_stable():
     item = make_item(subject='mm: fix things', stable_pending=True)
     patches = (
         Patch(1, 'p1@example.org', 'mm: one', fixes=('0123456789ab ("mm: the bug")',)),
-        Patch(2, 'p2@example.org', 'mm: two'),
+        Patch(2, 'p2@example.org', 'mm: two', fixes=('abc ("x")', 'def ("y")'), stable=True),
         Patch(3, 'p3@example.org', 'mm: three', stable=True),
     )
     series = dataclasses.replace(item.series, patches=patches, expected=3)
@@ -432,9 +432,11 @@ async def test_summary_says_which_patches_carry_fixes_or_stable():
         await loaded(pilot)
         text = app.summary_text()
         assert 'Cc stable pending' in text
-        assert 'Fixes:    1/3 0123456789ab ("mm: the bug")' in text
-        assert 'Stable:   Cc stable in 3/3' in text
+        # Counted, not listed: a series of fixes would fill the pane with them.
+        assert '\nFixes:    3\n' in text and '\nStable:   2\n' in text
+        assert '0123456789ab' not in text
         assert '1/3 ··· mm: one [Fixes]' in text
+        assert '2/3 ··· mm: two [Fixes, stable]' in text
         assert '3/3 ··· mm: three [stable]' in text
 
 

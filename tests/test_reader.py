@@ -588,6 +588,25 @@ def test_tree_rows_nest_replies_under_expanded_posts():
     assert rows[1].label.startswith('  └─> One') and rows[2].label.startswith('    └─> Two')
 
 
+def test_patches_already_upstream_have_their_number_in_green():
+    import dataclasses
+
+    from b4_maintainer.reader import tree_prompt, tree_rows
+
+    item = make_item(subject='mm: tree')
+    thread = _tree_thread(item)
+    upstream = dataclasses.replace(
+        item, state=dataclasses.replace(item.state, upstream_patches=frozenset({2}))
+    )
+    rows = tree_rows(thread, upstream, expanded={'1'})
+    assert [r.upstream for r in rows] == [False, False, False, True]  # Not its replies.
+    first, second = tree_prompt(rows[0], 40), tree_prompt(rows[3], 40)
+    assert first.plain.startswith('▾ 1/1') and not first.spans
+    assert second.plain.startswith('  2/1')
+    [span] = second.spans
+    assert second.plain[span.start : span.end] == '2/1' and 'green' in str(span.style)
+
+
 def test_collapsed_posts_flag_unread_and_start_expanded():
     from b4_maintainer.reader import initially_expanded, tree_rows
 

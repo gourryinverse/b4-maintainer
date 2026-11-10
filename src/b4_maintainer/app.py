@@ -60,6 +60,7 @@ from .reader import (
     post_keys,
     root_blocks,
     thread_replies,
+    tree_prompt,
     tree_rows,
     with_sashiko,
     without_clean_sashiko,
@@ -1139,9 +1140,9 @@ class MaintainerApp(App[None]):
         return self._reading
 
     def tree_labels(self) -> list[str]:
+        prompts = [self._tree.get_option_at_index(i).prompt for i in range(self._tree.option_count)]
         return [
-            Content.from_markup(str(self._tree.get_option_at_index(i).prompt)).plain
-            for i in range(self._tree.option_count)
+            p.plain if isinstance(p, Text) else Content.from_markup(str(p)).plain for p in prompts
         ]
 
     def tree_position(self) -> tuple[str, int]:
@@ -1407,9 +1408,7 @@ class MaintainerApp(App[None]):
         self._rows = self._tree_rows()
         width = tree_width(self._tree)
         self._tree.clear_options()
-        self._tree.add_options(
-            Option(escape(pad_display(row.label, width).rstrip())) for row in self._rows
-        )
+        self._tree.add_options(Option(tree_prompt(row, width)) for row in self._rows)
         positions = {(row.key, row.node): n for n, row in enumerate(self._rows)}
         index = positions.get(target, positions.get((target[0], 0), 0))
         if self._rows:
@@ -1420,10 +1419,8 @@ class MaintainerApp(App[None]):
         """Update labels in place (e.g. unread marks) without moving the cursor."""
         width = tree_width(self._tree)
         for n, (old, new) in enumerate(zip(self._rows, self._tree_rows())):
-            if old.label != new.label:
-                self._tree.replace_option_prompt_at_index(
-                    n, escape(pad_display(new.label, width).rstrip())
-                )
+            if old != new:
+                self._tree.replace_option_prompt_at_index(n, tree_prompt(new, width))
                 self._rows[n] = new
 
     def _reply_msgid(self) -> Optional[str]:
@@ -4303,12 +4300,13 @@ class MaintainerApp(App[None]):
             f'Trailers: A:{acked} R:{reviewed} T:{tested}'
             f' (cover A:{s.cover_trailers.acked} R:{s.cover_trailers.reviewed} T:{s.cover_trailers.tested})',
         ]
-        # Why ⚠: each patch's Fixes targets, and which patches Cc stable.
-        for p in s.patches:
-            lines += [f'Fixes:    {p.counter}/{s.expected} {target}' for target in p.fixes]
-        stable = [f'{p.counter}/{s.expected}' for p in s.patches if p.stable]
+        # Why ⚠: how many Fixes tags, and how many patches Cc stable (Patches says which).
+        fixes = sum(len(p.fixes) for p in s.patches)
+        if fixes:
+            lines.append(f'Fixes:    {fixes}')
+        stable = sum(p.stable for p in s.patches)
         if stable:
-            lines.append(f'Stable:   Cc stable in {", ".join(stable)}')
+            lines.append(f'Stable:   {stable}')
         if s.cc_stable and item.landed:
             lines.append('          landed: no longer pending')
         lines += [text for text, _ in self._sashiko_lines(item)]

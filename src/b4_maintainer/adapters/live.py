@@ -476,6 +476,11 @@ class LiveSource:
             # The maintainer's own branches (a base a series was just applied to or dropped
             # from) are rescanned on every load; fetched refs wait for a refresh.
             cache.update(project.refs, since, local_only=True)
+        # Upstream: fetched refs, not the maintainer's own local branches (a base).
+        upstream = {
+            pid: [r for r in project.refs if not cache.local(r.name)]
+            for pid, (project, cache) in caches.items()
+        }
         result = []
         for item in items:
             entry = caches.get(item.project or '')
@@ -485,13 +490,20 @@ class LiveSource:
                     (r.label, r.authority, cache.coverage(item.series, r)) for r in project.refs
                 )
                 held = (Coverage.FULL, Coverage.PARTIAL)
+                found = frozenset().union(
+                    *(
+                        cache.held(item.series, r)
+                        for r, (_, _, c) in zip(project.refs, tree)
+                        if c in held and r in upstream[project.id]
+                    )
+                )
                 stage = next(
                     (r.name for r, (_, _, c) in zip(project.refs, tree) if r.view and c in held), ''
                 )
                 landed = any(
                     r.ends_review and c == Coverage.FULL for r, (_, _, c) in zip(project.refs, tree)
                 )
-                state = dataclasses.replace(item.state, tree=tree)
+                state = dataclasses.replace(item.state, tree=tree, upstream_patches=found)
                 item = dataclasses.replace(item, state=state, stage=stage, landed=landed)
             result.append(item)
         return tuple(result)
