@@ -119,6 +119,20 @@ class Series:
         return tuple(dict.fromkeys(self.lists + converted))
 
     @property
+    def message_id(self) -> str:
+        """The series' own Message-ID: its cover letter's (a discussion's first
+        message's), else patch 1's."""
+        if self.identity.startswith('thread:'):
+            return self.identity.removeprefix('thread:')
+        patches = {p.msgid for p in self.patches}
+        cover = next((m for m in self.msgids if m not in patches), '') if self.has_cover else ''
+        if cover:
+            return cover
+        if self.patches:
+            return self.patches[0].msgid
+        return self.msgids[0] if self.msgids else ''
+
+    @property
     def cc_stable(self) -> bool:
         """Any patch Cc's stable: a fix meant for stable kernels."""
         return any(p.stable for p in self.patches)

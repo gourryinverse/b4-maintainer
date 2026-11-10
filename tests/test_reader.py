@@ -823,3 +823,16 @@ async def test_series_rows_stop_short_of_the_column_edge(demo_root):
             text = strip.text
             assert cell_len(text) == width  # Painted across (the highlight too).
             assert text[-ROW_MARGIN:] == ' ' * ROW_MARGIN, (y, text[-12:])
+
+
+def test_each_message_header_gives_its_message_id():
+    from b4_maintainer.reader import SASHIKO_PREFIX, message_blocks, root_blocks
+
+    item = make_item(subject='mm: tree')
+    thread = _tree_thread(item)
+    posting = [b.text for b in root_blocks(thread, '1', item)]
+    assert posting[2] == 'Message-ID: <p@example.org>'  # Under From:.
+    reply = [b.text for b in message_blocks(thread.patches[0].replies[0], False)]
+    assert reply[2] == 'Message-ID: <r1@example.org>'
+    sashiko = Reply(_reply(f'{SASHIKO_PREFIX}x', 'Sashiko'), 0)  # Not on the list: none.
+    assert not any('Message-ID' in b.text for b in message_blocks(sashiko, False))

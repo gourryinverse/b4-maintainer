@@ -384,6 +384,13 @@ def _header(message: Message) -> str:
     return f'{message.author_name} <{message.author_email}>{date}'
 
 
+def _msgid_block(message: Message) -> list[Block]:
+    """The message's Message-ID header (none for Sashiko's, which are not on a list)."""
+    if not message.msgid or message.msgid.startswith(SASHIKO_PREFIX):
+        return []
+    return [Block(f'Message-ID: <{message.msgid}>')]
+
+
 def _is_quote(line: str) -> bool:
     return line.lstrip().startswith('>')
 
@@ -421,7 +428,7 @@ def has_long_quote(reply: Reply, threshold: int = 3) -> bool:
 
 def message_blocks(reply: Reply, expand: bool) -> list[Block]:
     m = reply.message
-    blocks = [Block(m.subject, style=HEADER), Block(f'From: {_header(m)}')]
+    blocks = [Block(m.subject, style=HEADER), Block(f'From: {_header(m)}'), *_msgid_block(m)]
     marks = _tag_marks(m.tags)
     if marks:
         blocks.append(Block(f'Gives: {marks}'))
@@ -515,6 +522,7 @@ def root_blocks(thread: SeriesThread, key: str, item: WorkItem) -> list[Block]:
     blocks = [
         Block(post.message.subject, style=HEADER),
         Block(f'From: {_header(post.message)}'),
+        *_msgid_block(post.message),
     ]
     if not thread.discussion:
         blocks.append(Block(trailer_line(item, post.counter)))

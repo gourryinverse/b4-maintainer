@@ -4293,6 +4293,7 @@ class MaintainerApp(App[None]):
             f'{"complete" if s.complete else "incomplete"} · cover {"yes" if s.has_cover else "no"}',
             f'From:     {s.author_name} <{s.author_email}>',
             f'Sent:     {s.sent:%Y-%m-%d %H:%M %z}' if s.sent else 'Sent:     unknown',
+            f'Msg-ID:   {s.message_id or "unknown"}',
             f'Project:  {project}',
             f'Profiles: {", ".join(sorted(item.profiles)) or "none"}',
             f'Versions: {" ".join(f"v{v}" for v in item.versions)}',

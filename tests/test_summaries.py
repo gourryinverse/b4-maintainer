@@ -142,3 +142,25 @@ def test_a_thread_pruned_while_reading_is_skipped(tmp_path, monkeypatch):
     shutil.rmtree(listed[0])
     monkeypatch.setattr(cache, 'sources', lambda: listed)  # Listed before the prune.
     assert len(cache.series(parse_mbox)) == 1
+
+
+def test_a_series_message_id_is_its_cover_letters_else_patch_ones():
+    import dataclasses
+
+    from b4_maintainer.fixtures import make_series
+    from b4_maintainer.model import Patch
+
+    single = make_series('mm: one', msgid='p1@example.org')
+    assert single.message_id == 'p1@example.org'
+    covered = dataclasses.replace(
+        single,
+        has_cover=True,
+        expected=2,
+        patches=(Patch(1, 'p1@example.org', 'a'), Patch(2, 'p2@example.org', 'b')),
+        msgids=('p1@example.org', 'cover@example.org', 'p2@example.org'),
+    )
+    assert covered.message_id == 'cover@example.org'
+    talk = dataclasses.replace(
+        single, identity='thread:root@example.org', patches=(), msgids=('a@x', 'root@example.org')
+    )
+    assert talk.message_id == 'root@example.org'

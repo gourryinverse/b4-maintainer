@@ -432,6 +432,8 @@ async def test_summary_says_which_patches_carry_fixes_or_stable():
         await loaded(pilot)
         text = app.summary_text()
         assert 'Cc stable pending' in text
+        assert f'\nMsg-ID:   {item.series.message_id}\n' in text  # Under Sent:.
+        assert text.index('Sent:') < text.index('Msg-ID:') < text.index('Project:')
         # Counted, not listed: a series of fixes would fill the pane with them.
         assert '\nFixes:    3\n' in text and '\nStable:   2\n' in text
         assert '0123456789ab' not in text
