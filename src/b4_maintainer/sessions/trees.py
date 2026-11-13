@@ -181,24 +181,38 @@ def is_space_repo(path: pathlib.Path) -> bool:
     return path.parent.name == 'repos' and path.suffix == '.git' and (path / 'HEAD').is_file()
 
 
-def _made_in(checkout: pathlib.Path) -> set[str]:
-    """The branches a space checkout made or worked on: its own, and each it switched to
-    (its HEAD's reflog, which only this checkout keeps)."""
-    found = {f'b4m/session/{checkout.parent.name}'}  # sessions/<id>/<project>: its own.
+def _switched_to(where: pathlib.Path) -> set[str]:
+    """The branches a checkout switched to (its HEAD's reflog, which only it keeps) and
+    the one it has checked out."""
+    found: set[str] = set()
     try:
-        for line in _git(checkout, 'reflog', '--format=%gs', 'HEAD'):
+        for line in _git(where, 'reflog', '--format=%gs', 'HEAD'):
             if line.startswith('checkout: moving from ') and ' to ' in line:
                 found.add(line.rsplit(' to ', 1)[1].strip())
-        found.update(_git(checkout, 'symbolic-ref', '-q', '--short', 'HEAD'))
+        found.update(_git(where, 'symbolic-ref', '-q', '--short', 'HEAD'))
     except OSError:
         pass
     return found
 
 
+def _made_in(checkout: pathlib.Path) -> set[str]:
+    """The branches a space checkout made or worked on: its own, each it switched to, and
+    each its extra checkouts (out/worktrees/) switched to."""
+    found = {f'b4m/session/{checkout.parent.name}'}  # sessions/<id>/<project>: its own.
+    try:
+        extras = [pathlib.Path(e.path) for e in space_extras(checkout)]
+    except OSError:
+        extras = []
+    for where in (checkout, *extras):
+        found |= _switched_to(where)
+    return found
+
+
 def _space_branches(path: pathlib.Path, names: list[str]) -> list[str]:
     """Of a space repository's branches, those *path* lists: a checkout, those it made or
-    worked on; the repository itself, the rest (the space's branch, and what checkouts
-    since removed left behind). So each is listed once."""
+    worked on (in it or its extra checkouts); the repository itself, the rest (the
+    space's branch, what checkouts since removed left behind, and what checkouts of no
+    session made). So each is listed once."""
     if in_space(path):
         mine = _made_in(path)
         return [n for n in names if n in mine]
@@ -210,7 +224,9 @@ def _space_branches(path: pathlib.Path, names: list[str]) -> list[str]:
                 if line.startswith('worktree ')
                 else None
             )
-            if where is not None and where.resolve() != path.resolve() and where.is_dir():
+            # Only sessions' checkouts list branches (theirs and their extras'); an extra
+            # checkout of no session's takes none from the space.
+            if where is not None and where.is_dir() and in_space(where):
                 taken |= _made_in(where)
         return [n for n in names if n not in taken]
     return names

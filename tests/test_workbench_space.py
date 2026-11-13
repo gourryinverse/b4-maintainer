@@ -285,6 +285,50 @@ def test_a_space_is_listed_as_a_tree_holding_what_its_checkouts_left(tmp_path, h
     assert service.space_branches('cmp') == ['linux: b4m/fixup/x']
 
 
+def test_branches_made_in_extra_checkouts_are_listed_once(tmp_path, home):
+    """A branch made in one of a session's extra checkouts (out/worktrees/, as the
+    b4m-branches skill says) lists under that session; one made in a checkout of no
+    session lists under the space. Never in neither."""
+    from gitutil import git
+    from test_session_workbench import project
+
+    from b4_maintainer.sessions.hub import RecordWorktrees, TreePlan
+    from b4_maintainer.sessions.trees import classify_tree
+    from b4_maintainer.space import space_records
+
+    base = project(tmp_path / 'projects' / 'linux', 'linux')
+    trees = RecordWorktrees(
+        tmp_path / 'var' / 'worktrees', {'linux': str(tmp_path / 'projects' / 'linux')}
+    )
+    space = space_dir(tmp_path, 'cmp')
+    one = make_record('w1', scope='workbench', workbench='cmp', space=str(space), model='dry-run')
+    made = trees.prepare_entry(one, TreePlan('linux', 'main'))
+    dest = made.worktree.path
+
+    def commit_in(extra: pathlib.Path, branch: str) -> None:
+        git('worktree', 'add', '-q', '--detach', str(extra), base, cwd=dest)
+        git('switch', '-q', '-c', branch, cwd=extra)
+        (extra / f'{branch.rsplit("/", 1)[1]}.c').write_text('x\n')
+        git('add', '-A', cwd=extra)
+        git('commit', '-q', '-m', f'linux: {branch}', cwd=extra)
+
+    commit_in(
+        tmp_path / 'var' / 'sessions' / 'w1' / 'work' / 'out' / 'worktrees' / 'base',
+        'b4m/pull-ahead/a',
+    )
+    commit_in(tmp_path / 'elsewhere', 'b4m/pull-ahead/b')
+
+    def listed(path: str, tree) -> dict[str, int]:
+        found = classify_tree(pathlib.Path(path), tree).branches
+        return {b.name: len(b.commits) for b in found if b.commits}
+
+    bench = Workbench('cmp', 'Compare', ())
+    [view] = space_records(tmp_path, [bench], [one.replace(trees=(made,))])
+    [space_tree] = [t.worktree for t in view.trees]
+    assert listed(dest, made.worktree) == {'b4m/pull-ahead/a': 1}
+    assert listed(space_tree.path, space_tree) == {'b4m/pull-ahead/b': 1}
+
+
 def test_the_workbench_says_which_items_its_trees_lack_and_u_brings_them(tmp_path, home):
     from gitutil import git
     from test_session_workbench import project
