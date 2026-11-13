@@ -74,10 +74,10 @@ class TreeBranches:
         return True, f'Removed the tree of {item}'
 
 
-def make(demo_root, tmp_path):
+def make(demo_root, tmp_path, branches=None):
     store = WorkbenchStore(tmp_path / 'state' / 'workbenches')
     store.save(Workbench('w', 'W', (Entry('linux', '', (Item(branch='me/fix'),)),)))
-    branches = TreeBranches()
+    branches = branches or TreeBranches()
     app = MaintainerApp(
         FixtureSource(demo_root).load,
         branches=branches,
@@ -116,6 +116,50 @@ async def test_marked_commits_are_plucked_onto_a_target_after_a_confirmation(dem
         await settle(pilot)
         assert branches.plucked == [('tree:s1', ['c1', 'c2'], 'base:linux:me/base', 'tip0')]
         assert 'Plucked 2' in screen.status_text() and screen.marked() == []
+
+
+class CheckedOutBranches(TreeBranches):
+    """The base is checked out in the project's checkout, as git refuses to move it."""
+
+    def pluck(self, workspace, item, rows, target, expected, into_checkout=False):
+        if not into_checkout:
+            return PluckResult(
+                False, error='me/base is checked out in /w/linux', checked_out='/w/linux'
+            )
+        return super().pluck(workspace, item, rows, target, expected)
+
+
+async def test_p_onto_a_checked_out_base_offers_to_move_its_checkout(demo_root, tmp_path):
+    app, branches = make(demo_root, tmp_path, CheckedOutBranches())
+    async with app.run_test(size=(200, 50)) as pilot:
+        screen = await tab(pilot)
+        screen.select_row('commit')
+        await pilot.press('p')
+        await settle(pilot)
+        await pilot.press('enter', 'y')  # Pluck onto me/base.
+        await settle(pilot)
+        offer = app.screen
+        assert isinstance(offer, Confirm) and '/w/linux' in offer.prompt
+        assert 'fast-forward' in offer.prompt and 'local changes' in offer.prompt
+        await pilot.press('y')
+        await settle(pilot)
+        assert branches.plucked == [('tree:s1', ['c1'], 'base:linux:me/base', 'tip0')]
+        assert 'Plucked 1' in screen.status_text()
+
+
+async def test_declining_to_move_the_checkout_plucks_nothing(demo_root, tmp_path):
+    app, branches = make(demo_root, tmp_path, CheckedOutBranches())
+    async with app.run_test(size=(200, 50)) as pilot:
+        screen = await tab(pilot)
+        screen.select_row('commit')
+        await pilot.press('p')
+        await settle(pilot)
+        await pilot.press('enter', 'y')
+        await settle(pilot)
+        await pilot.press('n')
+        await settle(pilot)
+        assert branches.plucked == []
+        assert 'me/base is checked out in /w/linux' in screen.status_text()
 
 
 async def test_p_with_nothing_marked_plucks_the_selected_commit(demo_root, tmp_path):

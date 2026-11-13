@@ -3566,10 +3566,16 @@ class MaintainerApp(App[None]):
         return branches.tree_targets(workspace, item)
 
     def bench_pluck(
-        self, item: str, rows: Sequence[ContentRow], target: str, expected: str
+        self,
+        item: str,
+        rows: Sequence[ContentRow],
+        target: str,
+        expected: str,
+        into_checkout: bool = False,
     ) -> PluckResult:
         branches, workspace = self._bench_branches()
-        return branches.pluck(workspace, item, self._branch_rows(rows), target, expected)
+        kwargs = {'into_checkout': True} if into_checkout else {}
+        return branches.pluck(workspace, item, self._branch_rows(rows), target, expected, **kwargs)
 
     def bench_keep_offer(
         self, item: str, target: str, picked: Sequence[tuple[str, str]]

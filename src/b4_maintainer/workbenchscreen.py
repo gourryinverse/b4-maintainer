@@ -885,13 +885,38 @@ class WorkbenchScreen(Screen[None]):
                 )
                 prompt = f'{verb} {commits} onto {label}? {how.capitalize()}. [y|N]'
 
+                def run(into_checkout: bool = False) -> None:
+                    kwargs = {'into_checkout': True} if into_checkout else {}
+                    self._act(
+                        lambda: pluck(item, rows, target, tips.get(target, ''), **kwargs),
+                        lambda r: done(r, into_checkout),
+                        f'{verb}ing {commits}…',
+                    )
+
+                def done(result: object, into_checkout: bool) -> None:
+                    checkout = getattr(result, 'checked_out', '')
+                    if not checkout or into_checkout:
+                        self._plucked(result, label, item, target)
+                        return
+
+                    def moved(yes: Optional[bool]) -> None:
+                        if yes:
+                            run(into_checkout=True)
+                        else:
+                            self._plucked(result, label, item, target)
+
+                    self.app.push_screen(
+                        Confirm(
+                            f'{label} is checked out in {checkout}. Pluck there, '
+                            'fast-forwarding that checkout (git merge --ff-only: its local '
+                            'changes stay, and it refuses if they would be overwritten)? [y|N]'
+                        ),
+                        moved,
+                    )
+
                 def answered(yes: Optional[bool]) -> None:
                     if yes:
-                        self._act(
-                            lambda: pluck(item, rows, target, tips.get(target, '')),
-                            lambda r: self._plucked(r, label, item, target),
-                            f'{verb}ing {commits}…',
-                        )
+                        run()
 
                 self.app.push_screen(Confirm(prompt), answered)
 
