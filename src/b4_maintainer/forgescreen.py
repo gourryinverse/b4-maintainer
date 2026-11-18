@@ -86,7 +86,7 @@ class ForgeScreen(Screen[None]):
         Binding('T', "launch('forge-test')", 'test'),
         Binding('f', 'fold', 'fold to prep'),
         Binding('h', 'harvest', 'harvest upstream'),
-        Binding('e', 'edit_prompt', 'edit prompt', show=False),
+        Binding('e', 'edit_prompt', 'goal'),
         Binding('z', 'toggle_quotes', 'quotes'),
     ]
     _CLOSED = frozenset({'new', 'from_upstream'})
@@ -109,6 +109,7 @@ class ForgeScreen(Screen[None]):
         self._status_text = ''
         self._keep_round = ''  # The round to select after a reload (its key).
         self._note = ''  # What the status line says after it.
+        self._goal = ''  # The open forge's goal (prompt), as read with its rounds.
         self._expand_quotes = False  # z: long quotes open in every message.
 
     def compose(self) -> ComposeResult:
@@ -314,6 +315,7 @@ class ForgeScreen(Screen[None]):
                 if said:
                     self._note = '; '.join(said)
                     self._keep_round = ''  # Show what arrived.
+            self._goal = service.store.prompt(forge.id)
             return service.rounds(forge)
 
         self._work(read, self._fill_rounds, 'forge-rounds')
@@ -336,9 +338,16 @@ class ForgeScreen(Screen[None]):
             self._status(self._note or 'r replies; R reviews; s submits the round')
         else:
             self.query_one('#forge-tree', OptionList).clear_options()
+            goal = self._goal.strip()
+            said = (
+                f'Goal:\n\n{goal}\n\ne edits it in your editor; running sessions read it.'
+                if goal
+                else 'No goal yet: e writes it in your editor, or P launches a design session '
+                'that works it out with you.'
+            )
             self.query_one('#forge-content', TextPane).set_text(
-                'Nothing posted yet.\n\nP designs the work, I implements it; what a session '
-                'leaves arrives here when it finishes. e edits the prompt.'
+                f'Nothing posted yet.\n\n{said}\n\nP designs the work, I implements it; what '
+                'a session leaves arrives here when it finishes.'
             )
             listing.focus()
             self._status(self._note or 'Nothing posted yet; escape closes the forge')
@@ -495,8 +504,9 @@ class ForgeScreen(Screen[None]):
         self.app.push_screen(Ask('Name the new forge'), named)
 
     def _made(self, forge: Forge) -> None:
+        """Made, the forge opens: its goal is the next thing to give."""
         self._reload(forge.id)
-        self._status(f'Made {forge.label}: Enter opens it; e writes its prompt')
+        self._open_forge(forge)
 
     def _upstream_choices(
         self, project: str = '', older: bool = False
@@ -582,7 +592,21 @@ class ForgeScreen(Screen[None]):
         path = self.service.store.prompt_path(forge.id)
         if not path.exists():
             self.service.store.set_prompt(forge.id, '')
-        self._edit(path, lambda: self._status('Prompt saved'))
+        service = self.service
+
+        def saved() -> None:
+            def refresh() -> None:
+                service.refresh_goal(forge)
+
+            self._work(refresh, lambda _none: self._goal_saved(), 'forge-goal')
+
+        self._edit(path, saved)
+
+    def _goal_saved(self) -> None:
+        if self._rounds:
+            self._status('Goal saved; sessions read it in forge/prompt.md')
+        else:
+            self._reopen(note='Goal saved; sessions read it in forge/prompt.md')
 
     def action_reply(self) -> None:
         """r: reply to the selected message in the editor (b4's quote); saved, it is posted

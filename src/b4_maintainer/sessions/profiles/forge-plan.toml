@@ -23,5 +23,5 @@ custom_label = "Notes for this session (optional)"
 id = "plan"
 label = "design"
 default = true
-prompt = """Design the work in the forge's prompt.md before any code, following the kernel-style skill's planning phase: split it into one logical change per patch, name what each patch does and how it will be tested. Write the design to out/forge/design.md. If rounds/ holds a plan round with review replies, write the revised design that answers them, and answer each comment in out/forge/replies/."""
+prompt = """Work out the design with the maintainer, here in this session, before any code: they are with you. The goal is in forge/prompt.md; when it is empty or leaves the scope unclear, ask the maintainer what they want: do not wait for the file. Follow the kernel-style skill's planning phase: propose one logical change per patch, their order, and how each is tested; take the maintainer's answers and revise. When the maintainer agrees, write the design to out/forge/design.md (problem, scope, patch list, verification). The forge posts it as a plan round, and a fresh implement session (I in the forge) writes the first round from it: tell the maintainer so; your part is done. If rounds/ holds a plan round with review replies, go through them with the maintainer and write the revised design."""
 skills = ["kernel-style"]

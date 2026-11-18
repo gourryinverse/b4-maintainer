@@ -185,7 +185,7 @@ def test_a_plan_is_posted_reviewed_and_accepted(world, tmp_path):
     _project, service = world
     forge = service.create('Demo', 'linux', 'main', 'Add two files.\n')
     session(service, forge, 's1', 'forge-plan', {'design.md': 'Two patches: f1, then f2.\n'})
-    assert service.collect(forge) == ['s1: the design, as plan r1']
+    assert service.collect(forge) == ['s1: the design, as plan r1; I implements it']
     plan = Round(0, 1)
     assert service.rounds(forge) == [plan] and plan.label == 'plan r1'
     _series, thread = service.thread(forge, plan)
@@ -513,10 +513,18 @@ def test_collecting_again_takes_only_what_is_new(world, tmp_path):
     _project, service = world
     forge = service.create('Demo', 'linux', 'main', '')
     home = session(service, forge, 's1', 'forge-plan', {'design.md': 'One patch.\n'})
-    assert service.collect(forge) == ['s1: the design, as plan r1']
+    assert service.collect(forge) == ['s1: the design, as plan r1; I implements it']
     assert service.collect(forge) == []  # Nothing new.
     # The same session, asked again: it rewrites its design.
     (home / 'work' / 'out' / 'forge' / 'design.md').write_text('Two patches.\n')
-    assert service.collect(forge) == ['s1: the design, as plan r2']
+    assert service.collect(forge) == ['s1: the design, as plan r2; I implements it']
     assert service.forge_for(forge.workbench) == forge
     assert service.forge_for('no-such-bench') is None
+
+
+def test_a_forge_without_a_goal_says_the_design_session_asks_for_it(world, tmp_path):
+    _project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    folder = service.write_context(forge)
+    assert 'ask the maintainer' in (folder / 'prompt.md').read_text()
+    assert 'ask the maintainer' in (folder / 'README.md').read_text()

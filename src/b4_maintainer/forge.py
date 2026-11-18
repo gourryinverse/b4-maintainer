@@ -58,6 +58,11 @@ AUTHORS = {
     'forge-test': ('forge test robot', 'test@forge.local'),
 }
 
+NO_GOAL = """\
+No goal written yet: ask the maintainer what the work is (the design session works it
+out with them).
+"""
+
 CONTEXT_README = """\
 # Forge: {label}
 
@@ -65,7 +70,8 @@ You work on a patch series for the {project} project, the way an engineer works 
 mailing list: the series is posted, reviewed inline, and reworked in rounds. This
 folder is the forge's, kept current while you work:
 
-- prompt.md: the maintainer's goal for the work.
+- prompt.md: the maintainer's goal for the work. When there is none yet,
+  ask the maintainer (the design session works it out with them); do not wait for it.
 - design.md: the design (plan), when there is one; accepted.md says whether the
   maintainer accepted it.
 - rounds/: the threads of the newest rounds as mbox files: the newest local round (the
@@ -816,8 +822,12 @@ class ForgeService:
         """Where the work started and where it is: each round (its patches, replies by
         who, findings, what changed since the round before), then the first series
         round against the newest."""
+        goal = self.store.prompt(forge.id).strip()
         lines = [
             f'{forge.label} · {forge.project} on {forge.base or "(no base)"} · {forge.mode}',
+            '',
+            'Goal:',
+            *(f'  {line}' for line in (goal or 'none written yet').splitlines()),
             '',
         ]
         series_rounds = []
@@ -1108,7 +1118,7 @@ class ForgeService:
         design = out / 'design.md'
         if fresh(design) and design.read_text().strip():
             rnd = self.post_plan(forge, design.read_text(), author)
-            said.append(f'{sid}: the design, as {rnd.label}')
+            said.append(f'{sid}: the design, as {rnd.label}; I implements it')
         for path in sorted((out / 'replies').glob('*.txt')) if (out / 'replies').is_dir() else []:
             if not fresh(path):
                 continue
@@ -1160,6 +1170,17 @@ class ForgeService:
 
     # The sessions' view.
 
+    def _write_goal(self, forge: Forge, folder: pathlib.Path) -> None:
+        goal = self.store.prompt(forge.id)
+        (folder / 'prompt.md').write_text(goal if goal.strip() else NO_GOAL)
+
+    def refresh_goal(self, forge: Forge) -> None:
+        """The goal edited: its copy in the context folder, where running sessions read
+        it, follows (once a session has made the folder)."""
+        folder = self.space(forge) / 'context' / 'forge'
+        if folder.is_dir():
+            self._write_goal(forge, folder)
+
     def write_context(
         self, forge: Forge, focus: Optional[Round] = None, msgid: str = ''
     ) -> pathlib.Path:
@@ -1178,7 +1199,7 @@ class ForgeService:
                 label=forge.label, project=forge.project, branch=forge.next_branch, bench=bench
             )
         )
-        (folder / 'prompt.md').write_text(self.store.prompt(forge.id))
+        self._write_goal(forge, folder)
         (folder / 'design.md').write_text(self.design(forge))
         accepted = self.accepted_plan(forge)
         (folder / 'accepted.md').write_text(

@@ -149,8 +149,14 @@ async def test_n_makes_a_forge_and_starts_nothing(demo_root, tmp_path):
             'linux',
             'mainline/master',
         )
-        assert screen.forge_labels() == ['CXL rework · linux on mainline/master · nothing posted']
         assert service.rounds(forge) == []  # Nothing posted; no session service to start.
+        # Made, it opens: no goal yet, and how to give one.
+        assert screen.is_open()
+        assert 'No goal yet' in screen.content_text()
+        assert 'e writes it' in screen.content_text() and 'P' in screen.content_text()
+        await pilot.press('escape')
+        await settle(pilot)
+        assert screen.forge_labels() == ['CXL rework · linux on mainline/master · nothing posted']
 
 
 async def test_without_a_forge_service_f7_does_nothing(demo_root):
@@ -234,10 +240,28 @@ async def test_e_edits_the_prompt(demo_root, tmp_path, posted):
 
     app.edit_in_terminal = edit
     async with app.run_test(size=(180, 40)) as pilot:
-        await open_forge(pilot)
+        screen = await open_forge(pilot)
+        shown = {b.binding.action for b in screen.active_bindings.values() if b.binding.show}
+        assert 'edit_prompt' in shown  # In the footer, not just a hint.
+        folder = service.write_context(forge)  # As a launched session has it.
         await pilot.press('e')
         await settle(pilot)
         assert service.store.prompt(forge.id) == 'Add two files, f2 first.\n'
+        # A running session reads the new goal.
+        assert (folder / 'prompt.md').read_text() == 'Add two files, f2 first.\n'
+        assert 'sessions read it' in screen.status_text()
+        await pilot.press('t')
+        await settle(pilot)
+        assert 'Add two files, f2 first.' in screen.content_text()  # The timeline gives it.
+
+
+async def test_a_forge_with_nothing_posted_shows_its_goal(demo_root, tmp_path):
+    app, service = make(demo_root, tmp_path)
+    forge = service.create('Demo work', 'linux', 'mainline/master', 'Add two files.\n')
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_forge(pilot)
+        assert 'Goal:' in screen.content_text() and 'Add two files.' in screen.content_text()
+        assert service.rounds(forge) == []
 
 
 async def test_a_plan_is_accepted_with_A(demo_root, tmp_path, identity):

@@ -301,7 +301,7 @@ nothing starts on its own: every session opens the launch dialog, its task ticke
 starts when you confirm.
 
 With no forge open, the tab lists the forges. `n` makes one (a name, a project, a base)
-and its workbench with it; `u` starts one from a series already posted upstream (anyone's:
+and its workbench with it, and opens it to give its goal; `u` starts one from a series already posted upstream (anyone's:
 authorship stays theirs), its newest version harvested; `F` on LKML does the same from the
 series you are on, or harvests it into a forge. `Enter` opens a forge and the
 whole tab is that forge: its rounds, the selected round's thread, and the selected
@@ -309,8 +309,8 @@ message. Escape closes the forge, then leaves the tab.
 
 | Key | In an open forge |
 |---|---|
-| `e` | Edit the forge's prompt (its goal). |
-| `P`, `A` | Launch a design session; accept the selected plan (an `Acked-by:` reply). |
+| `e` | Write or edit the forge's goal (its prompt) in your editor, any time: running sessions read it in `forge/prompt.md`. With nothing posted the forge shows it; the timeline starts with it. |
+| `P`, `A` | Launch a design session: it works the goal and design out with you beside the app (no prompt needed first), and writes the design once you agree, posted as `plan rN`; `I` then implements the first round. `A` accepts the selected plan (an `Acked-by:` reply). |
 | `I` | Launch the implement session. |
 | `r` | Reply to the selected message in your editor (b4's quote); posted to the local list. |
 | `z` | Open every long quote in the messages, or fold them again; a click on a quote's marker toggles that one. |

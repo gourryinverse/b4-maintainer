@@ -263,3 +263,16 @@ def test_reviews_run_in_the_background_and_kernel_style_suggests_changes():
     assert 'suggest' in prompt.lower() and 'prose' in prompt.lower()
     plain = parse_profile('id = "x"\nversion = 1\nlabel = "X"\n')
     assert not plain.background
+
+
+def test_the_design_session_works_the_design_out_with_the_maintainer_then_hands_off():
+    from b4_maintainer.sessions.profiles import load_profiles
+
+    builtin = pathlib.Path(__file__).parent.parent / 'src/b4_maintainer/sessions/profiles'
+    profiles = {p.id: p for p in load_profiles(builtin, None)[0]}
+    plan = profiles['forge-plan']
+    assert not plan.background  # A conversation beside the app.
+    prompt = plan.fields[0].choices[0].prompt
+    assert 'ask the maintainer' in prompt and 'do not wait' in prompt
+    assert 'agrees' in prompt and 'out/forge/design.md' in prompt
+    assert 'implement session' in prompt  # The hand-off to the first round.
