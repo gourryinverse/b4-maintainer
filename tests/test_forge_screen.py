@@ -608,11 +608,11 @@ async def test_sashiko_runs_as_a_job_with_the_model_picked(demo_root, tmp_path, 
     service.sashiko_binary = binary
     ran = []
 
-    def review(f, rnd, model, thinking='', run=None, project=None):
+    def start(f, rnd, model, project=None, thinking=''):
         ran.append((f.id, rnd.label, model))
-        return f'Sashiko on {rnd.label} ({model}): 1 new finding (high 1); 10 in, 1 out'
+        return f'Sashiko is reviewing {rnd.label} (pi: default) in the background'
 
-    service.sashiko = review
+    service.start_sashiko = start
     async with app.run_test(size=(220, 50)) as pilot:
         screen = await open_forge(pilot)
         await pilot.press('s', 'r')
@@ -625,7 +625,9 @@ async def test_sashiko_runs_as_a_job_with_the_model_picked(demo_root, tmp_path, 
         await pilot.press('enter')
         await settle(pilot)
         assert ran == [(forge.id, 'v1 r2', '')]
-        assert screen.status_text().startswith('Sashiko on v1 r2')
+        assert screen.status_text().startswith('Sashiko is reviewing v1 r2')
+        assert 'runs on if you quit' in screen.status_text()
+        assert screen.query_one('#forge-rounds').border_subtitle == 'Sashiko starting'
         assert runner.launches == []  # A job, not a session.
 
 
@@ -868,11 +870,11 @@ async def test_sashiko_reviews_an_upstream_round_too(demo_root, tmp_path, posted
     service.sashiko_binary = binary
     ran = []
 
-    def review(f, rnd, model, thinking='', run=None, project=None):
+    def start(f, rnd, model, project=None, thinking=''):
         ran.append((rnd.label, project))
-        return f'Sashiko on {rnd.label} ({model}): no findings'
+        return f'Sashiko is reviewing {rnd.label} in the background'
 
-    service.sashiko = review
+    service.start_sashiko = start
     async with app.run_test(size=(220, 50)) as pilot:
         screen = await open_forge(pilot)
         assert screen.selected_round() == 'v1 upstream'
@@ -882,7 +884,7 @@ async def test_sashiko_reviews_an_upstream_round_too(demo_root, tmp_path, posted
         await settle(pilot)
         assert [label for label, _project in ran] == ['v1 upstream']
         assert ran[0][1] is not None  # The project, to apply the posting from.
-        assert screen.status_text().startswith('Sashiko on v1 upstream')
+        assert screen.status_text().startswith('Sashiko is reviewing v1 upstream')
 
 
 async def test_a_new_forge_on_a_base_the_checkout_lacks_is_refused(demo_root, tmp_path):
@@ -977,3 +979,42 @@ async def test_a_forge_opens_even_when_collecting_fails(demo_root, tmp_path, pos
         screen = await open_forge(pilot)
         assert screen.round_labels() == ['v1 r1', 'v1 r2']  # Its rounds, all the same.
         assert 'Cannot collect' in screen.status_text() and 'c tries again' in screen.status_text()
+
+
+async def test_a_running_sashiko_shows_its_progress_offers_to_stop_and_lands(
+    demo_root, tmp_path, posted
+):
+    from b4_maintainer.app import Confirm
+
+    app, service, _runner = make_live(demo_root, tmp_path)
+    reviewed(service, posted)
+    job = {'round': 'v1-r2', 'label': 'v1 r2', 'model': '', 'pid': 1}
+    state = {'ended': False, 'landed': False}
+    stopped = []
+
+    def poll(f):
+        if not state['ended']:
+            return '3/8', ''
+        if state['landed']:
+            return '', ''
+        state['landed'] = True
+        return '', 'Sashiko on v1 r2 (pi default): no new findings'
+
+    service.sashiko_job = lambda f: {} if state['landed'] else dict(job)
+    service.sashiko_poll = poll
+    service.stop_sashiko = lambda f: stopped.append(f.id) or 'Stopped Sashiko on v1 r2'
+    async with app.run_test(size=(220, 50)) as pilot:
+        screen = await open_forge(pilot)  # Opening it looks at the job: 3 of 8 done.
+        assert screen.query_one('#forge-rounds').border_subtitle == 'Sashiko 3/8'
+        await pilot.press('s', 'r', 's')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm) and 'reviewing v1 r2' in app.screen.prompt
+        await pilot.press('n')  # Left running.
+        await settle(pilot)
+        assert stopped == []
+        state['ended'] = True
+        app._sashiko_due = 0.0
+        app.poll_sessions()  # It ended: its results land.
+        await settle(pilot)
+        assert 'no new findings' in screen.status_text()
+        assert screen.query_one('#forge-rounds').border_subtitle == ''

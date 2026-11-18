@@ -101,6 +101,7 @@ class ForgeScreen(Screen[None]):
         self._note = ''  # What the status line says after it.
         self._goal = ''  # The open forge's goal (prompt), as read with its rounds.
         self._expand_quotes = False  # z: long quotes open in every message.
+        self._sashiko_progress = ''  # The open forge's Sashiko job, as far as it is.
 
     def compose(self) -> ComposeResult:
         yield TabBar('forge')
@@ -393,6 +394,14 @@ class ForgeScreen(Screen[None]):
                     self._keep_round = ''  # Show what arrived.
                 elif asked:
                     self._note = "Nothing new from the forge's sessions"
+            if collect:  # A Sashiko job that ended (the app closed meanwhile, say).
+                try:
+                    progress, landed = service.sashiko_poll(forge)
+                except Exception as exc:
+                    progress, landed = '', f'Sashiko: {exc}'
+                if landed:
+                    self._note = '; '.join(x for x in (self._note, landed) if x)
+                self._sashiko_progress = progress
             self._goal = service.store.prompt(forge.id)
             return service.rounds(forge)
 
@@ -400,6 +409,8 @@ class ForgeScreen(Screen[None]):
 
     def _fill_rounds(self, rounds: list[Round]) -> None:
         self._rounds = rounds
+        if self._open is not None:
+            self.show_sashiko(self._open.id, self._sashiko_progress)
         listing = self.query_one('#forge-rounds', OptionList)
         with self.prevent(OptionList.OptionHighlighted):
             listing.clear_options()
@@ -432,6 +443,15 @@ class ForgeScreen(Screen[None]):
             )
             listing.focus()
             self._status(self._note or 'Nothing posted yet; escape closes the forge')
+
+    def show_sashiko(self, fid: str, progress: str) -> None:
+        """The open forge's Sashiko job, as far as it is (patches reviewed of all), on the
+        rounds list; '' when none runs."""
+        if self._open is None or self._open.id != fid:
+            return
+        self._sashiko_progress = progress  # Kept for the next reload of the rounds.
+        rounds = self.query_one('#forge-rounds', OptionList)
+        rounds.border_subtitle = f'Sashiko {progress}' if progress else ''
 
     def _round(self) -> Optional[Round]:
         index = self.query_one('#forge-rounds', OptionList).highlighted
@@ -1007,8 +1027,39 @@ class ForgeScreen(Screen[None]):
         self.app.push_screen(Menu('Which review?', choices), picked)
 
     def _sashiko(self) -> None:
-        """Sashiko on the selected round: the model picked from pi's list, then a job in
-        the background (minutes); its findings and inline review land on the round."""
+        """Sashiko on the selected round: the model picked from pi's list, then a job of
+        its own, detached (minutes to hours; it runs on if the app quits): its progress on
+        the rounds list, its findings and inline review landing on the round when it
+        ends. While one runs, this offers to stop it."""
+        from .app import Confirm
+
+        forge = self._open
+        if forge is None:
+            return
+        service = self.service
+
+        def running(job: dict[str, Any]) -> None:
+            if not job:
+                self._sashiko_start()
+                return
+
+            def answered(yes: Optional[bool]) -> None:
+                if yes:
+                    self._work(
+                        lambda: service.stop_sashiko(forge), self._sashiko_stopped, 'forge-sashiko'
+                    )
+
+            label = job.get('label', 'a round')
+            prompt = f'Sashiko is reviewing {label}. Stop it? [y|N]'
+            self.app.push_screen(Confirm(prompt), answered)
+
+        self._work(lambda: service.sashiko_job(forge), running, 'forge-sashiko')
+
+    def _sashiko_stopped(self, said: str) -> None:
+        self.show_sashiko(self._open.id if self._open is not None else '', '')
+        self._status(said)
+
+    def _sashiko_start(self) -> None:
         forge, rnd = self._open, self._round()
         missing = self._sashiko_missing()
         if missing:
@@ -1034,13 +1085,18 @@ class ForgeScreen(Screen[None]):
             model = by_key.get(key, '')
             service = self.service
 
-            def done(said: str) -> None:
-                self._reopen(rnd.key, said)
+            def started(said: str) -> None:
+                self.show_sashiko(forge.id, 'starting')
+                self._status(
+                    f'{said}: its progress shows on the rounds list; it runs on if you quit'
+                )
 
-            self._status(f'Sashiko is reviewing {rnd.label} (pi: {model or "default"})…')
+            self._status(f'Checking out {rnd.label} for Sashiko…')
             checkout = self._checkout(forge)
             self._work(
-                lambda: service.sashiko(forge, rnd, model, project=checkout), done, 'forge-sashiko'
+                lambda: service.start_sashiko(forge, rnd, model, project=checkout),
+                started,
+                'forge-sashiko',
             )
 
         def offer(choices: list[tuple[str, str]]) -> None:

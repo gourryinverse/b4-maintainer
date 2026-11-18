@@ -31,6 +31,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import tomllib
@@ -317,6 +318,45 @@ def _run_sashiko(argv: list[str], cwd: str, settings: pathlib.Path) -> tuple[int
     return run.returncode, run.stdout, run.stderr
 
 
+def _alive(pid: int) -> bool:
+    """Whether process *pid* still runs (not a zombie we could reap: it is detached)."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:  # Started by this app and ended: a zombie until reaped.
+        done, _status = os.waitpid(pid, os.WNOHANG)
+        return done == 0
+    except ChildProcessError:
+        return True  # Not our child (the app restarted): it exists.
+
+
+_PATCH_LINE = re.compile(r'^\s*\[Patch (\d+)\] .* \| (.+)$')
+
+
+def sashiko_progress(log: str) -> str:
+    """How far a Sashiko review is, from its log (its stderr: `Running review for N
+    patches`, then a line per patch as its state changes, `[Patch N] subject | state`)."""
+    total = 0
+    states: dict[int, str] = {}
+    for line in log.splitlines():
+        found = re.match(r'Running review for (\d+) patch', line.strip())
+        if found:
+            total = int(found[1])
+        matched = _PATCH_LINE.match(line)
+        if matched:
+            states[int(matched[1])] = matched[2].strip()
+    if not total:
+        applying = re.findall(r'Applying patch (\d+)/(\d+)', log)
+        return f'applying {applying[-1][0]}/{applying[-1][1]}' if applying else 'starting'
+    done = sum(1 for st in states.values() if st in ('Finished', 'Incomplete'))
+    return f'{done}/{total}'
+
+
 def _write(path: pathlib.Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f'.{path.name}.tmp')
@@ -461,6 +501,8 @@ class ForgeService:
         project's prep branch stays: it is the maintainer's to send or delete."""
         from .space import remove_space
 
+        if self.sashiko_job(forge):
+            self.stop_sashiko(forge)  # Its job writes in the forge's folder.
         self.store.delete(forge.id)
         shutil.rmtree(self.forge_dir(forge), ignore_errors=True)
         remove_space(self.space(forge))
@@ -1116,11 +1158,25 @@ class ForgeService:
         run: Optional[Any] = None,
         project: Optional[pathlib.Path] = None,
     ) -> str:
-        """Sashiko's review of round *rnd*, run locally (`sashiko review <patches>
-        --format json`) on a checkout of the round, pi answering its model turns with
-        *model* (`provider/id`; empty: pi's default): its findings on the round, its
-        inline review as a reply on each patch. What it found, one line. Blocking: a
-        review takes minutes."""
+        """Sashiko's review of round *rnd*, run locally and waited for (start_sashiko runs
+        it detached): its findings on the round, its inline review as a reply on each
+        patch. What it found, one line. Blocking: a review takes minutes to hours."""
+        argv, checkout, settings = self._sashiko_setup(forge, rnd, model, thinking, project)
+        code, out, err = (run or _run_sashiko)(argv, str(checkout), settings)
+        return self._sashiko_result(forge, rnd, model, code, out, err)
+
+    def _sashiko_setup(
+        self,
+        forge: Forge,
+        rnd: Round,
+        model: str,
+        thinking: str,
+        project: Optional[pathlib.Path],
+    ) -> tuple[list[str], pathlib.Path, pathlib.Path]:
+        """How to run Sashiko on round *rnd* (`sashiko review <patches> --format json`, pi
+        answering its model turns with *model*: `provider/id`, empty for pi's default),
+        from a checkout of the round (an upstream round applied first, from *project*):
+        (argv, the checkout, its settings). Blocking."""
         binary = self.sashiko_binary
         if binary is None or not binary.is_file():
             raise ForgeError('Sashiko needs a build of deps/sashiko (cargo build --release)')
@@ -1148,7 +1204,11 @@ class ForgeService:
         argv += ['--format', 'json']
         if self.sashiko_prompts is not None:
             argv += ['--prompts', str(self.sashiko_prompts)]
-        code, out, err = (run or _run_sashiko)(argv, str(checkout), settings)
+        return argv, checkout, settings
+
+    def _sashiko_result(
+        self, forge: Forge, rnd: Round, model: str, code: int, out: str, err: str
+    ) -> str:
         if code not in (0, 1):  # 1: high or critical findings.
             raise ForgeError(f'Sashiko failed ({code}): {err.strip()[-500:]}')
         try:
@@ -1157,6 +1217,123 @@ class ForgeService:
             raise ForgeError(f'Sashiko wrote no JSON: {exc}') from exc
         _write(self._rounds_dir(forge) / rnd.key / 'sashiko.json', out)
         return self._land_sashiko(forge, rnd, model, data)
+
+    # Sashiko as a job of its own: detached from the app, so quitting it loses nothing.
+
+    def _job_dir(self, forge: Forge) -> pathlib.Path:
+        return self.forge_dir(forge) / 'sashiko'
+
+    def sashiko_job(self, forge: Forge) -> dict[str, Any]:
+        """The forge's Sashiko job (round, model, pid, started), or {} when none runs or
+        waits to land."""
+        try:
+            job = json.loads((self._job_dir(forge) / 'job.json').read_text())
+        except (OSError, ValueError):
+            return {}
+        return job if isinstance(job, dict) else {}
+
+    @_serialized
+    def start_sashiko(
+        self,
+        forge: Forge,
+        rnd: Round,
+        model: str,
+        project: Optional[pathlib.Path] = None,
+        thinking: str = '',
+    ) -> str:
+        """Sashiko on round *rnd* as a detached job (its own process group, its output,
+        log, and exit status in the forge's sashiko/ folder): it runs on if the app
+        quits; sashiko_poll lands its results. One job per forge. Blocking while the
+        round is checked out, not while it is reviewed."""
+        job = self.sashiko_job(forge)
+        if job:
+            raise ForgeError(f'Sashiko is already reviewing {job.get("label", "a round")}')
+        argv, checkout, _settings = self._sashiko_setup(forge, rnd, model, thinking, project)
+        folder = self._job_dir(forge)
+        for name in ('out.json', 'log.txt', 'code'):
+            (folder / name).unlink(missing_ok=True)
+        script = '"$@" >"$B4M_OUT" 2>"$B4M_LOG"; echo $? >"$B4M_CODE.tmp"; mv "$B4M_CODE.tmp" "$B4M_CODE"'
+        env = {
+            **os.environ,
+            'B4M_OUT': str(folder / 'out.json'),
+            'B4M_LOG': str(folder / 'log.txt'),
+            'B4M_CODE': str(folder / 'code'),
+        }
+        proc = subprocess.Popen(
+            ['sh', '-c', script, 'sh', *argv],
+            cwd=checkout,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        record = {
+            'round': rnd.key,
+            'label': rnd.label,
+            'model': model,
+            'pid': proc.pid,
+            'started': _now(),
+        }
+        _write(folder / 'job.json', json.dumps(record))
+        return f'Sashiko is reviewing {rnd.label} (pi: {model or "default"}) in the background'
+
+    @_serialized
+    def sashiko_poll(self, forge: Forge) -> tuple[str, str]:
+        """The forge's Sashiko job looked at (blocking): (its progress while it runs, what
+        landed once it ended); both '' without a job. An ended job's results land on its
+        round, or why they cannot is said; either way the job is done."""
+        job = self.sashiko_job(forge)
+        if not job:
+            return '', ''
+        folder = self._job_dir(forge)
+        code_path = folder / 'code'
+        if not code_path.is_file():
+            if _alive(int(job.get('pid', 0))):
+                log = folder / 'log.txt'
+                text = log.read_text(errors='replace') if log.is_file() else ''
+                return sashiko_progress(text), ''
+            said = f'Sashiko on {job.get("label")} ended without an exit status (killed?)'
+            return '', self._end_job(forge, said)
+        rnd = self._round_by_key(forge, str(job.get('round', '')))
+        out = folder / 'out.json'
+        log = folder / 'log.txt'
+        try:
+            code = int(code_path.read_text().strip() or '1')
+            if rnd is None:
+                raise ForgeError(f'its round {job.get("label")} is gone')
+            said = self._sashiko_result(
+                forge,
+                rnd,
+                str(job.get('model', '')),
+                code,
+                out.read_text() if out.is_file() else '',
+                log.read_text(errors='replace') if log.is_file() else '',
+            )
+        except (ForgeError, ValueError) as exc:
+            said = f'Sashiko on {job.get("label")}: {exc}'
+        return '', self._end_job(forge, said)
+
+    @_serialized
+    def stop_sashiko(self, forge: Forge) -> str:
+        """The forge's running Sashiko job, stopped (its process group ended)."""
+        job = self.sashiko_job(forge)
+        if not job:
+            return 'No Sashiko review is running'
+        pid = int(job.get('pid', 0))
+        if pid > 0 and _alive(pid):
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        return self._end_job(forge, f'Stopped Sashiko on {job.get("label")}')
+
+    def _end_job(self, forge: Forge, said: str) -> str:
+        (self._job_dir(forge) / 'job.json').unlink(missing_ok=True)  # Its log stays.
+        return said
+
+    def _round_by_key(self, forge: Forge, key: str) -> Optional[Round]:
+        return next((r for r in self.rounds(forge) if r.key == key), None)
 
     @_serialized
     def _land_sashiko(self, forge: Forge, rnd: Round, model: str, data: Any) -> str:

@@ -751,3 +751,106 @@ def test_a_damaged_prep_checkout_is_made_again(world, tmp_path):
     commit_series(checkout, forge, ['uno\n', 'two\n'])
     session(service, forge, 's2', 'forge-rework', {'cover.md': COVER + '\nChanges in r2:\n- f1\n'})
     assert service.collect(forge) == [f'the series on {forge.next_branch}, as v1 r2']
+
+
+def fake_sashiko(tmp_path, output, gate):
+    """A stand-in for `sashiko review`: progress on stderr as Sashiko writes it when
+    redirected, then (once *gate* exists) its JSON on stdout; 1 as with high findings."""
+    data = tmp_path / 'sashiko-output.json'
+    data.write_text(json.dumps(output))
+    binary = tmp_path / 'sashiko'
+    binary.write_text(
+        '#!/bin/sh\n'
+        'echo "Running review for 2 patches" >&2\n'
+        'echo "      [Patch 1] demo: add f1 | Planning stages..." >&2\n'
+        'echo "      [Patch 1] demo: add f1 | Finished" >&2\n'
+        'echo "      [Patch 2] demo: add f2 | Reviewing..." >&2\n'
+        f'while [ ! -f {gate} ]; do sleep 0.05; done\n'
+        f'cat {data}\n'
+        'exit 1\n'
+    )
+    binary.chmod(0o755)
+    return binary
+
+
+def wait_for(check, timeout=10.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        found = check()
+        if found:
+            return found
+        time.sleep(0.05)
+    raise AssertionError('timed out')
+
+
+def test_sashiko_runs_detached_shows_progress_and_lands_when_it_ends(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER})
+    service.collect(forge)
+    gate = tmp_path / 'go'
+    output = sashiko_output(['demo: add f1', 'demo: add f2'])
+    service.sashiko_binary = fake_sashiko(tmp_path, output, gate)
+    said = service.start_sashiko(forge, Round(1, 1), 'provider/model-x')
+    assert 'in the background' in said
+    job = service.sashiko_job(forge)
+    assert job['label'] == 'v1 r1' and job['model'] == 'provider/model-x'
+    with pytest.raises(ForgeError, match='already reviewing v1 r1'):
+        service.start_sashiko(forge, Round(1, 1), '')
+    progress = wait_for(lambda: service.sashiko_poll(forge)[0] == '1/2' and '1/2')
+    assert progress == '1/2'  # One of two patches finished.
+    gate.write_text('')
+    landed = wait_for(lambda: service.sashiko_poll(forge)[1])
+    assert landed.startswith('Sashiko on v1 r1 (provider/model-x): 1 new finding (high 1)')
+    assert service.sashiko_job(forge) == {}  # Done.
+    _series, thread = service.thread(forge, Round(1, 1))
+    assert [r.message.author_email for p in thread.patches for r in p.replies] == [
+        'sashiko@forge.local'
+    ] * 2
+    assert service.sashiko_poll(forge) == ('', '')
+
+
+def test_a_sashiko_job_can_be_stopped_and_a_lost_one_is_said(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER})
+    service.collect(forge)
+    service.sashiko_binary = fake_sashiko(tmp_path, {}, tmp_path / 'never')
+    service.start_sashiko(forge, Round(1, 1), '')
+    pid = service.sashiko_job(forge)['pid']
+    assert service.stop_sashiko(forge) == 'Stopped Sashiko on v1 r1'
+    assert service.sashiko_job(forge) == {}
+    from b4_maintainer.forge import _alive
+
+    wait_for(lambda: not _alive(pid))
+    # A job whose process is gone without an exit status (the machine restarted, say).
+    service.start_sashiko(forge, Round(1, 1), '')
+    job = service.sashiko_job(forge)
+    import os
+    import signal
+
+    os.killpg(job['pid'], signal.SIGKILL)
+    wait_for(lambda: not _alive(job['pid']))
+    _progress, said = service.sashiko_poll(forge)
+    assert 'ended without an exit status' in said
+    assert service.sashiko_job(forge) == {}
+
+
+def test_the_progress_reads_sashikos_own_lines():
+    from b4_maintainer.forge import sashiko_progress
+
+    assert sashiko_progress('') == 'starting'
+    assert sashiko_progress('   Applying patch 3/62: mm: x\n') == 'applying 3/62'
+    log = (
+        'Running review for 3 patches\n'
+        '      [Patch 1] a | Finished\n'
+        '      [Patch 2] b | Incomplete\n'
+        '      [Patch 3] c | Reviewing...\n'
+    )
+    assert sashiko_progress(log) == '2/3'

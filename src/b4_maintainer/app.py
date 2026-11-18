@@ -5,6 +5,7 @@ import dataclasses
 import datetime
 import email.utils
 import pathlib
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 
@@ -608,6 +609,7 @@ class MaintainerApp(App[None]):
         self._finding = -1
         self._shown: Optional[tuple[str, int]] = None
         self._expand_quotes = False
+        self._sashiko_due = 0.0  # When to look at the forges' Sashiko jobs next.
         self._reader_pane = 'tree'
         self._artifacts: list[Attachment] = []  # The thread's session output (F3).
 
@@ -2621,10 +2623,44 @@ class MaintainerApp(App[None]):
             overview: Optional[Overview] = self._sessions.overview()
         except Exception:  # A record being written, a vanished directory: next poll.
             overview = None
+        jobs = self._poll_sashiko()
         try:
             self.call_from_thread(self._apply_overview, overview)
+            if jobs:
+                self.call_from_thread(self._apply_sashiko, jobs)
         except RuntimeError:  # The app has stopped.
             self._polling = False
+
+    def _poll_sashiko(self) -> list[tuple[str, str, str]]:
+        """Each forge's Sashiko job, every few seconds: (forge, its progress, what landed
+        when it ended). Blocking: run from the poll's worker."""
+        service = self._forges
+        now = time.monotonic()
+        if service is None or now < self._sashiko_due:
+            return []
+        self._sashiko_due = now + SASHIKO_POLL
+        found = []
+        try:
+            forges, _problems = service.store.list()
+        except Exception:
+            return []
+        for forge in forges:
+            if not service.sashiko_job(forge):
+                continue
+            try:
+                progress, landed = service.sashiko_poll(forge)
+            except Exception as exc:
+                progress, landed = '', f'Sashiko: {exc}'
+            found.append((forge.id, progress, landed))
+        return found
+
+    def _apply_sashiko(self, jobs: list[tuple[str, str, str]]) -> None:
+        screen = self.get_screen('forge') if 'forge' in self._installed else None
+        for fid, progress, landed in jobs:
+            if isinstance(screen, ForgeScreen):
+                screen.show_sashiko(fid, progress)
+            if landed:
+                self._forge_collected(fid, [landed])
 
     def _apply_overview(self, overview: Optional[Overview]) -> None:
         """A background refresh: a failure is reported in the status line, never fatal."""
@@ -4710,6 +4746,8 @@ def _target_label(key: str, targets: Sequence[tuple[str, str]]) -> str:
 NEW_BENCH = '+new'  # w's "new workbench" choice (workbench ids never hold '+').
 NEW_BENCH_LAUNCH = '\0new'  # F1's: a new workbench made from the series.
 
+
+SASHIKO_POLL = 5.0  # Seconds between looks at the forges' Sashiko jobs.
 
 # Forge sessions that build in a tree of their own; a newer one's results supersede them.
 ROUND_PROFILES = frozenset({'forge-implement', 'forge-rework', 'forge-test'})
