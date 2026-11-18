@@ -72,6 +72,7 @@ class ForgeScreen(Screen[None]):
         # No forge open.
         Binding('n', 'new', 'new forge'),
         Binding('u', 'from_upstream', 'from upstream'),
+        Binding('x', 'remove', 'remove forge'),
         # A forge open.
         Binding('r', 'reply', 'reply'),
         Binding('d', 'range_diff', 'range-diff'),
@@ -89,7 +90,7 @@ class ForgeScreen(Screen[None]):
         Binding('e', 'edit_prompt', 'goal'),
         Binding('z', 'toggle_quotes', 'quotes'),
     ]
-    _CLOSED = frozenset({'new', 'from_upstream'})
+    _CLOSED = frozenset({'new', 'from_upstream', 'remove'})
     _OPEN = frozenset(
         {'reply', 'range_diff', 'accept', 'launch', 'review', 'fold', 'harvest'}
         | {'edit_prompt', 'timeline', 'look', 'companion'}
@@ -147,6 +148,8 @@ class ForgeScreen(Screen[None]):
         self._reopen('', note)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
+        if action == 'remove':
+            return not self.is_open() and bool(self._forges)
         if action in self._CLOSED:
             return not self.is_open()
         if action in self._OPEN:
@@ -244,17 +247,22 @@ class ForgeScreen(Screen[None]):
 
     # The list of forges.
 
-    def _reload(self, select: str = '') -> None:
+    def _reload(self, select: str = '', note: str = '') -> None:
+        """Read the forges again; select *select*; *note* is the status line after."""
         service = self.service
 
         def read() -> tuple[list[tuple[Forge, list[Round]]], list[str]]:
             forges, problems = service.store.list()
             return [(f, service.rounds(f)) for f in forges], problems
 
-        self._work(read, lambda found: self._fill(*found, select), 'forge-list')
+        self._work(read, lambda found: self._fill(*found, select, note), 'forge-list')
 
     def _fill(
-        self, forges: list[tuple[Forge, list[Round]]], problems: list[str], select: str
+        self,
+        forges: list[tuple[Forge, list[Round]]],
+        problems: list[str],
+        select: str,
+        note: str = '',
     ) -> None:
         self._forges = forges
         listing = self.query_one('#forge-list', OptionList)
@@ -264,16 +272,83 @@ class ForgeScreen(Screen[None]):
         if forges:
             ids = [f.id for f, _r in forges]
             listing.highlighted = ids.index(current) if current in ids else 0
-        said = '; '.join(problems)
+        self.refresh_bindings()  # x needs a forge.
+        said = '; '.join([*([note] if note else []), *problems])
         if not forges:
             said = said or 'n makes a forge; u starts one from an upstream series'
         elif not said:
-            said = 'Enter opens a forge; n makes one; u starts one from upstream'
+            said = 'Enter opens a forge; n makes one; u starts one from upstream; x removes one'
         self._status(said)
 
     def _highlighted_id(self) -> str:
         option = self.query_one('#forge-list', OptionList).highlighted_option
         return (option.id or '') if option is not None else ''
+
+    def action_remove(self) -> None:
+        """x: remove the highlighted forge, once asked: what goes (its rounds, workbench
+        and space, its sessions, live ones ended) and what stays (its prep branch). A
+        session tree with changes asks a second time."""
+        from .app import Confirm
+
+        fid = self._highlighted_id()
+        forge = next((f for f, _r in self._forges if f.id == fid), None)
+        if forge is None:
+            return
+        service = self.service
+        checkout = self._checkout(forge)
+        look = getattr(self.app, 'bench_removal', None)
+        reap = getattr(self.app, 'remove_bench_sessions', None)
+
+        def gather() -> tuple[tuple[int, str], tuple[list[str], list[str], dict[str, Any]]]:
+            found = look(forge.workbench) if look is not None else ([], [], {})
+            return service.removal(forge, checkout), found
+
+        def ask(found: tuple[tuple[int, str], tuple[list[str], list[str], dict[str, Any]]]) -> None:
+            (rounds, prep), (sids, live, losses) = found
+            many = 'round' if rounds == 1 else 'rounds'
+            lines = [
+                f'Remove the forge {forge.label}?',
+                f'  {rounds} {many}, its goal and design, its workbench and space go',
+            ]
+            if sids:
+                listed = ', '.join(f'{s} (live: ended)' if s in live else s for s in sids)
+                lines.append(f'  Sessions, deleted with their output: {listed}')
+                lines += [f'  {path}: {state.describe()}' for path, state in losses.items()]
+            if prep:
+                lines.append(f'  Its prep branch {prep} stays in {forge.project}')
+            else:
+                lines.append('  Nothing folded: no prep branch to keep')
+            changed = [f'  {p}: {st.describe()}' for p, st in losses.items() if not st.clean]
+
+            def removed(_none: object) -> None:
+                ended = f' and {len(sids)} session{"s" if len(sids) != 1 else ""}' if sids else ''
+                self._reload(note=f'Removed {forge.label}{ended}')
+
+            def remove() -> None:
+                def work() -> None:
+                    if sids and reap is not None:
+                        reap(sids)
+                    service.remove(forge)
+
+                self._work(work, removed, 'forge-remove')
+
+            def again(yes: Optional[bool]) -> None:
+                if yes:
+                    remove()
+
+            def first(yes: Optional[bool]) -> None:
+                if not yes:
+                    return
+                if changed:
+                    prompt = 'This will be lost:\n' + '\n'.join(changed) + '\nRemove anyway? [y|N]'
+                    self.app.push_screen(Confirm(prompt), again)
+                else:
+                    remove()
+
+            self.app.push_screen(Confirm('\n'.join([*lines, '[y|N]'])), first)
+
+        self._status('Looking at what removing it takes…')
+        self._work(gather, ask, 'forge-remove')
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()  # The app's own lists handle theirs.

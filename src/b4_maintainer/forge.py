@@ -233,6 +233,10 @@ class ForgeStore:
     def set_prompt(self, fid: str, text: str) -> None:
         self._write(self._prompt_path(fid), text)
 
+    def delete(self, fid: str) -> None:
+        self._path(fid).unlink(missing_ok=True)
+        self._prompt_path(fid).unlink(missing_ok=True)
+
     def _write(self, path: pathlib.Path, text: str) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f'.{path.name}.tmp')  # Dotfiles are never exported.
@@ -392,6 +396,27 @@ class ForgeService:
     def space_repo(self, forge: Forge) -> pathlib.Path:
         """The repository the forge's sessions work in (made with their first tree)."""
         return self.space(forge) / 'repos' / f'{forge.project}.git'
+
+    def removal(self, forge: Forge, project_repo: pathlib.Path) -> tuple[int, str]:
+        """What removing *forge* takes and leaves (blocking): its number of rounds, and its
+        prep branch in the project (`b4/<id>`, made by a fold; '' when there is none), which
+        stays."""
+        branch = f'b4/{forge.id[:64]}'
+        found = project_repo.is_dir() and _git(
+            project_repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}', check=False
+        )
+        return len(self.rounds(forge)), branch if found else ''
+
+    def remove(self, forge: Forge) -> None:
+        """*forge*, gone (blocking; confirmed, its sessions removed first): its recipe and
+        goal, its rounds and reviews, and the workbench it owns with its space. The
+        project's prep branch stays: it is the maintainer's to send or delete."""
+        from .space import remove_space
+
+        self.store.delete(forge.id)
+        shutil.rmtree(self.forge_dir(forge), ignore_errors=True)
+        remove_space(self.space(forge))
+        self.benches.delete(forge.workbench)
 
     # Rounds.
 

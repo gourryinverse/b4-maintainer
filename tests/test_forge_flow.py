@@ -528,3 +528,22 @@ def test_a_forge_without_a_goal_says_the_design_session_asks_for_it(world, tmp_p
     folder = service.write_context(forge)
     assert 'ask the maintainer' in (folder / 'prompt.md').read_text()
     assert 'ask the maintainer' in (folder / 'README.md').read_text()
+
+
+def test_removing_a_forge_takes_its_rounds_workbench_and_space_not_the_prep_branch(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', 'Add two files.\n')
+    keep = service.create('Other', 'linux', 'main', '')
+    service.post_plan(forge, 'One patch.\n')
+    make_space(service, forge, project, tmp_path)
+    service.write_context(forge)
+    git('branch', f'b4/{forge.id}', 'main', cwd=project)  # As f folds a round.
+    assert service.removal(forge, project) == (1, f'b4/{forge.id}')
+    service.remove(forge)
+    assert service.store.get(forge.id) is None
+    assert not service.store.prompt_path(forge.id).exists()
+    assert not service.forge_dir(forge).exists() and not service.space(forge).exists()
+    assert service.benches.get(forge.workbench) is None
+    assert git('rev-parse', '--verify', f'b4/{forge.id}', cwd=project)  # Stays.
+    assert [f.id for f in service.store.list()[0]] == [keep.id]
+    assert service.benches.get(keep.workbench) is not None

@@ -301,11 +301,14 @@ nothing starts on its own: every session opens the launch dialog, its task ticke
 starts when you confirm.
 
 With no forge open, the tab lists the forges. `n` makes one (a name, a project, a base)
-and its workbench with it, and opens it to give its goal; `u` starts one from a series already posted upstream (anyone's:
-authorship stays theirs), its newest version harvested; `F` on LKML does the same from the
-series you are on, or harvests it into a forge. `Enter` opens a forge and the
-whole tab is that forge: its rounds, the selected round's thread, and the selected
-message. Escape closes the forge, then leaves the tab.
+and its workbench with it, and opens it to give its goal; `u` starts one from a series
+already posted upstream (anyone's: authorship stays theirs), its newest version
+harvested; `F` on LKML does the same from the series you are on, or harvests it into a
+forge. `x` removes the selected forge once you confirm: its rounds, goal and design, its
+workbench and space, and its sessions (live ones ended; a tree with changes asks again).
+Its prep branch in the project stays. `Enter` opens a forge and the whole tab is that
+forge: its rounds, the selected round's thread, and the selected message. Escape closes
+the forge, then leaves the tab.
 
 | Key | In an open forge |
 |---|---|

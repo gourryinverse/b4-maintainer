@@ -728,3 +728,37 @@ async def test_long_quotes_in_a_reply_fold_and_open_with_z_or_a_click(demo_root,
         await pilot.click(content, offset=(2, marker - content.scroll_offset.y))
         await pilot.pause()
         assert '> quoted line 1\n' in screen.content_text() + '\n'
+
+
+async def test_x_removes_a_forge_and_its_sessions_after_asking(demo_root, tmp_path, posted):
+    from sessiondata import make_record
+
+    from b4_maintainer.app import Confirm
+
+    app, service, runner = make_live(demo_root, tmp_path)
+    forge = reviewed(service, posted)
+    other = service.create('Other', 'linux', 'mainline/master', '')
+    runner.add(
+        make_record('s7', scope='workbench', profile_id='forge-plan', workbench=forge.workbench)
+    )
+    async with app.run_test(size=(220, 50)) as pilot:
+        screen = await open_tab(pilot)
+        assert screen.forge_labels()[0].startswith('Demo work')
+        await pilot.press('x')
+        await settle(pilot)
+        assert isinstance(app.screen, Confirm)
+        asked = app.screen.prompt
+        assert 'Demo work' in asked and '2 rounds' in asked and 's7 (live: ended)' in asked
+        assert 'prep branch' in asked  # What stays is said too.
+        await pilot.press('n')
+        await settle(pilot)
+        assert service.store.get(forge.id) is not None  # No: nothing goes.
+        await pilot.press('x')
+        await settle(pilot)
+        await pilot.press('y')
+        await settle(pilot)
+        assert service.store.get(forge.id) is None
+        assert runner.ends == ['s7']
+        assert [f.id for f in service.store.list()[0]] == [other.id]
+        assert screen.forge_labels() == ['Other · linux on mainline/master · nothing posted']
+        assert 'Removed Demo work' in screen.status_text()
