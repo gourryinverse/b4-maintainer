@@ -393,10 +393,35 @@ def prepare_items_tree(
 # so every branch any session makes is the workspace's at once and outlives the checkout.
 
 
+# Checkouts of a space repository are locked: sessions share it, each sandboxed agent
+# sees only its own checkout, and a `git worktree prune` there would forget the rest.
+LOCK_REASON = 'b4-maintainer: lives outside some sandboxes; never prune it'
+LOCKED = ('--lock', '--reason', LOCK_REASON)
+
+
+def lock_worktrees(repo: pathlib.Path) -> None:
+    """Each checkout of *repo* that exists and is not locked yet, locked (made before
+    checkouts were, or by hand), so an agent's prune cannot forget it."""
+    try:
+        listed = _git(repo, 'worktree', 'list', '--porcelain')
+    except PrepareError:
+        return
+    for entry in listed.split('\n\n')[1:]:  # The first is the repository itself.
+        lines = entry.splitlines()
+        path = lines[0].removeprefix('worktree ') if lines else ''
+        if path and os.path.isdir(path) and not any(x.startswith('locked') for x in lines):
+            try:
+                _git(repo, 'worktree', 'lock', '--reason', LOCK_REASON, path)
+            except PrepareError:
+                pass  # Locked meanwhile, or gone: nothing to protect.
+
+
 def _space_repo(project: pathlib.Path, repo: pathlib.Path) -> None:
     """The space's repository for *project*, made once: a bare shared clone without the
-    project's branches (they stay the project's), each checkout with its own config."""
+    project's branches (they stay the project's), each checkout with its own config.
+    Its existing checkouts are locked (see LOCK_REASON) each time it is asked for."""
     if (repo / 'HEAD').is_file():
+        lock_worktrees(repo)
         return
     try:
         clone_project(project, repo, bare=True)
@@ -465,7 +490,7 @@ def prepare_space_tree(
                     f'base {agent_apply or base!r} is not a commit in {project.name}'
                 )
             ambytes = items_mbox(project, start, items)
-            _git(repo, 'worktree', 'add', '--quiet', '-b', branch, str(dest), start)
+            _git(repo, 'worktree', 'add', '--quiet', *LOCKED, '-b', branch, str(dest), start)
             made = True
             _space_agent(dest, identity)
             mbox = agent_mbox(dest)
@@ -478,14 +503,16 @@ def prepare_space_tree(
             start = _git(
                 repo, 'config', '--default', '', f'b4m.space.{space_key(space_branch)}.base'
             )
-            _git(repo, 'worktree', 'add', '--quiet', '-b', branch, str(dest), tip)
+            _git(repo, 'worktree', 'add', '--quiet', *LOCKED, '-b', branch, str(dest), tip)
             made = True
             _space_agent(dest, identity)
             return Worktree(str(dest), branch, start or tip, tip), False
         at = _commit(project, base) if base else _commit(project, 'HEAD')
         if at is None:
             raise PrepareError(f'base {base!r} is not a commit in {project.name}')
-        _git(repo, 'worktree', 'add', '--quiet', '--detach', '--no-checkout', str(dest), at)
+        _git(
+            repo, 'worktree', 'add', '--quiet', *LOCKED, '--detach', '--no-checkout', str(dest), at
+        )
         made = True
         start, tip = _apply_items(project, dest, base, items)
         _git(dest, 'checkout', '--quiet', '-b', branch, tip)
@@ -523,7 +550,7 @@ def update_space_branch(
     try:
         start, tip = _apply_items(project, scratch, base, items, None if rebuild else current)
     finally:
-        _git(repo, 'worktree', 'remove', '--force', str(scratch))
+        _git(repo, 'worktree', 'remove', '--force', '--force', str(scratch))
     _git(repo, 'update-ref', f'refs/heads/{space_branch}', tip)
     if rebuild:
         _git(repo, 'config', f'b4m.space.{space_key(space_branch)}.base', start)
@@ -546,8 +573,8 @@ def remove_space_tree(dest: pathlib.Path, keep_branch: bool = True) -> None:
     from ..sessions.trees import space_extras
 
     for extra in space_extras(dest):  # Its own extra checkouts (out/worktrees/) go too.
-        _git(repo, 'worktree', 'remove', '--force', extra.path)
-    _git(repo, 'worktree', 'remove', '--force', str(dest))
+        _git(repo, 'worktree', 'remove', '--force', '--force', extra.path)
+    _git(repo, 'worktree', 'remove', '--force', '--force', str(dest))  # Locked: ours.
     if not keep_branch and branch:
         _git(repo, 'branch', '--quiet', '-D', branch)
     if dest.parent.is_dir() and not any(dest.parent.iterdir()):

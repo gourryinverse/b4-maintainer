@@ -319,6 +319,7 @@ The forge keys are few; each group is a menu, a letter per choice (`s i` impleme
 | `v` | View: `t` the timeline (every round, its replies by who, findings, what changed since the round before; where the work started and where it is); `d` range-diff of the selected round against the one before; `o` the series at the selected patch in a tmux window (a detached checkout in the forge's space). |
 | `u` | Upstream: `f` fold the selected round into the project's prep branch `b4/<forge>`, to send from Branches; `h` harvest an upstream posting (its thread, with the list's replies) as the next cycle's input, older versions offered too. |
 | `e` | Write or edit the forge's goal (its prompt) in your editor, any time: running sessions read it in `forge/prompt.md`. With nothing posted the forge shows it; the timeline starts with it. |
+| `c` | Collect now what the forge's sessions left. Collecting happens on its own when a session's turn ends and when the forge opens; `c` is for when that failed (the status line says why). Each result is taken once. |
 | `z` | Open every long quote in the messages, or fold them again; a click on a quote's marker toggles that one. Shown on a message with one. |
 
 Rounds are `plan rN` (designs), `vN rM` (the series, round M of version N), and
@@ -337,6 +338,10 @@ Every round runs in the forge's one workbench; each session that builds (impleme
 submit, test) has its own checkout of it. Once a newer one's results arrive, the older
 ones are retired: ended, their checkouts removed (their commits stay on the forge's
 branches). One still working, or with uncommitted changes, stays and is named.
+Sessions share the space's repository, each agent seeing only its own checkout, so every
+checkout of it is locked (`git worktree lock`): an agent's `git worktree prune` cannot
+make git forget the others. A forge's work on its rounds and checkouts runs one thing at a
+time, however many collections start together.
 
 Sessions read the forge's folder in the workbench context (`forge/README.md` says
 what is there and where results go), leave the series on `forge/<id>/next` in the

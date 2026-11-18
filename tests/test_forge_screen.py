@@ -457,6 +457,7 @@ async def test_only_the_forge_keys_show_on_its_tab(demo_root, tmp_path, posted):
             'view',
             'upstream',
             'edit_prompt',
+            'collect',
             'quit',
         }
 
@@ -730,12 +731,27 @@ async def test_a_background_review_without_results_is_left_open(demo_root, tmp_p
         assert 's7' in screen.status_text() and 'left open' in screen.status_text()
 
 
-async def test_there_is_no_collect_key(demo_root, tmp_path):
+async def test_c_collects_again_when_collecting_on_its_own_failed(demo_root, tmp_path):
+    from sessiondata import make_record
+
     app, service, runner = make_live(demo_root, tmp_path)
-    service.create('Demo work', 'linux', 'HEAD', '')
+    forge = service.create('Demo work', 'linux', 'HEAD', '')
     async with app.run_test(size=(220, 50)) as pilot:
-        await open_forge(pilot)
-        assert 'c' not in app.screen.active_bindings
+        screen = await open_forge(pilot)
+        await pilot.press('c')
+        await settle(pilot)
+        assert 'Nothing new' in screen.status_text()
+        # A session's results, left while collecting failed (or was not watching).
+        runner.add(
+            make_record('s8', scope='workbench', profile_id='forge-plan', workbench=forge.workbench)
+        )
+        out = runner.store.directory('s8') / 'work' / 'out' / 'forge'
+        out.mkdir(parents=True)
+        (out / 'design.md').write_text('One patch.\n')
+        await pilot.press('c')
+        await settle(pilot)
+        assert screen.round_labels() == ['plan r1']
+        assert 'the design, as plan r1' in screen.status_text()
 
 
 async def test_long_quotes_in_a_reply_fold_and_open_with_z_or_a_click(demo_root, tmp_path, posted):

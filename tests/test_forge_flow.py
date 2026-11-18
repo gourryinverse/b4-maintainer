@@ -681,3 +681,59 @@ def test_a_posting_that_misses_the_forge_base_applies_on_its_own_base(world, tmp
     said = service.seed(forge, project)
     assert 'does not apply on other' in said and main[:12] in said
     assert git('rev-parse', f'{forge.next_branch}~2', cwd=repo) == main
+
+
+def test_a_prep_checkout_that_lost_its_entry_is_repaired(world, tmp_path):
+    import shutil
+
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER})
+    service.collect(forge)
+    shutil.rmtree(repo / 'worktrees' / 'tree')  # Its directory stays; git forgot it.
+    commit_series(checkout, forge, ['uno\n', 'two\n'])
+    session(service, forge, 's2', 'forge-rework', {'cover.md': COVER + '\nChanges in r2:\n- f1\n'})
+    assert service.collect(forge) == [f'the series on {forge.next_branch}, as v1 r2']
+    _series, thread = service.thread(forge, Round(1, 2))
+    assert len(thread.patches) == 2
+
+
+def test_collecting_a_forge_twice_at_once_does_not_overlap(world, tmp_path):
+    import threading
+    import time
+
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER})
+    inside, most = [0], [0]
+    post = service.post_series
+
+    def slow(*args, **kwargs):
+        inside[0] += 1
+        most[0] = max(most[0], inside[0])
+        time.sleep(0.2)
+        try:
+            return post(*args, **kwargs)
+        finally:
+            inside[0] -= 1
+
+    service.post_series = slow
+    errors = []
+
+    def collect():
+        try:
+            service.collect(forge)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=collect) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and most[0] == 1
+    assert [r.label for r in service.rounds(forge)] == ['v1 r1']  # Posted once.

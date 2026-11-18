@@ -823,3 +823,33 @@ def test_a_space_checkouts_extra_checkouts_count_and_go_with_it(upstream, tmp_pa
     assert state.extras == (str(extra),) and any('scratch.c' in c for c in state.changed)
     remove_space_tree(pathlib.Path(mine.path))
     assert not extra.exists() and other.is_dir()  # Its own extra goes; another's stays.
+
+
+def test_an_agents_prune_cannot_drop_checkouts_it_cannot_see(upstream, tmp_path):
+    """A sandboxed agent sees only its own checkout of the shared space repository: a
+    `git worktree prune` there must not forget the others. They are locked."""
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree, remove_space_tree
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, mbox = upstream
+    repo, sessions = space_paths(tmp_path)
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2),)
+    agent = ('agent', AGENT[1])
+    one, _ = prepare_space_tree(
+        project, repo, sessions / 's1' / 'demo', 'b4m/session/s1', 'b4m/bench/w', base, items, agent
+    )
+    git('worktree', 'add', '-q', '--detach', str(tmp_path / 'older'), base, cwd=repo)  # Unlocked.
+    two, _ = prepare_space_tree(
+        project, repo, sessions / 's2' / 'demo', 'b4m/session/s2', 'b4m/bench/w', base, items, agent
+    )
+    hidden = sessions / 's1'
+    hidden.rename(tmp_path / 'elsewhere')  # Out of the agent's sight, as in its sandbox.
+    (tmp_path / 'older').rename(tmp_path / 'older-hidden')
+    git('worktree', 'prune', cwd=pathlib.Path(two.path))
+    listed = git('worktree', 'list', '--porcelain', cwd=repo)
+    assert one.path in listed  # Still known: locked when it was made.
+    assert str(tmp_path / 'older') in listed  # Locked when the next one was made.
+    assert 'locked b4-maintainer' in listed
+    (tmp_path / 'elsewhere').rename(hidden)
+    remove_space_tree(pathlib.Path(one.path))  # Ours to remove, locked or not.
+    assert one.path not in git('worktree', 'list', '--porcelain', cwd=repo)

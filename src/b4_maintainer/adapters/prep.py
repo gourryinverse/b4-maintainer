@@ -238,7 +238,7 @@ def reword_commit(repo: pathlib.Path, branch: str, sha: str, message: str, expec
 
 def remove_prep(repo: pathlib.Path, worktree: pathlib.Path, branch: str) -> None:
     """Undo a prep branch made here: its worktree, the branch, b4's branch settings."""
-    _git(repo, 'worktree', 'remove', '--force', str(worktree), check=False)
+    _git(repo, 'worktree', 'remove', '--force', '--force', str(worktree), check=False)
     shutil.rmtree(worktree, ignore_errors=True)
     _git(repo, 'worktree', 'prune', check=False)
     _git(repo, 'branch', '--quiet', '-D', branch, check=False)

@@ -79,10 +79,11 @@ class ForgeScreen(Screen[None]):
         Binding('v', 'view', 'view…'),
         Binding('u', 'upstream', 'upstream…'),
         Binding('e', 'edit_prompt', 'goal'),
+        Binding('c', 'collect', 'collect'),
         Binding('z', 'toggle_quotes', 'quotes'),
     ]
     _CLOSED = frozenset({'new', 'remove'})
-    _OPEN = frozenset({'sessions', 'reply', 'view', 'upstream', 'edit_prompt'})
+    _OPEN = frozenset({'sessions', 'reply', 'view', 'upstream', 'edit_prompt', 'collect'})
 
     def __init__(self, service: ForgeService, workspace: Optional[Workspace] = None) -> None:
         super().__init__()
@@ -367,10 +368,13 @@ class ForgeScreen(Screen[None]):
         self.add_class('-open')
         self._reopen(collect=True)
 
-    def _reopen(self, keep: str = '', note: str = '', collect: bool = False) -> None:
+    def _reopen(
+        self, keep: str = '', note: str = '', collect: bool = False, asked: bool = False
+    ) -> None:
         """Read the open forge's rounds again; select *keep* (a round key), else the
         newest; *note* stays in the status line. *collect*: first take what its sessions
-        left since (opening the forge, coming back to the tab)."""
+        left since (opening the forge, coming back to the tab); *asked*: c asked for it,
+        so nothing new is said too."""
         forge = self._open
         if forge is None:
             return
@@ -384,6 +388,8 @@ class ForgeScreen(Screen[None]):
                 if said:
                     self._note = '; '.join(said)
                     self._keep_round = ''  # Show what arrived.
+                elif asked:
+                    self._note = "Nothing new from the forge's sessions"
             self._goal = service.store.prompt(forge.id)
             return service.rounds(forge)
 
@@ -463,6 +469,14 @@ class ForgeScreen(Screen[None]):
 
     def _quote_lines(self) -> int:
         return self.workspace.quote_lines if self.workspace is not None else QUOTE_LINES
+
+    def action_collect(self) -> None:
+        """c: collect now what the forge's sessions left: collecting happens on its own
+        when a session's turn ends and when the forge opens, and this is the way again
+        when that failed. Each result is taken once."""
+        rnd = self._round()
+        self._status('Collecting…')
+        self._reopen(rnd.key if rnd is not None else '', collect=True, asked=True)
 
     def action_toggle_quotes(self) -> None:
         """z: every long quote opened, or folded again (a click toggles one); later
