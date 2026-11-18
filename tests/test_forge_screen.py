@@ -961,3 +961,19 @@ async def test_a_newer_round_session_retires_the_ones_it_supersedes(demo_root, t
         assert {'s2', 's3'} <= left  # Uncommitted work stays; the newest stays.
         assert 'retired s1' in screen.status_text()
         assert 'left s2' in screen.status_text()
+
+
+async def test_a_forge_opens_even_when_collecting_fails(demo_root, tmp_path, posted):
+    from b4_maintainer.forge import ForgeError
+
+    app, service = make(demo_root, tmp_path)
+    reviewed(service, posted)
+
+    def broken(forge):
+        raise ForgeError('b4 prep could not set the cover letter: CRITICAL: uncommitted')
+
+    service.collect = broken
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_forge(pilot)
+        assert screen.round_labels() == ['v1 r1', 'v1 r2']  # Its rounds, all the same.
+        assert 'Cannot collect' in screen.status_text() and 'c tries again' in screen.status_text()

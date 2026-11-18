@@ -384,7 +384,10 @@ class ForgeScreen(Screen[None]):
 
         def read() -> list[Round]:
             if collect:
-                said = service.collect(forge)
+                try:
+                    said = service.collect(forge)
+                except Exception as exc:  # The forge still opens: its rounds as they are.
+                    said = [f'Cannot collect: {exc} (c tries again)']
                 if said:
                     self._note = '; '.join(said)
                     self._keep_round = ''  # Show what arrived.

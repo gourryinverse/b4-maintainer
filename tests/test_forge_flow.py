@@ -737,3 +737,17 @@ def test_collecting_a_forge_twice_at_once_does_not_overlap(world, tmp_path):
         t.join()
     assert errors == [] and most[0] == 1
     assert [r.label for r in service.rounds(forge)] == ['v1 r1']  # Posted once.
+
+
+def test_a_damaged_prep_checkout_is_made_again(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER})
+    service.collect(forge)
+    tree = service.forge_dir(forge) / 'tree'
+    (tree / 'README').unlink()  # As a rebuilt entry without its sparse settings shows it.
+    commit_series(checkout, forge, ['uno\n', 'two\n'])
+    session(service, forge, 's2', 'forge-rework', {'cover.md': COVER + '\nChanges in r2:\n- f1\n'})
+    assert service.collect(forge) == [f'the series on {forge.next_branch}, as v1 r2']

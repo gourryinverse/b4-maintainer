@@ -737,12 +737,18 @@ class ForgeService:
         tree = self.forge_dir(forge) / 'tree'
         rnd = self.next_round(forge)
         exists = _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}', check=False)
-        healthy = tree.exists() and _git(tree, 'rev-parse', '--git-dir', check=False)
+        healthy = (
+            tree.exists()
+            and bool(_git(tree, 'rev-parse', '--git-dir', check=False))
+            and not _git(tree, 'status', '--porcelain', '--untracked-files=no', check=False)
+        )
         if exists and tree.exists() and not healthy:
-            # Its directory outlived git's entry for it: checked out again on the prep
-            # branch as it is, its change-id and version kept.
+            # Forgotten by git, or damaged (changes b4 refuses to work over): only ever
+            # a scratch checkout, its work all in the prep branch's commits. Checked
+            # out again on that branch as it is, its change-id and version kept.
             from .adapters.prep import _sparse_worktree
 
+            _git(repo, 'worktree', 'remove', '--force', '--force', str(tree), check=False)
             shutil.rmtree(tree, ignore_errors=True)
             _git(repo, 'worktree', 'prune', check=False)
             _sparse_worktree(repo, tree, branch)
