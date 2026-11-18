@@ -772,7 +772,7 @@ class WorkbenchScreen(Screen[None]):
         if reply is None:
             self._blocks = root_blocks(self._thread, row.key, self._thread_item)
         else:
-            self._blocks = message_blocks(reply, False)
+            self._blocks = message_blocks(reply, self.workspace.quote_lines)
         content.set_blocks(self._blocks)
 
     def thread_msgid(self) -> str:

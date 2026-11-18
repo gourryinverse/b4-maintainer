@@ -1,5 +1,7 @@
 """Contract: task profiles are data; the dialog's choices compose a session's prompts."""
 
+import pathlib
+
 import pytest
 from sessiondata import PROFILE
 
@@ -143,10 +145,24 @@ def test_the_built_in_profiles_load():
 
     profiles, problems = load_profiles(BUILTIN_DIR, None)
     assert problems == []
-    series = next(p for p in profiles if p.scope == 'series')
+    series = next(p for p in profiles if p.id == 'series')
     goal = next(f for f in series.fields if f.id == 'goal')
     assert goal.kind == 'multi' and goal.custom
     assert {c.id for c in goal.choices} >= {'review', 'bugs', 'reproduce', 'performance'}
+    # The Forge tab's: each one task, preselected.
+    forge = {p.id: p for p in profiles if p.id.startswith('forge-')}
+    assert sorted(forge) == [
+        'forge-companion',
+        'forge-implement',
+        'forge-kernel-style',
+        'forge-plan',
+        'forge-review-prompts',
+        'forge-rework',
+        'forge-test',
+    ]
+    for profile in forge.values():
+        (task,) = profile.fields
+        assert [c.default for c in task.choices] == [True]
 
 
 def test_the_series_profile_brings_in_guidance_by_choice():
@@ -212,3 +228,38 @@ def test_each_kind_of_test_is_asked_for_by_what_it_is():
         )
     skill = (BUILTIN_DIR.parent / 'skills' / 'b4m-branches' / 'SKILL.md').read_text()
     assert '## Which kind of test' in skill
+
+
+def test_a_choice_marked_default_starts_picked():
+    profile = parse_profile(PROFILE.replace('id = "review"', 'id = "review"\ndefault = true', 1))
+    goal = next(f for f in profile.fields if f.id == 'goal')
+    assert [c.id for c in goal.choices if c.default] == ['review']
+    with pytest.raises(ProfileError):
+        parse_profile(PROFILE.replace('id = "review"', 'id = "review"\ndefault = "yes"', 1))
+
+
+def test_submitting_a_round_asks_for_the_next_version_not_replies():
+    from b4_maintainer.sessions.profiles import BUILTIN_DIR
+
+    rework = parse_profile((BUILTIN_DIR / 'forge-rework.toml').read_text())
+    request = compose(rework, {'task': 'rework'})
+    assert request.prompt.startswith('Produce the next version of the series')
+    assert 'Do not answer the comments one by one' in request.prompt
+    assert request.mode == 'worktree'
+    companion = parse_profile((BUILTIN_DIR / 'forge-companion.toml').read_text())
+    assert compose(companion, {'task': 'companion'}).mode == 'lightweight'
+
+
+def test_reviews_run_in_the_background_and_kernel_style_suggests_changes():
+    from b4_maintainer.sessions.profiles import load_profiles, parse_profile
+
+    builtin = pathlib.Path(__file__).parent.parent / 'src/b4_maintainer/sessions/profiles'
+    profiles = {p.id: p for p in load_profiles(builtin, None)[0]}
+    assert profiles['forge-kernel-style'].background
+    assert profiles['forge-review-prompts'].background
+    assert not profiles['forge-implement'].background
+    assert not profiles['forge-companion'].background
+    prompt = profiles['forge-kernel-style'].fields[0].choices[0].prompt
+    assert 'suggest' in prompt.lower() and 'prose' in prompt.lower()
+    plain = parse_profile('id = "x"\nversion = 1\nlabel = "X"\n')
+    assert not plain.background

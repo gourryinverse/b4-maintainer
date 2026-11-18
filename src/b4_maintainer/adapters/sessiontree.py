@@ -407,6 +407,14 @@ def _space_repo(project: pathlib.Path, repo: pathlib.Path) -> None:
         _git(repo, 'config', 'extensions.worktreeConfig', 'true')
         _git(repo, 'config', '--unset', 'core.bare')
         _git(repo, 'config', '--file', str(repo / 'config.worktree'), 'core.bare', 'true')
+        # The project's own identity, when it sets one: b4 run in the space (a forge's
+        # prep branch) writes as it would in the project. Agents' checkouts set theirs.
+        for key in ('user.name', 'user.email'):
+            try:
+                value = _git(project, 'config', '--local', '--get', key)
+            except PrepareError:
+                continue  # Not set in the project: the maintainer's global one applies.
+            _git(repo, 'config', key, value)
     except (OSError, PrepareError) as ex:
         shutil.rmtree(repo, ignore_errors=True)
         raise PrepareError(f'cannot make the space repository for {project.name}: {ex}') from ex

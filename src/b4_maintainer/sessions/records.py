@@ -183,7 +183,7 @@ def default_name(pinned: Pinned) -> str:
 def session_label(pinned: Pinned) -> str:
     """What a session is pinned to: `project: subject vN`, `project: what it does` (a
     rebase or an apply session), `workbench: label`, or `workspace`."""
-    if pinned.scope == 'workbench':
+    if pinned.scope == 'workbench' or pinned.series.startswith('workbench:'):
         return f'workbench: {pinned.subject}'
     if pinned.scope in ('rebase', 'apply'):
         return f'{pinned.project}: {pinned.subject}'

@@ -73,6 +73,9 @@ def test_the_line_names_the_most_urgent_session_and_counts_worktrees():
 def test_labels_and_sizes():
     assert session_label(make_record()) == 'linux: mm: fix foo leak v3'
     assert session_label(make_record(scope='workspace', series='', subject='')) == 'workspace'
+    # A workbench launch's dialog target: the workbench, not ': label v0'.
+    bench = make_record(project='', series='workbench:demo', revision=0, subject='Demo work')
+    assert session_label(bench) == 'workbench: Demo work'
     assert [format_bytes(n) for n in (0, 999, 12_300_000, int(2.84 * GB))] == [
         '0 B',
         '999 B',

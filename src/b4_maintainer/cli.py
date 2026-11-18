@@ -15,6 +15,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
+from . import clipboard
 from .adapters.tmux import TerminalEditor, TmuxEditor
 from .model import Authority
 from .workspace import Project, Ref, Workspace, list_id, make_ref
@@ -22,6 +23,7 @@ from .workspace import Project, Ref, Workspace, list_id, make_ref
 if TYPE_CHECKING:
     from .adapters.live import LiveSource
     from .app import MaintainerApp
+    from .forge import ForgeService
     from .sessions.hub import SessionHub
     from .sessions.records import SessionRecord
     from .workbench import WorkbenchService, WorkbenchStore
@@ -71,7 +73,10 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
     if args.demo:
         root = build_demo_workspace(args.demo)
         return MaintainerApp(
-            FixtureSource(root).load, sessions=_sessions(root), app_pane=_app_pane()
+            FixtureSource(root).load,
+            sessions=_sessions(root),
+            app_pane=_app_pane(),
+            clipboard=clipboard.commands(),
         )
     if args.showcase:
         from .showcase import build_showcase
@@ -88,7 +93,10 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
         return _live_app(LiveSource(root), args)
     if (root / 'workspace.json').is_file():
         return MaintainerApp(
-            FixtureSource(root).load, sessions=_sessions(root), app_pane=_app_pane()
+            FixtureSource(root).load,
+            sessions=_sessions(root),
+            app_pane=_app_pane(),
+            clipboard=clipboard.commands(),
         )
     name = str(args.workspace or '')
     is_name = name and '/' not in name and not root.exists()
@@ -130,7 +138,9 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
             email_dryrun=source.email_dryrun,
             no_sign=source.no_sign,
         ),
-        workbenches=_workbenches(source.root, hub),
+        workbenches=(benches := _workbenches(source.root, hub)),
+        forges=_forges(source.root, benches.store),
+        clipboard=clipboard.commands(),
         app_pane=_app_pane(),
     )
 
@@ -141,6 +151,22 @@ def _workbenches(root: pathlib.Path, hub: 'SessionHub') -> 'WorkbenchService':
     from .workbench import WorkbenchService
 
     return WorkbenchService(root, _bench_store(root), _with_spaces(root, hub), hub.store.directory)
+
+
+def _forges(root: pathlib.Path, benches: 'WorkbenchStore') -> 'ForgeService':
+    """Forges beside the configuration (state/forges/), their workbenches in the
+    Workbench tab's store (so their spaces follow), and their rounds under var/forges/."""
+    from .forge import ForgeService, ForgeStore
+    from .projectsetup import config_path
+    from .sessions.guidance import REPO_ROOT
+
+    service = ForgeService(
+        ForgeStore(config_path(root).parent / 'forges'), benches, root / 'var', online=True
+    )
+    sashiko = REPO_ROOT / 'deps' / 'sashiko'  # Built with cargo build --release.
+    service.sashiko_binary = sashiko / 'target' / 'release' / 'sashiko'
+    service.sashiko_prompts = sashiko / 'third_party' / 'prompts' / 'kernel'
+    return service
 
 
 def _bench_store(root: pathlib.Path) -> 'WorkbenchStore':

@@ -96,7 +96,7 @@ PROJECT_KEYS = frozenset(
 PROFILE_KEYS = frozenset({'id', 'label', 'project', 'lists', 'paths', 'enabled'})
 MODEL_KEYS = frozenset({'id', 'model', 'thinking', 'args', 'env', 'enabled'})
 TABLE_KEYS = {
-    'layout': frozenset({'three_pane', 'single_pane', 'preview_width'}),
+    'layout': frozenset({'three_pane', 'single_pane', 'preview_width', 'quote_lines'}),
     'browse': frozenset({'window_days', 'exclude', 'own_days'}),
     'sashiko': frozenset({'senders', 'hide_clean'}),
     'drafts': frozenset({'editor', 'tmux_width'}),
@@ -246,6 +246,8 @@ class Workspace:
     # Where replies are drafted: auto (tmux when inside it), tmux, or app.
     drafts_editor: str = 'auto'
     tmux_width: int = 100
+    # Quoted lines a folded quote keeps in sight in a reply ([layout] quote_lines).
+    quote_lines: int = 8
     # Refresh fetches the remotes behind configured refs before scanning them.
     fetch_refs: bool = True
     # Agent sessions: limits, and hand-configured model presets (see sessions/models.py).
@@ -310,6 +312,7 @@ class Workspace:
             projects=projects,
             profiles=profiles,
             breakpoints=Breakpoints.from_config(config.get('layout', {})),
+            quote_lines=int(config.get('layout', {}).get('quote_lines', cls.quote_lines)),
             window_days=int(config.get('browse', {}).get('window_days', 14)),
             own_days=int(config.get('browse', {}).get('own_days', cls.own_days)),
             exclude=exclude,

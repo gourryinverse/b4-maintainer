@@ -232,10 +232,14 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             widgets += self._group('Task', 'profile', options, profiles.index(self.profile))
         for field in self.profile.fields:
             options = [(c.id, c.label, False) for c in field.choices]
+            defaults = [n for n, c in enumerate(field.choices) if c.default]
             if field.kind == 'choice':
-                widgets += self._group(field.label, field.id, options, None)
+                widgets += self._group(
+                    field.label, field.id, options, defaults[0] if defaults else None
+                )
             elif field.kind == 'multi':
-                widgets += self._checks(field.label, field.id, options)
+                ticked = frozenset(field.choices[n].id for n in defaults)
+                widgets += self._checks(field.label, field.id, options, ticked)
             else:
                 widgets.append(self._label(field.label))
             if field.kind == 'text' or field.custom:

@@ -33,6 +33,7 @@ class Choice:
     prompt: str = ''
     needs: str = ''  # 'worktree' when the choice needs a tree to build or run.
     skills: tuple[str, ...] = ()  # Skills suggested when picked.
+    default: bool = False  # Picked when the dialog opens.
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,9 @@ class Profile:
     hash: str
     skills: tuple[str, ...] = ()  # Skills suggested for every session of this profile.
     worktree_skills: tuple[str, ...] = ()  # And for its worktree sessions.
+    # Works on its own (a review): launched without joining beside the app; when its turn
+    # ends with results they are collected and the session ends.
+    background: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,13 @@ def _str(data: Mapping[str, Any], key: str, where: str, default: Optional[str] =
     return value
 
 
+def _bool(data: Mapping[str, Any], key: str, where: str) -> bool:
+    value = data.get(key, False)
+    if not isinstance(value, bool):
+        raise ProfileError(f'{where}: {key} must be true or false')
+    return value
+
+
 def _choice(raw: Any, where: str) -> Choice:
     if not isinstance(raw, dict):
         raise ProfileError(f'{where}: a choice must be a table')
@@ -89,12 +100,16 @@ def _choice(raw: Any, where: str) -> Choice:
     needs = _str(raw, 'needs', f'{where}.{cid}', '')
     if needs not in ('', 'worktree'):
         raise ProfileError(f'{where}.{cid}: needs must be "worktree"')
+    default = raw.get('default', False)
+    if not isinstance(default, bool):
+        raise ProfileError(f'{where}.{cid}: default must be true or false')
     return Choice(
         cid,
         _str(raw, 'label', f'{where}.{cid}'),
         _str(raw, 'prompt', f'{where}.{cid}', ''),
         needs,
         _strings(raw, 'skills', f'{where}.{cid}'),
+        default,
     )
 
 
@@ -161,6 +176,7 @@ def parse_profile(text: str) -> Profile:
         hashlib.sha256(text.encode()).hexdigest(),
         _strings(data, 'skills', pid),
         _strings(data, 'worktree_skills', pid),
+        _bool(data, 'background', pid),
     )
 
 

@@ -58,7 +58,8 @@ GPL-2.0-or-later.
 - [Setup](#setup)
 - [Concepts](#concepts)
 - [The tabs](#the-tabs): [LKML](#lkml-f2), [Workbench](#workbench-f3),
-  [Branches](#branches-f4), [Settings](#settings-f6), [Sessions](#sessions-f1)
+  [Branches](#branches-f4), [Settings](#settings-f6), [Forge](#forge-f7),
+  [Sessions](#sessions-f1)
 - [Mail](#mail)
 - [Configuration](#configuration)
 - [Development](#development)
@@ -116,10 +117,17 @@ share, a subject tag (`[ndctl PATCH]`) or the directories a series touches decid
 | `F4` | **Branches**: bases, prep branches, session work, and sending. |
 | `F5` | Refresh: fetch mail and branches, from any tab. |
 | `F6` | **Settings**: signing and tracked branches. |
+| `F7` | **Forge**: building a series with an agent, reviewed like mail. |
 | `?` | Every key on the current tab. |
 
 Each tab keeps its place when you switch away. The footer shows the common keys; `` ` ``
 opens the session drawer.
+
+To copy from one pane, drag across it with the mouse, then press `ctrl+c` or right-click; `y` in a focused
+pane copies its selection, or all of it. Copies go to the terminal (OSC 52) and to the
+session's clipboard tool: `wl-copy`, `xclip`, or `xsel`, and tmux's paste buffer inside
+tmux. `B4M_CLIPBOARD` names another command (it reads the text on stdin). Holding
+shift selects the whole terminal instead.
 
 ### LKML (F2)
 
@@ -162,12 +170,14 @@ branches holding it. `p` shrinks the preview to the summary, and back.
 | `r`, `R` | Reply to the cover letter; `R` first picks session output to add. |
 | `V` | Read an older revision. |
 | `w` | Add the series to a workbench. |
+| `F` | To the Forge: a new forge that continues the series, or harvested into a forge (see [Forge](#forge-f7)). |
 | `a`, `d` | Apply the series to a base or prep branch; drop it from a base. |
 | `v` | Show or hide the sidebar on a medium-width terminal. |
 
 **Reading a thread.** The tree of messages is on the left and the selected message on
 the right. `[` and `]` move between messages, `n` jumps to the next comment, `!` to the
-next Sashiko finding, `-` and `=` fold replies, and `z` folds long quotes. `r` replies
+next Sashiko finding, `-` and `=` fold replies. A long quote folds to its last lines (`quote_lines`, 8):
+click its marker to open or fold it, or press `z` for every quote. `r` replies
 to the selected message. Escape goes back. Each message's header gives its Message-ID. A
 patch's number (`3/12`) is green when a tracked upstream branch already holds it (your
 own local branches do not count).
@@ -282,6 +292,59 @@ configuration. `Enter` on a branch changes it; `d` untracks it, and its remote g
 once nothing else uses it. Settings rewrites only that project's `refs = [...]` lines,
 and a branch that one of your bases builds on cannot be untracked.
 
+### Forge (F7)
+
+A forge is where you build a series with an agent, the way you work upstream: design,
+post, review inline, rework, and send. Each round of the series is posted to a local
+list exactly as b4 would send it, and read like any thread. Nothing is mailed, and
+nothing starts on its own: every session opens the launch dialog, its task ticked, and
+starts when you confirm.
+
+With no forge open, the tab lists the forges. `n` makes one (a name, a project, a base)
+and its workbench with it; `u` starts one from a series already posted upstream (anyone's:
+authorship stays theirs), its newest version harvested; `F` on LKML does the same from the
+series you are on, or harvests it into a forge. `Enter` opens a forge and the
+whole tab is that forge: its rounds, the selected round's thread, and the selected
+message. Escape closes the forge, then leaves the tab.
+
+| Key | In an open forge |
+|---|---|
+| `e` | Edit the forge's prompt (its goal). |
+| `P`, `A` | Launch a design session; accept the selected plan (an `Acked-by:` reply). |
+| `I` | Launch the implement session. |
+| `r` | Reply to the selected message in your editor (b4's quote); posted to the local list. |
+| `z` | Open every long quote in the messages, or fold them again; a click on a quote's marker toggles that one. |
+| `R` | Review the selected round: Sashiko (a job, the model picked), review-prompts, or kernel-style. Reviews run in the background and end once their results are in; kernel-style suggests each change directly (the replacement under the quoted lines). |
+| `T` | Launch a test session. |
+| `s` | Submit the round: launch a session that produces the next version. It answers the review in the code and the cover letter's changelog, replying only where it did not follow a comment. |
+| `C` | A companion beside the app, on the selected round and message: a short-lived, read-only session to ask questions while you review. |
+| `d` | Range-diff of the selected round against the one before. |
+| `t` | The timeline: every round, its replies by who, findings, what changed since the round before; where the work started and where it is. |
+| `o` | Open the series at the selected patch in a tmux window: a detached checkout in the forge's space. |
+| `f` | Fold the selected round into the project's prep branch `b4/<forge>`; send it from Branches. |
+| `h` | Harvest an upstream posting (its thread, with the list's replies) as the next cycle's input; older versions are offered too. |
+
+Rounds are `plan rN` (designs), `vN rM` (the series, round M of version N), and
+`vN upstream` (version N as posted, with the list's replies). Local rounds never use up
+version numbers: after `v1 r5` and a send, the forge continues at `v2 r1`, posted as
+`[PATCH v2 …]`. After an upstream round, the next version starts from that posting as
+`b4 am` makes it, the list's trailers collected; the series keeps its change-id when b4
+can read its thread from lore.
+
+Agents are short-lived: each session starts fresh from the forge's files, and the series
+and its versions are the running record. What a session leaves (designs, rounds, replies,
+findings, test reports) arrives on its own when its turn ends, and when the forge opens.
+A review that ends its turn without results stays open for you.
+
+Sessions read the forge's folder in the workbench context (`forge/README.md` says
+what is there and where results go), leave the series on `forge/<id>/next` in the
+workbench's repository, and their results in `out/forge/`. Each posted round is kept as
+`refs/forge/<id>/vN/rM`, and as a branch: `forge/<id>/vN-rM` (iterate mode) or one
+`forge/<id>/work` rewritten each round (aggressive). Findings are marked like Sashiko's.
+
+Forges are kept in `state/forges/`; their rounds in `var/forges/<id>/rounds/`, one maildir
+per round.
+
 ### Sessions (F1)
 
 `F1` launches an agent session (pi, in a tmux window beside the app). Every session
@@ -375,7 +438,7 @@ lists = ["linux-mm@kvack.org"]
 | `[refs]` `fetch` | Fetch tracked branches' remotes on `F5` (default true). |
 | `[drafts]` `editor`, `tmux_width` | `auto` (tmux pane, else this terminal), `terminal`, or `app` (the in-app pane). |
 | `[sashiko]` `senders`, `hide_clean` | Sashiko's addresses; leave its replies that found nothing out of threads. |
-| `[layout]` `three_pane`, `single_pane`, `preview_width` | Terminal widths for the layouts (160, 100) and the expanded preview (100). |
+| `[layout]` `three_pane`, `single_pane`, `preview_width`, `quote_lines` | Terminal widths for the layouts (160, 100) and the expanded preview (100); quoted lines a folded quote keeps in sight (8). |
 | `[sessions]` | Session limits (`max_live`, `max_builds`), `pi` and `pi_args`, `pane_width`, the agent's commit identity, sandbox priority, `assisted_by`. |
 | `[[models]]` | Model presets for the launch dialog. |
 | `[[guidance]]` `id`, `path` | Use another checkout of a guidance source (e.g. review-prompts). |

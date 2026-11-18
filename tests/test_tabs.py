@@ -9,6 +9,8 @@ from test_workbench_screen import BENCH, FakeService
 from b4_maintainer.adapters.fixture import FixtureSource
 from b4_maintainer.app import MaintainerApp, Notice
 from b4_maintainer.branchscreen import BranchesScreen
+from b4_maintainer.forge import ForgeService, ForgeStore
+from b4_maintainer.forgescreen import ForgeScreen
 from b4_maintainer.widgets import TabBar
 from b4_maintainer.workbench import WorkbenchStore
 from b4_maintainer.workbenchscreen import WorkbenchScreen
@@ -21,6 +23,7 @@ def make(demo_root, tmp_path):
         FixtureSource(demo_root).load,
         branches=FakeBranches(),
         workbenches=FakeService(tmp_path, store, lambda: []),
+        forges=ForgeService(ForgeStore(tmp_path / 'state' / 'forges'), store, tmp_path / 'var'),
     )
     return app
 
@@ -44,7 +47,8 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         assert tab_text(app) == (
-            ' F1 Session  F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Settings  ? Help '
+            ' F1 Session  F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Settings'
+            '  F7 Forge  ? Help '
         )
         assert app.screen.query_one(TabBar).current == 'lkml'
         await pilot.press('f3')
@@ -55,9 +59,13 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
         await settle(pilot)
         assert isinstance(app.screen, BranchesScreen)
         assert app.screen.query_one(TabBar).current == 'branches'
+        await pilot.press('f7')
+        await settle(pilot)
+        assert isinstance(app.screen, ForgeScreen)
+        assert app.screen.query_one(TabBar).current == 'forge'
         await pilot.press('f2')
         await settle(pilot)
-        assert not isinstance(app.screen, (WorkbenchScreen, BranchesScreen))
+        assert not isinstance(app.screen, (WorkbenchScreen, BranchesScreen, ForgeScreen))
         assert len(app.screen_stack) == 1
 
 

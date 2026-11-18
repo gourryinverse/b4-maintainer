@@ -78,11 +78,18 @@ def _am_ready(lser: 'b4.LoreSeries', numbers: Sequence[int]) -> bytes:
     return out.getvalue()
 
 
-def apply_mbox(project: pathlib.Path, source: str, revision: int, numbers: Sequence[int]) -> bytes:
-    """The mbox apply_series would apply (for an agent to apply by hand instead)."""
+def apply_mbox(
+    project: pathlib.Path,
+    source: str,
+    revision: int,
+    numbers: Sequence[int],
+    lookup: bool = True,
+) -> bytes:
+    """The mbox apply_series would apply (for an agent to apply by hand instead);
+    *lookup*: also search lore for trailers given elsewhere (else the thread's only)."""
     with b4_repo(project), _captured() as log:
         try:
-            ambytes = _am_ready(_series(source, revision, lookup=True), numbers)
+            ambytes = _am_ready(_series(source, revision, lookup=lookup), numbers)
         except Exception as ex:  # b4 reports through its log and exceptions alike.
             raise ValueError(f'b4 could not prepare v{revision}: {ex}\n{log.getvalue()}') from ex
     if not ambytes:

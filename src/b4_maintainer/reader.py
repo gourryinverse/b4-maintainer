@@ -23,6 +23,7 @@ from .model import (
     WorkItem,
 )
 from .widgets import Block
+from .workspace import Workspace
 
 UNATTACHED = 'unattached'
 # Message IDs of Sashiko reviews built from its API rather than read from mail.
@@ -30,6 +31,7 @@ SASHIKO_PREFIX = 'sashiko:'
 
 HEADER = Style(bold=True)
 QUOTE = Style(dim=True)
+QUOTE_MARK = Style(dim=True, underline=True)  # A fold's marker: a click opens or closes it.
 SEVERITY_STYLES = {
     'critical': Style(color='red', bold=True),
     'high': Style(color='red'),
@@ -395,8 +397,13 @@ def _is_quote(line: str) -> bool:
     return line.lstrip().startswith('>')
 
 
-def collapse_quotes(text: str, expand: bool, keep: int = 2, threshold: int = 3) -> list[Block]:
-    """Fold quoted runs longer than threshold to a marker plus their last `keep` lines."""
+QUOTE_LINES = Workspace.quote_lines  # Its default ([layout] quote_lines).
+
+
+def collapse_quotes(text: str, quote_lines: int = QUOTE_LINES) -> list[Block]:
+    """Quoted runs more than one line longer than *quote_lines* fold to a marker and
+    their last *quote_lines* lines; opened (a click on the marker, or z), they show
+    whole under a marker that folds them again. Each run is its own fold."""
     lines = text.split('\n')
     blocks: list[Block] = []
     i = 0
@@ -407,33 +414,58 @@ def collapse_quotes(text: str, expand: bool, keep: int = 2, threshold: int = 3) 
         run = lines[i:j]
         if not _is_quote(lines[i]):
             blocks.append(Block('\n'.join(run)))
-        elif expand or len(run) <= threshold:
+        elif not _folds(len(run), quote_lines):
             blocks.append(Block('\n'.join(run), style=QUOTE))
         else:
+            fold, keep = f'quote-{i}', max(0, quote_lines)
             hidden = len(run) - keep
-            blocks.append(Block(f'> [{hidden} quoted lines]', style=QUOTE))
-            blocks.append(Block('\n'.join(run[-keep:]), style=QUOTE))
+            blocks.append(
+                Block(
+                    f'> [{hidden} more quoted lines]',
+                    style=QUOTE_MARK,
+                    fold=fold,
+                    when='closed',
+                    toggle=True,
+                )
+            )
+            if keep:
+                blocks.append(Block('\n'.join(run[-keep:]), style=QUOTE, fold=fold, when='closed'))
+            blocks.append(
+                Block(
+                    f'> [hide {hidden} quoted lines]',
+                    style=QUOTE_MARK,
+                    fold=fold,
+                    when='open',
+                    toggle=True,
+                )
+            )
+            blocks.append(Block('\n'.join(run), style=QUOTE, fold=fold, when='open'))
         i = j
     return blocks
 
 
-def has_long_quote(reply: Reply, threshold: int = 3) -> bool:
+def _folds(run: int, quote_lines: int) -> bool:
+    """A fold hides at least two lines: its marker takes one."""
+    return run - max(0, quote_lines) >= 2
+
+
+def has_long_quote(reply: Reply, quote_lines: int = QUOTE_LINES) -> bool:
     run = 0
     for line in reply.message.body.split('\n'):
         run = run + 1 if _is_quote(line) else 0
-        if run > threshold:
+        if _folds(run, quote_lines):
             return True
     return False
 
 
-def message_blocks(reply: Reply, expand: bool) -> list[Block]:
+def message_blocks(reply: Reply, quote_lines: int = QUOTE_LINES) -> list[Block]:
     m = reply.message
     blocks = [Block(m.subject, style=HEADER), Block(f'From: {_header(m)}'), *_msgid_block(m)]
     marks = _tag_marks(m.tags)
     if marks:
         blocks.append(Block(f'Gives: {marks}'))
     blocks.append(Block(''))
-    return blocks + collapse_quotes(m.body.strip('\n'), expand)
+    return blocks + collapse_quotes(m.body.strip('\n'), quote_lines)
 
 
 def finding_anchor(counter: int, n: int) -> str:

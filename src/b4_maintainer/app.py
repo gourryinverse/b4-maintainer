@@ -29,6 +29,7 @@ from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
+from . import clipboard
 from .adapters.b4mbox import load_thread
 from .adapters.bases import PluckResult
 from .adapters.drafts import DraftStore, SavedDraft
@@ -38,12 +39,14 @@ from .attachments import Attachment, gather, gather_all, git_identity, preview, 
 from .branches import ApplyChoices, CutResult, DetailRow, DropChoices, FoldPlan
 from .branchscreen import Ask, Branches, BranchesScreen, Pick
 from .drawer import drawer_line, session_label, session_rows, tabs_line, worktree_row
+from .forgescreen import ForgeScreen
 from .kept import Kept
 from .launchdialog import ITEM_USES, OTHER_USES, SERIES_USES, LaunchDialog, LaunchResult
 from .layout import Breakpoints, Mode, layout_mode
 from .model import Coverage, Reply, Series, SeriesThread, WorkItem
 from .package import SASHIKO, drafts_context, sashiko_text, series_context
 from .reader import (
+    QUOTE_LINES,
     SASHIKO_PREFIX,
     SEVERITY_STYLES,
     TreeRow,
@@ -101,6 +104,7 @@ from .workspace import Snapshot, Workspace
 if TYPE_CHECKING:
     from .adapters.apply import ApplyResult  # b4: only when applying.
     from .adapters.tmux import TerminalEditor
+    from .forge import ForgeService
     from .patchmail import ReplyTo
     from .upstreams import UpstreamService
     from .workbench import WorkbenchService
@@ -483,6 +487,7 @@ class MaintainerApp(App[None]):
         Binding('d', 'drop_series', 'drop', show=False),
         Binding('M', 'mark_read', 'read all', show=False),
         Binding('w', 'add_to_workbench', 'to workbench'),
+        Binding('F', 'to_forge', 'to forge'),
         Binding('V', 'versions', 'revisions'),  # Only with older revisions.
         # One key: newest posting first (the default), or latest activity first.
         Binding('l', 'sort_latest', 'by latest'),
@@ -492,6 +497,7 @@ class MaintainerApp(App[None]):
         Binding('f3', "tab('workbench')", 'Workbench', key_display='F3', show=False),
         Binding('f4', 'artifacts', 'Branches', key_display='F4', show=False),
         Binding('f6', "tab('settings')", 'Settings', key_display='F6', show=False),
+        Binding('f7', "tab('forge')", 'Forge', key_display='F7', show=False),
         Binding('question_mark', 'keys', 'help', key_display='?', show=False),  # In the tab bar.
         Binding('f1', 'launch_session', 'session', key_display='F1', show=False),  # Tab bar.
         Binding('f12', 'focus_session', 'to session', key_display='F12', show=False),
@@ -514,8 +520,12 @@ class MaintainerApp(App[None]):
         app_pane: str = '',
         terminal_editor: Optional['TerminalEditor'] = None,
         upstreams: Optional['UpstreamService'] = None,
+        forges: Optional['ForgeService'] = None,
+        clipboard: Sequence[Sequence[str]] = (),
     ) -> None:
         super().__init__()
+        # Copies also go through these (clipboard.commands()): some terminals ignore OSC 52.
+        self._clipboard_tools = [list(tool) for tool in clipboard]
         self._loader = loader
         self._actions = actions
         # Without a store, drafts live only while the reader is open.
@@ -555,6 +565,9 @@ class MaintainerApp(App[None]):
         self._sessions = sessions
         self._branches = branches  # The Branches screen's data and actions (live only).
         self._workbenches = workbenches  # F3's workbenches (live only).
+        self._forges = forges  # F7's forges (live only).
+        self._forge_beside: Optional[str] = None  # The session launched from the Forge tab.
+        self._forge_states: dict[str, str] = {}  # Forge sessions' last states seen.
         if workbenches is not None:  # Each save brings the workbench's space in line.
             workbenches.store.saved = self._space_saved
         self._installed: set[str] = set()  # Tabs made so far (kept, with their place).
@@ -901,6 +914,8 @@ class MaintainerApp(App[None]):
                 return self._sessions is not None  # The thread's session output.
             if parameters == ('workbench',):
                 return self._workbenches is not None and self.snapshot is not None
+            if parameters == ('forge',):
+                return self._forges is not None and self.snapshot is not None
             if action == 'artifacts' or parameters == ('branches',):
                 return self._branches is not None and self.snapshot is not None
             return True
@@ -912,12 +927,15 @@ class MaintainerApp(App[None]):
             return self._draft is not None or self._saved_draft is not None
         if isinstance(self.screen, WorkbenchScreen) and action == 'focus_editor':
             return self._draft is not None and bool(self._draft.pane)
-        if isinstance(self.screen, (BranchesScreen, WorkbenchScreen)):
+        if isinstance(self.screen, (BranchesScreen, WorkbenchScreen, ForgeScreen)):
             return action == 'quit'  # The screen has its own keys.
         if action == 'focus_session':
             return bool(self._app_pane) and self._beside is not None
         if action == 'launch_session':
             return self._sessions is not None and not self._drawer_focused()
+        if action == 'to_forge':
+            item = self._reading or self._item
+            return self._forges is not None and item is not None and not item.series.discussion
         if action in WORKTREE_ACTIONS:
             return self._selected_worktree() is not None
         if action in SESSION_ACTIONS:
@@ -1009,7 +1027,7 @@ class MaintainerApp(App[None]):
             if action == 'next_comment':
                 return self._thread_facts()[0]
             reply = self._current_reply()
-            return reply is not None and has_long_quote(reply)
+            return reply is not None and has_long_quote(reply, self._quote_lines())
         return True
 
     # Text accessors for tests and status rendering.
@@ -1765,6 +1783,184 @@ class MaintainerApp(App[None]):
         self._editor_exited(draft)
         return True
 
+    def open_window(self, path: pathlib.Path, name: str) -> str:
+        """A shell in *path* in a new tmux window called *name* (inside tmux); else what
+        to do instead."""
+        import os
+        import subprocess
+
+        if not os.environ.get('TMUX'):
+            return f'Not in tmux: the checkout is {path}'
+        run = subprocess.run(
+            ['tmux', 'new-window', '-n', name[:30], '-c', str(path)],
+            capture_output=True,
+            text=True,
+        )
+        if run.returncode != 0:
+            return f'tmux new-window failed: {run.stderr.strip()}'
+        return f'Opened {path.name} in tmux window {name[:30]}'
+
+    def _watch_forges(self, overview: Overview) -> None:
+        """A forge session whose turn is over (waiting) or that ended: what it left is
+        collected, without a key."""
+        if self._forges is None:
+            return
+        due: dict[str, set[str]] = {}  # Workbench -> its sessions whose turn just ended.
+        for view in overview.sessions:
+            record = view.record
+            if not record.workbench or not record.profile_id.startswith('forge-'):
+                continue
+            before = self._forge_states.get(record.id)
+            self._forge_states[record.id] = view.state
+            settled = view.state == 'waiting' or view.state in GONE_STATES
+            if settled and before is not None and before != view.state:
+                waiting = due.setdefault(record.workbench, set())
+                if view.state == 'waiting':
+                    waiting.add(record.id)
+        for workbench in sorted(due):
+            self._collect_forge(workbench, due[workbench])
+
+    def _background(self, profile_id: str) -> bool:
+        """Sessions of *profile_id* work on their own (reviews: see Profile.background).
+        Reads the profiles (blocking)."""
+        hub = self._sessions
+        if hub is None:
+            return False
+        profiles, _problems = hub.profiles()
+        return any(p.id == profile_id and p.background for p in profiles)
+
+    def _collect_forge(self, workbench: str, waiting: Iterable[str] = ()) -> None:
+        """What the workbench's forge sessions left, as mail on the forge's list; then
+        the background sessions (reviews) among *waiting* end, those that left
+        something. One that left nothing (it asked something, or failed) stays open."""
+        waiting = tuple(waiting)
+        service, hub = self._forges, self._sessions
+        if service is None:
+            return
+
+        def work() -> None:
+            try:
+                forge = service.forge_for(workbench)
+                said, sources = service.collect_from(forge) if forge is not None else ([], set())
+            except Exception as exc:
+                self.call_from_thread(self._set_notice, f'Forge: cannot collect: {exc}')
+                return
+            records = {r.id: r for r in hub.records()} if hub is not None and waiting else {}
+            finished = [
+                sid
+                for sid in sorted(waiting)
+                if sid in records and self._background(records[sid].profile_id)
+            ]
+            for sid in finished:
+                if sid not in sources:
+                    said.append(f'{sid} finished without results; left open (` lists it)')
+                    continue
+                try:
+                    if hub is not None:
+                        hub.end(sid)
+                except Exception as exc:
+                    said.append(f'{sid}: cannot end it: {exc}')
+            if forge is not None:
+                self.call_from_thread(self._forge_collected, forge.id, said)
+
+        self.run_worker(work, thread=True, group=f'forge-collect-{workbench}')
+
+    def _forge_collected(self, fid: str, said: list[str]) -> None:
+        note = '; '.join(said)
+        screen = self.get_screen('forge') if 'forge' in self._installed else None
+        if isinstance(screen, ForgeScreen):
+            opened = screen.open_forge()
+            if self.screen is screen and opened is not None and opened.id == fid:
+                if said:
+                    screen.reload_rounds(note)
+                return
+            screen.stale = screen.stale or bool(said)
+        if note:
+            self._set_notice(f'Forge: {note}')
+
+    def action_to_forge(self) -> None:
+        """F: the open or selected series (at the revision read) to the Forge: a new forge
+        that continues it, or harvested into a forge as that version's upstream round."""
+        service, item, snapshot = self._forges, self._reading or self._item, self.snapshot
+        if service is None or item is None or snapshot is None:
+            return
+        series = item.series
+        source = pathlib.Path(series.source)
+
+        def done(text: str) -> None:
+            self._set_notice(text)
+            forge_tab = self._installed and 'forge' in self._installed
+            if forge_tab:
+                self.get_screen('forge').stale = True  # It rereads when shown.
+
+        def work(call: Callable[[], str]) -> None:
+            def run() -> None:
+                try:
+                    text = call()
+                except Exception as exc:
+                    text = f'Forge: {exc}'
+                self.call_from_thread(done, text)
+
+            self.run_worker(run, thread=True, group='to-forge')
+
+        def picked(fid: Optional[str]) -> None:
+            if fid is None:
+                return
+            if fid:
+                forge = service.store.get(fid)
+                if forge is None:
+                    return
+
+                def harvest() -> str:
+                    rnd = service.harvest(forge, source, series.revision, series.message_id)
+                    return f'Harvested into {forge.label} as {rnd.label}: F7 opens it'
+
+                work(harvest)
+                return
+            project = item.project or (
+                snapshot.workspace.projects[0].id if snapshot.workspace.projects else ''
+            )
+            found = snapshot.workspace.project(project)
+            default = found.bases[0].branch if found is not None and found.bases else ''
+
+            def based(base: Optional[str]) -> None:
+                if base is None:
+                    return
+
+                def create() -> str:
+                    forge = service.create_from_upstream(
+                        series.subject, project, base, source, series.revision, series.message_id
+                    )
+                    return f'Made forge {forge.label} from v{series.revision}: F7 opens it'
+
+                work(create)
+
+            self.push_screen(Ask(f'Base for the forge ({project})', default), based)
+
+        forges, _problems = service.store.list()
+        choices = [('', f'New forge from {series.subject} v{series.revision}')]
+        choices += [(f.id, f'Harvest into {f.label} ({f.project})') for f in forges]
+        self.push_screen(
+            Pick(f'{series.subject} v{series.revision} to which forge?', choices), picked
+        )
+
+    def edit_in_terminal(self, path: pathlib.Path, cwd: pathlib.Path) -> bool:
+        """*path* in the maintainer's editor (the one b4 runs, from *cwd*'s configuration)
+        in this terminal, the app suspended until it exits; False where it cannot."""
+        from .adapters.tmux import TerminalEditor
+
+        editor = self._terminal_editor or TerminalEditor()
+        try:
+            with self.suspend():
+                editor.edit(path, cwd)
+        except SuspendNotSupported:
+            return False
+        except OSError as exc:
+            self._set_notice(f'Cannot run your editor ({exc})')
+            return False
+        self.refresh()  # The terminal is the app's again.
+        return True
+
     def _editor_opened(
         self, item: WorkItem, msgid: str, target: Any, quote: str, pane: str
     ) -> None:
@@ -2148,15 +2344,15 @@ class MaintainerApp(App[None]):
         reply = self._current_reply()
         total = self._reading.series.expected
         title = content_title(self._thread, self._post_key, reply, total)
-        if reply is not None and has_long_quote(reply):
+        if reply is not None and has_long_quote(reply, self._quote_lines()):
             title += ' · [z] quotes'
         self._content.border_title = escape(title)
         if reply is None:
             blocks = root_blocks(self._thread, self._post_key, self._reading)
         else:
-            blocks = message_blocks(reply, self._expand_quotes)
+            blocks = message_blocks(reply, self._quote_lines())
             self._mark_seen(reply)
-        self._content.set_blocks(blocks)
+        self._content.set_blocks(blocks, open_folds=self._expand_quotes)
         self._sync_bindings()
 
     def action_next_post(self, delta: int) -> None:
@@ -2305,8 +2501,14 @@ class MaintainerApp(App[None]):
         return unfolded
 
     def action_toggle_quotes(self) -> None:
+        """z: every long quote opened, or folded again (a click toggles one); later
+        messages open the same way."""
         self._expand_quotes = not self._expand_quotes
-        self._show_current()
+        self._content.set_folds(self._expand_quotes)
+
+    def _quote_lines(self) -> int:
+        snapshot = self.snapshot
+        return snapshot.workspace.quote_lines if snapshot is not None else QUOTE_LINES
 
     def _close_reader(self) -> None:
         self.workers.cancel_group(self, 'thread')
@@ -2427,6 +2629,7 @@ class MaintainerApp(App[None]):
 
     def _show_overview(self, overview: Overview) -> None:
         self._overview = overview
+        self._watch_forges(overview)
         if isinstance(self.screen, WorkbenchScreen):
             self.screen.refresh_sessions()  # Its sessions' states.
         if not self.query('#drawer-tabs'):
@@ -2640,9 +2843,9 @@ class MaintainerApp(App[None]):
         self.action_tab('branches')
 
     def action_tab(self, tab: str) -> None:
-        """F2/F3/F4: switch to a tab. Workbench and Artifacts are made once and kept, so
-        each keeps its place (they reread their data on each return); LKML is the app's
-        own screen, kept as it was left."""
+        """F2/F3/F4/F6/F7: switch to a tab. Workbench, Branches, and Forge are made once
+        and kept, so each keeps its place (they reread their data on each return); LKML
+        is the app's own screen, kept as it was left."""
         snapshot = self.snapshot
         if tab == 'lkml':
             if len(self.screen_stack) > 1:
@@ -2658,18 +2861,21 @@ class MaintainerApp(App[None]):
                 screen = BranchesScreen(self._branches, snapshot.workspace)
             elif tab == 'settings':
                 screen = SettingsScreen(self._project_checkouts, self._upstreams)
+            elif tab == 'forge' and self._forges is not None:
+                screen = ForgeScreen(self._forges, snapshot.workspace)
             else:
                 return
             self.install_screen(screen, tab)
             self._installed.add(tab)
         target = self.get_screen(tab)
-        if isinstance(target, (WorkbenchScreen, BranchesScreen)) and self.screen is not target:
-            target.stale = target.is_mounted  # Shown again: it rereads.
+        if isinstance(target, (WorkbenchScreen, BranchesScreen, ForgeScreen)):
+            if self.screen is not target:
+                target.stale = target.is_mounted  # Shown again: it rereads.
         if isinstance(target, WorkbenchScreen):
             target.workspace = snapshot.workspace
             target.series = series_map(snapshot.items)
             target.latest = {i.identity: i.series.revision for i in snapshot.items}
-        elif isinstance(target, BranchesScreen):
+        elif isinstance(target, (BranchesScreen, ForgeScreen)):
             target.workspace = snapshot.workspace
         if self.screen is target:
             return
@@ -3209,11 +3415,19 @@ class MaintainerApp(App[None]):
                 lambda project: into(project) if project else None,
             )
 
-    def launch_workbench(self, bench: Workbench, origin: Optional[WorkItem] = None) -> None:
+    def launch_workbench(
+        self,
+        bench: Workbench,
+        origin: Optional[WorkItem] = None,
+        only: str = '',
+        follow: str = '',
+    ) -> None:
         """F1 on the Workbench screen (or on a series, *origin*): the launch dialog for a
         session over *bench*: its trees (worktree mode; each tree's base and items from the
         workbench), or only its series' mail to read and compare (lightweight). A bench not
-        saved yet (made from *origin*) is saved when the session launches."""
+        saved yet (made from *origin*) is saved when the session launches. *only*: offer
+        that profile alone (the Forge tab's sessions; others never offer forge profiles);
+        *follow*: the project whose tree follows the suggested mode."""
         hub, snapshot, service = self._sessions, self.snapshot, self._workbenches
         if hub is None or snapshot is None or service is None:
             self._set_notice('Agent sessions are not available here')
@@ -3233,6 +3447,7 @@ class MaintainerApp(App[None]):
                     self.call_from_thread(self.push_screen, Notice(f'Agent sessions: {blocker}'))
                     return
                 profiles, profile_problems = hub.profiles()
+                profiles = _offered(profiles, only)
                 skills, skill_problems = hub.skills()
                 situation = _bench_situation(hub, workspace, overview, skills, plans)
                 package = self._bench_package(bench)
@@ -3248,6 +3463,8 @@ class MaintainerApp(App[None]):
             )
             warned = [f'trees only: {w}' for w in tree_problems]
             threads = (ContextItem('threads', "each series' thread"),)
+            if only.startswith('forge-'):
+                threads, package = (), ()  # Its context is the forge's folder.
             items: dict[str, tuple[ContextItem, ...]] = {
                 'series': (*threads, *package),
                 'workspace': (),
@@ -3264,7 +3481,7 @@ class MaintainerApp(App[None]):
                 tree_projects=projects,
                 tree_options=options,
                 tree_defaults=defaults,
-                follow=origin.project or '' if origin is not None else '',
+                follow=follow or (origin.project or '' if origin is not None else ''),
             )
             self.call_from_thread(
                 self.push_screen,
@@ -3405,17 +3622,24 @@ class MaintainerApp(App[None]):
                     raise
                 self.call_from_thread(self.push_screen, Notice(f'{exc}\n\n{exc.detail.strip()}'))
                 return None
+            background = self._background(record.profile_id)
             if origin is not None and self._reading is not None:
                 self.call_from_thread(self._after_launch, record)  # Beside its thread.
             else:
-                self.call_from_thread(self._bench_launched, record)
+                self.call_from_thread(self._bench_launched, record, background)
+            if background:
+                return (
+                    f'Launched session {session_name(record)} in the background: its results '
+                    'arrive in the forge when it finishes, and it ends'
+                )
             return f'Launched session {session_name(record)}: workbench {bench.label}'
 
         self._session_call(launch)
 
-    def _bench_launched(self, record: SessionRecord) -> None:
-        """A workbench session joins beside the app at once and shows in its tab."""
-        if self._app_pane:
+    def _bench_launched(self, record: SessionRecord, background: bool = False) -> None:
+        """A workbench session joins beside the app at once and shows in its tab; a
+        background one (a forge review) does not."""
+        if self._app_pane and not background:
             self._bench_beside = record.id
             self._place_pane(record.id)
         if isinstance(self.screen, WorkbenchScreen):
@@ -3733,6 +3957,7 @@ class MaintainerApp(App[None]):
                     self.call_from_thread(self.push_screen, Notice(f'Agent sessions: {blocker}'))
                     return
                 profiles, problems = hub.profiles()
+                profiles = _offered(profiles, '')
                 skills, skill_problems = hub.skills()
                 project = item.project or '' if item is not None else ''
                 situation = _situation(hub, workspace, overview, skills, project)
@@ -3931,9 +4156,11 @@ class MaintainerApp(App[None]):
     def _column_session(self) -> Optional[str]:
         """The session that belongs beside the app on this tab: on Workbench, the one
         opened there (while live); elsewhere, the open series' own, else the workspace's."""
-        if isinstance(self.screen, WorkbenchScreen):
+        if isinstance(self.screen, (WorkbenchScreen, ForgeScreen)):
             live = {v.record.id for v in self._overview.sessions if v.state in LIVE_STATES}
-            return self._bench_beside if self._bench_beside in live else None
+            mine = self._bench_beside if isinstance(self.screen, WorkbenchScreen) else None
+            mine = mine or (self._forge_beside if isinstance(self.screen, ForgeScreen) else None)
+            return mine if mine in live else None
         reading = self._reading.identity if self._reading is not None else None
         return pane_for(self._overview.sessions, reading, self._workspace_beside)
 
@@ -3975,7 +4202,12 @@ class MaintainerApp(App[None]):
         self.run_worker(lambda: hub.focus(sid, zoom), thread=True, group='session-pane')
 
     def _after_launch(self, record: SessionRecord) -> None:
-        """A session launched while reading its series joins beside the thread."""
+        """A session launched while reading its series joins beside the thread; one
+        launched from the Forge tab joins beside it."""
+        if isinstance(self.screen, ForgeScreen) and record.profile_id.startswith('forge-'):
+            self._forge_beside = record.id
+            self._place_pane(record.id)
+            return
         if self._reading is not None and record.series == self._reading.identity:
             self._place_pane(record.id)
 
@@ -4233,6 +4465,24 @@ class MaintainerApp(App[None]):
 
         self.run_worker(work, thread=True, group='action', exclusive=True)
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """The terminal's clipboard (OSC 52), and the session's clipboard tools."""
+        super().copy_to_clipboard(text)
+        lines = text.count('\n') + 1
+        self.notify(f'Copied {lines} line{"s" if lines != 1 else ""}.', timeout=2)
+        tools = self._clipboard_tools
+        if not tools:
+            return
+
+        def work() -> None:
+            failed = clipboard.copy(text, tools)
+            if failed:
+                self.call_from_thread(
+                    self.notify, f'Copy failed: {", ".join(failed)}.', severity='warning'
+                )
+
+        self.run_worker(work, thread=True, group='clipboard')
+
     def _set_notice(self, notice: str) -> None:
         self._notice = notice
         if self.index is not None:
@@ -4473,6 +4723,14 @@ def _latest_first(items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]:
         return -when.timestamp() if when is not None else float('inf')
 
     return tuple(sorted(items, key=key))
+
+
+def _offered(profiles: Sequence[Profile], only: str) -> list[Profile]:
+    """The profiles a launch offers: *only* that one (a Forge tab session), else every
+    profile but the forge's, which need a forge's context."""
+    if only:
+        return [p for p in profiles if p.id == only]
+    return [p for p in profiles if not p.id.startswith('forge-')]
 
 
 def _tree_line(plan: TreePlan) -> str:

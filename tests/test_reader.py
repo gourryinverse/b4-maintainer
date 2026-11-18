@@ -147,19 +147,27 @@ async def test_long_quotes_collapse_and_expand(demo_root):
         await pilot.pause()
         await select_row(pilot, 5)
         text = app.content_text()
-        assert '> [8 quoted lines]' in text
-        assert '> quoted line 1\n' not in text + '\n'
-        assert '> quoted line 9' in text and '> quoted line 10' in text
+        # Folded to the last 8 quoted lines ([layout] quote_lines).
+        assert '> [2 more quoted lines]' in text
+        assert '> quoted line 2\n' not in text + '\n'
+        assert '> quoted line 3' in text and '> quoted line 10' in text
         assert 'Comment after a long quote.' in text
         assert 'z' in footer_keys(app)
 
         await pilot.press('z')
         await pilot.pause()
         assert '> quoted line 1\n' in app.content_text() + '\n'
-        assert 'quoted lines]' not in app.content_text()
+        assert '> [hide 2 quoted lines]' in app.content_text()
         await pilot.press('z')
         await pilot.pause()
-        assert '> [8 quoted lines]' in app.content_text()
+        assert '> [2 more quoted lines]' in app.content_text()
+
+        # A click on the marker opens that quote.
+        content = app.query_one('#content', TextPane)
+        marker = content.lines.index('> [2 more quoted lines]')
+        await pilot.click(content, offset=(2, marker - content.scroll_offset.y))
+        await pilot.pause()
+        assert '> quoted line 1\n' in app.content_text() + '\n'
 
 
 async def test_bracket_and_n_keys_move_between_patches_and_comments(demo_root):
@@ -443,19 +451,22 @@ def test_tree_art_from_depths():
 
 def test_collapse_quotes_keeps_short_quotes_and_tail_of_long_ones():
     from b4_maintainer.reader import collapse_quotes
+    from b4_maintainer.widgets import visible_blocks
 
-    def text(blocks):
-        return '\n'.join(b.text for b in blocks)
+    def text(blocks, opened=()):
+        return '\n'.join(b.text for b in visible_blocks(blocks, set(opened)))
 
     long_quote = '\n'.join(f'> line {n}' for n in range(1, 11)) + '\n\nReply.'
-    collapsed = text(collapse_quotes(long_quote, expand=False))
-    assert '> [8 quoted lines]' in collapsed
+    blocks = collapse_quotes(long_quote, quote_lines=2)
+    collapsed = text(blocks)
+    assert '> [8 more quoted lines]' in collapsed
     assert '> line 1\n' not in collapsed + '\n'
     assert '> line 9\n> line 10' in collapsed and 'Reply.' in collapsed
-    assert text(collapse_quotes(long_quote, expand=True)) == long_quote
+    opened = text(blocks, {b.fold for b in blocks})
+    assert opened == '> [hide 8 quoted lines]\n' + long_quote
 
     short = '> a\n> b\n> c\nReply.'
-    assert text(collapse_quotes(short, expand=False)) == short
+    assert text(collapse_quotes(short, quote_lines=2)) == short
 
 
 def test_mail_signature_separator_is_not_a_removed_line():
@@ -832,7 +843,7 @@ def test_each_message_header_gives_its_message_id():
     thread = _tree_thread(item)
     posting = [b.text for b in root_blocks(thread, '1', item)]
     assert posting[2] == 'Message-ID: <p@example.org>'  # Under From:.
-    reply = [b.text for b in message_blocks(thread.patches[0].replies[0], False)]
+    reply = [b.text for b in message_blocks(thread.patches[0].replies[0])]
     assert reply[2] == 'Message-ID: <r1@example.org>'
     sashiko = Reply(_reply(f'{SASHIKO_PREFIX}x', 'Sashiko'), 0)  # Not on the list: none.
-    assert not any('Message-ID' in b.text for b in message_blocks(sashiko, False))
+    assert not any('Message-ID' in b.text for b in message_blocks(sashiko))

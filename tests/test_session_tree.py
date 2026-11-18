@@ -616,6 +616,32 @@ def test_sessions_share_a_space_repo_and_the_space_branch_is_prepared_once(upstr
     assert git('branch', '--list', 'b4m/fixup/x', cwd=dest2).strip()  # Shared at once.
 
 
+def test_the_space_repo_keeps_the_projects_own_identity(upstream, tmp_path):
+    """b4 run in the space (a forge's prep branch) signs as the project would; agents'
+    checkouts keep their own identity."""
+    from b4_maintainer.adapters.sessiontree import prepare_space_tree
+    from b4_maintainer.sessions.trees import TreeItem
+
+    project, base, mbox = upstream
+    git('config', 'user.name', 'Project Maintainer', cwd=project)
+    git('config', 'user.email', 'project@example.org', cwd=project)
+    repo, sessions = space_paths(tmp_path)
+    items = (TreeItem('mm: foo and bar v2', str(mbox), 2),)
+    tree, _ = prepare_space_tree(
+        project,
+        repo,
+        sessions / 's1' / 'demo',
+        'b4m/session/s1',
+        'b4m/bench/w',
+        base,
+        items,
+        ('agent (one)', AGENT[1]),
+    )
+    assert git('config', '--local', 'user.name', cwd=repo) == 'Project Maintainer'
+    assert git('config', '--local', 'user.email', cwd=repo) == 'project@example.org'
+    assert git('config', 'user.name', cwd=pathlib.Path(tree.path)) == 'agent (one)'
+
+
 def test_removing_a_session_checkout_keeps_every_branch(upstream, tmp_path):
     from b4_maintainer.adapters.sessiontree import prepare_space_tree, remove_space_tree
     from b4_maintainer.sessions.trees import TreeItem, inspect_tree

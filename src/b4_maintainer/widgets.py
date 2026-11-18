@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Shared widgets that render only visible lines."""
 
+import dataclasses
 import re
 import textwrap
 from dataclasses import dataclass
@@ -11,9 +12,11 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
+from textual.binding import Binding
 from textual.geometry import Size
 from textual.reactive import Reactive
 from textual.scroll_view import ScrollView
+from textual.selection import Selection
 from textual.strip import Strip
 from textual.widget import Widget
 
@@ -39,14 +42,30 @@ class Block:
     indent: int = 0
     # A name scroll_to_anchor() can find, e.g. a finding's mark.
     anchor: str = ''
+    # Folding (e.g. a long quote): blocks of one fold show when it is 'open' or
+    # 'closed' (``when``); a click on a ``toggle`` block's lines opens or closes it.
+    fold: str = ''
+    when: str = ''
+    toggle: bool = False
+
+
+def visible_blocks(blocks: list[Block], opened: set[str]) -> list[Block]:
+    """The blocks shown with the folds in *opened* open and the others closed."""
+    return [
+        b for b in blocks if not b.fold or not b.when or (b.when == 'open') == (b.fold in opened)
+    ]
 
 
 class TextPane(ScrollView, can_focus=True):
     """Scrollable blocks that wrap once per width and render only visible lines.
 
     Its size comes from the layout, so updates never relayout the screen,
-    unlike Static.update(). Unwrapped lines scroll sideways.
+    unlike Static.update(). Unwrapped lines scroll sideways. A mouse drag selects
+    text in this pane only (ctrl+c or a right-click copies it); y copies the
+    selection, or all of it. A click on a fold's marker opens or closes it.
     """
+
+    BINDINGS = [Binding('y', 'copy_pane', 'copy', show=False)]
 
     virtual_size: Reactive[Size] = Reactive(Size(0, 0), layout=False)
 
@@ -57,10 +76,44 @@ class TextPane(ScrollView, can_focus=True):
         self._anchors: dict[str, int] = {}
         self._pending_anchor: tuple[str, int] = ('', 0)
         self._width = 0
+        self._opened: set[str] = set()  # Open folds.
+        self._toggles: dict[int, str] = {}  # Rendered line -> the fold a click toggles.
 
     @property
     def text(self) -> str:
-        return '\n'.join(b.text for b in self._blocks)
+        """The text shown: closed folds' hidden blocks left out."""
+        return '\n'.join(b.text for b in visible_blocks(self._blocks, self._opened))
+
+    @property
+    def has_folds(self) -> bool:
+        return any(b.fold for b in self._blocks)
+
+    def set_folds(self, opened: bool) -> None:
+        """Open (or close) every fold, keeping the place."""
+        self._opened = {b.fold for b in self._blocks if b.fold} if opened else set()
+        self._rewrap()
+
+    def toggle_fold(self, fold: str) -> None:
+        self._opened ^= {fold}
+        self._rewrap()
+
+    def click_line(self, index: int) -> bool:
+        """A click on rendered line *index*: toggles the fold whose marker it is, unless
+        text is selected here (the click ended a drag). True when a fold toggled."""
+        fold = self._toggles.get(index)
+        if not fold or self.text_selection is not None:
+            return False
+        self.toggle_fold(fold)
+        return True
+
+    def on_click(self, event: events.Click) -> None:
+        if event.button == 1 and self.click_line(self.scroll_offset.y + event.y):
+            event.stop()
+
+    def _rewrap(self) -> None:
+        self._width = 0
+        self._wrap()
+        self.refresh()
 
     @property
     def lines(self) -> list[str]:
@@ -86,10 +139,9 @@ class TextPane(ScrollView, can_focus=True):
     def set_text(self, text: str) -> None:
         self.set_blocks([Block(text)])
 
-    def set_blocks(self, blocks: list[Block]) -> None:
-        self._blocks = [
-            Block(printable(b.text), b.wrap, b.style, b.indent, b.anchor) for b in blocks
-        ]
+    def set_blocks(self, blocks: list[Block], open_folds: bool = False) -> None:
+        self._blocks = [dataclasses.replace(b, text=printable(b.text)) for b in blocks]
+        self._opened = {b.fold for b in self._blocks if b.fold} if open_folds else set()
         self._pending_anchor = ('', 0)
         self._width = 0
         self._wrap()
@@ -103,11 +155,13 @@ class TextPane(ScrollView, can_focus=True):
         self._width = width
         lines: list[tuple[str, Style]] = []
         self._anchors = {}
+        self._toggles = {}
         widest = width
-        for block in self._blocks:
+        for block in visible_blocks(self._blocks, self._opened):
             if block.anchor:
                 self._anchors.setdefault(block.anchor, len(lines))
             prefix = ' ' * block.indent
+            start = len(lines)
             for raw in block.text.split('\n'):
                 style = _style(block.style, raw)
                 if not block.wrap:
@@ -125,6 +179,8 @@ class TextPane(ScrollView, can_focus=True):
                     drop_whitespace=False,
                 )
                 lines.extend((prefix + w, style) for w in wrapped or [''])
+            if block.toggle:
+                self._toggles.update(dict.fromkeys(range(start, len(lines)), block.fold))
         self._lines = lines
         self.virtual_size = Size(widest, len(lines))
         self._apply_anchor()
@@ -139,7 +195,38 @@ class TextPane(ScrollView, can_focus=True):
             return Strip.blank(width)
         text, style = self._lines[index]
         x = self.scroll_offset.x
-        return Strip([Segment(text, style)]).crop_extend(x, x + width, None)
+        segments = [Segment(text, style)]
+        selection = self.text_selection
+        span = selection.get_span(index) if selection is not None else None
+        if span is not None:
+            start, end = span
+            end = len(text) if end == -1 else end
+            # Only the theme's selection background: the text keeps its colour (the
+            # theme's own foreground is 'transparent', which hides it on coloured text).
+            shade = self.screen.get_component_rich_style('screen--selection').bgcolor
+            lit = Text(text, style=style, end='')
+            lit.stylize(Style(bgcolor=shade) if shade else Style(reverse=True), start, end)
+            segments = list(lit.render(self.app.console))
+        strip = Strip(segments).crop_extend(x, x + width, None)
+        return strip.apply_offsets(x, index)  # Where a mouse selection starts and ends.
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        return selection.extract('\n'.join(self.lines)), '\n'
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self.refresh()
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """A right-click copies the selection (ctrl+c does too)."""
+        if event.button == 3 and (text := self.screen.get_selected_text()):
+            event.stop()
+            self.app.copy_to_clipboard(text)
+
+    def action_copy_pane(self) -> None:
+        """y: the selected text, or else everything in the pane, to the clipboard."""
+        selection = self.text_selection
+        picked = self.get_selection(selection) if selection is not None else None
+        self.app.copy_to_clipboard((picked[0] if picked else '') or '\n'.join(self.lines))
 
 
 def _style(style: LineStyle, line: str) -> Style:
@@ -170,6 +257,7 @@ TABS = (
     ('branches', 'F4', 'Branches'),
     ('refresh', 'F5', 'Refresh'),  # Not a tab: F5 runs the refresh from any of them.
     ('settings', 'F6', 'Settings'),
+    ('forge', 'F7', 'Forge'),
     ('help', '?', 'Help'),  # Not a tab: the keys of whichever is open.
 )
 # Entries that are keys rather than tabs: a click presses the key, so the open screen
