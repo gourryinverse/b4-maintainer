@@ -195,7 +195,7 @@ def test_a_plan_is_posted_reviewed_and_accepted(world, tmp_path):
     _project, service = world
     forge = service.create('Demo', 'linux', 'main', 'Add two files.\n')
     session(service, forge, 's1', 'forge-plan', {'design.md': 'Two patches: f1, then f2.\n'})
-    assert service.collect(forge) == ['s1: the design, as plan r1; I implements it']
+    assert service.collect(forge) == ['s1: the design, as plan r1; s i implements it']
     plan = Round(0, 1)
     assert service.rounds(forge) == [plan] and plan.label == 'plan r1'
     _series, thread = service.thread(forge, plan)
@@ -523,11 +523,11 @@ def test_collecting_again_takes_only_what_is_new(world, tmp_path):
     _project, service = world
     forge = service.create('Demo', 'linux', 'main', '')
     home = session(service, forge, 's1', 'forge-plan', {'design.md': 'One patch.\n'})
-    assert service.collect(forge) == ['s1: the design, as plan r1; I implements it']
+    assert service.collect(forge) == ['s1: the design, as plan r1; s i implements it']
     assert service.collect(forge) == []  # Nothing new.
     # The same session, asked again: it rewrites its design.
     (home / 'work' / 'out' / 'forge' / 'design.md').write_text('Two patches.\n')
-    assert service.collect(forge) == ['s1: the design, as plan r2; I implements it']
+    assert service.collect(forge) == ['s1: the design, as plan r2; s i implements it']
     assert service.forge_for(forge.workbench) == forge
     assert service.forge_for('no-such-bench') is None
 
@@ -557,3 +557,127 @@ def test_removing_a_forge_takes_its_rounds_workbench_and_space_not_the_prep_bran
     assert git('rev-parse', '--verify', f'b4/{forge.id}', cwd=project)  # Stays.
     assert [f.id for f in service.store.list()[0]] == [keep.id]
     assert service.benches.get(keep.workbench) is not None
+
+
+def test_an_mbox_jumpstarts_a_forge_at_its_newest_version(world, tmp_path, posted):
+    import mailbox
+
+    _project, service = world
+    path = tmp_path / 'series.mbx'
+    box = mailbox.mbox(path)
+    for msg in posted[0]:
+        box.add(msg.read_bytes())
+    for msg in posted[1]:  # Its next version, in the same file.
+        box.add(msg.read_bytes().replace(b'[PATCH ', b'[PATCH v2 '))
+    box.flush()
+    series = service.read_mbox(path)
+    assert (series.subject, series.revision) == ('demo: two changes', 2)
+    forge = service.create_from_upstream(
+        series.subject, 'linux', 'main', path, series.revision, series.message_id
+    )
+    (up,) = service.rounds(forge)
+    assert up.kind == 'upstream' and up.cycle == series.revision
+    _series, thread = service.thread(forge, up)
+    assert [p.message.subject.split('] ')[-1] for p in thread.patches] == [
+        'demo: add f1',
+        'demo: add f2',
+    ]
+    path.unlink()  # The forge keeps its own copy.
+    assert len(service.thread(forge, up)[1].patches) == 2
+
+
+def test_an_mbox_without_a_series_is_refused(world, tmp_path):
+    _project, service = world
+    empty = tmp_path / 'empty.mbx'
+    empty.write_text('')
+    with pytest.raises(ForgeError, match='no patch series'):
+        service.read_mbox(empty)
+    with pytest.raises(ForgeError, match='no such file'):
+        service.read_mbox(tmp_path / 'missing.mbx')
+
+
+def test_sashiko_reviews_an_upstream_round_applied_onto_the_base(world, tmp_path, posted):
+    import mailbox
+
+    project, service = world
+    upstream = tmp_path / 'thread'
+    box = mailbox.Maildir(upstream, create=True)
+    for path in posted[0]:
+        box.add(path.read_bytes())
+    forge = service.create_from_upstream('Demo', 'linux', 'main', upstream, 1, 'c@example.org')
+    up = Round(1, 0)
+    binary = tmp_path / 'sashiko'
+    binary.write_text('')
+    service.sashiko_binary = binary
+    calls = []
+
+    def run(argv, cwd, settings):
+        calls.append((argv, cwd))
+        return 0, json.dumps(sashiko_output(['demo: add f1', 'demo: add f2'])), ''
+
+    head = git('rev-parse', 'HEAD', cwd=project)
+    said = service.sashiko(forge, up, 'provider/model-x', run=run, project=project)
+    assert said.startswith('Sashiko on v1 upstream (provider/model-x): 1 new finding')
+    ((argv, cwd),) = calls
+    assert (pathlib.Path(cwd) / 'f2').read_text() == '2\n'  # The posting, applied.
+    info = service.round_info(forge, up)
+    patches = git(
+        'rev-list', '--reverse', f'{info["fork"]}..{info["tip"]}', cwd=service.space_repo(forge)
+    ).split()
+    assert len(patches) == 3  # A cover commit, then the two patches, as b4 prep keeps them.
+    assert argv[2] == f'{patches[0]}..{info["tip"]}'
+    _series, thread = service.thread(forge, up)
+    replies = [r for p in thread.patches for r in p.replies]
+    assert [r.message.author_email for r in replies] == ['sashiko@forge.local'] * 2
+    assert git('rev-parse', 'HEAD', cwd=project) == head  # The project is untouched.
+    # Reviewed again, the applied round is reused.
+    service.sashiko(forge, up, 'provider/model-x', run=run, project=project)
+    assert service.round_info(forge, up)['tip'] == info['tip']
+
+
+def test_a_base_the_checkout_cannot_resolve_says_so(world, tmp_path, posted):
+    import mailbox
+
+    from b4_maintainer.forge import check_base
+
+    project, service = world
+    upstream = tmp_path / 'thread'
+    box = mailbox.Maildir(upstream, create=True)
+    for path in posted[0]:
+        box.add(path.read_bytes())
+    forge = service.create_from_upstream('Demo', 'linux', 'mm-new', upstream, 1, 'c@example.org')
+    binary = tmp_path / 'sashiko'
+    binary.write_text('')
+    service.sashiko_binary = binary
+    with pytest.raises(ForgeError, match="the base 'mm-new' is not a commit in linux"):
+        service.sashiko(forge, Round(1, 0), '', run=lambda *a: (0, '{}', ''), project=project)
+    check_base(project, 'main')  # Fine.
+    check_base(tmp_path / 'not-checked-out', 'anything')  # Nothing to check against.
+    with pytest.raises(ForgeError, match='is not a commit'):
+        check_base(project, 'mm-new')
+
+
+def test_a_posting_that_misses_the_forge_base_applies_on_its_own_base(world, tmp_path, posted):
+    import mailbox
+
+    project, service = world
+    main = git('rev-parse', 'main', cwd=project)
+    git('switch', '-q', '-c', 'other', cwd=project)  # The forge's base: f1 already differs.
+    (project / 'f1').write_text('clash\n')
+    git('add', 'f1', cwd=project)
+    git('commit', '-q', '-m', 'f1 differs', cwd=project)
+    git('switch', '-q', 'main', cwd=project)
+    upstream = tmp_path / 'thread'
+    box = mailbox.Maildir(upstream, create=True)
+    for path in posted[0]:
+        box.add(path.read_bytes())
+    forge = service.create_from_upstream('Demo', 'linux', 'other', upstream, 1, 'c@example.org')
+    # Reviewed, the posting is checked out where b4 finds it applies (here the HEAD).
+    info = service.snapshot(forge, Round(1, 0), project)
+    assert info['fork'] == main
+    repo = service.space_repo(forge)
+    assert git('show', f'{info["tip"]}:f1', cwd=repo) == '1'
+    # The next version starts on the forge's base when it can, else there too, and says so.
+    said = service.seed(forge, project)
+    assert 'does not apply on other' in said and main[:12] in said
+    assert git('rev-parse', f'{forge.next_branch}~2', cwd=repo) == main

@@ -271,6 +271,26 @@ def _git(repo: pathlib.Path, *args: str, check: bool = True) -> str:
     return run.stdout.strip()
 
 
+def base_commit(project: pathlib.Path, base: str) -> str:
+    """The commit *base* names in the project's checkout (empty: its HEAD), or why it
+    names none (blocking)."""
+    found = _git(
+        project, 'rev-parse', '--verify', '--quiet', f'{base or "HEAD"}^{{commit}}', check=False
+    )
+    if not found:
+        raise ForgeError(
+            f'the base {base!r} is not a commit in {project.name}: '
+            'give a branch or ref the checkout has (git rev-parse resolves it)'
+        )
+    return found
+
+
+def check_base(project: pathlib.Path, base: str) -> None:
+    """A new forge's base, checked where the project is checked out (blocking)."""
+    if (project / '.git').exists():
+        base_commit(project, base)
+
+
 def _run_sashiko(argv: list[str], cwd: str, settings: pathlib.Path) -> tuple[int, str, str]:
     """Sashiko's local review, from the round's checkout (it reads the range there)."""
     run = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
@@ -524,6 +544,22 @@ class ForgeService:
         upstream = [m.as_bytes() for m in msgs if not _msgid(m).endswith('.forge.local')]
         return self._new_round(forge, rnd, upstream + kept, source=str(source), msgid=msgid)
 
+    def read_mbox(self, path: pathlib.Path) -> Series:
+        """The newest version of the patch series in mbox *path* (a thread saved from a
+        list, or what `b4 send -o` wrote), to start a forge from (blocking)."""
+        from .adapters.b4mbox import parse_mbox
+
+        path = pathlib.Path(path)
+        if not path.exists():
+            raise ForgeError(f'{path}: no such file')
+        try:
+            found = [s for s in parse_mbox(path) if not s.discussion]
+        except Exception as exc:  # b4 raises what the mail gives it.
+            raise ForgeError(f'{path}: does not read as mail ({exc})') from exc
+        if not found:
+            raise ForgeError(f'{path}: no patch series in it')
+        return max(found, key=lambda s: s.revision)
+
     def create_from_upstream(
         self,
         label: str,
@@ -746,9 +782,6 @@ class ForgeService:
         base in the space's repository, as `forge/<id>/next`. Done again after a harvest
         brings new trailers, unless a session has changed the branch since. What it did,
         or '' when there is nothing to do."""
-        from .adapters.apply import apply_mbox, series_patches
-        from .adapters.sessiontree import _space_repo
-
         rounds = [r for r in self.rounds(forge) if r.kind != 'plan']
         if not rounds or rounds[-1].kind != 'upstream':
             return ''
@@ -774,30 +807,113 @@ class ForgeService:
             return ''  # A session's work, or the maintainer's: never replaced.
         if current and recorded[:2] == [up.key, stamp]:
             return ''  # Already seeded from this harvest.
+        _fork, tip, note = self._apply(forge, up, project, 'seed', source)
+        _git(repo, 'update-ref', f'refs/heads/{forge.next_branch}', tip)
+        _write(seeded_path, f'{up.key} {stamp} {tip}\n')
+        said = f'{forge.next_branch} at v{up.cycle} as posted, with its trailers'
+        return f'{said}, {note}' if note else said
+
+    def _apply(
+        self,
+        forge: Forge,
+        rnd: Round,
+        project: pathlib.Path,
+        name: str,
+        source: str,
+        cover: str = '',
+        posted_first: bool = False,
+    ) -> tuple[str, str, str]:
+        """Upstream round *rnd* (its mail in *source*) as `b4 am` makes it, applied in the
+        space's repository (made from *project* when it is not yet), after an empty commit
+        holding *cover* when given: (the commit it is on, the tip, a note when that is not
+        the forge's base). Tried on the forge's base and on the posting's own (where b4
+        would apply it; *posted_first*: that one first). Blocking; the project is never
+        touched."""
+        from .adapters.apply import apply_mbox, posted_base, series_patches
+        from .adapters.sessiontree import _space_repo
+
+        repo = self.space_repo(forge)
         _space_repo(project, repo)
         bench = f'b4m/bench/{forge.workbench}'
         if not _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{bench}', check=False):
-            at = _git(project, 'rev-parse', '--verify', f'{forge.base or "HEAD"}^{{commit}}')
-            _git(repo, 'update-ref', f'refs/heads/{bench}', at)
-        numbers = [p.number for p in series_patches(project, source, up.cycle)]
-        mbox = apply_mbox(project, source, up.cycle, numbers, lookup=False)
-        work = self.forge_dir(forge) / 'seeding'
+            _git(repo, 'update-ref', f'refs/heads/{bench}', base_commit(project, forge.base))
+        on_base = _git(repo, 'rev-parse', f'refs/heads/{bench}')
+        numbers = [p.number for p in series_patches(project, source, rnd.cycle)]
+        mbox = self.forge_dir(forge) / f'{name}.mbx'
+        mbox.write_bytes(apply_mbox(project, source, rnd.cycle, numbers, lookup=False))
+        where = forge.base or 'HEAD'
+        failed = ''
+        if not posted_first:
+            try:
+                return on_base, self._am(forge, repo, name, on_base, mbox, cover), ''
+            except ForgeError as exc:
+                failed = str(exc).splitlines()[0]
+        posted = posted_base(project, source, rnd.cycle)  # b4's choice: only when needed.
+        if posted and (posted_first or posted != on_base):
+            try:
+                tip = self._am(forge, repo, name, posted, mbox, cover)
+            except ForgeError as exc:
+                failed = failed or str(exc).splitlines()[0]
+            else:
+                if posted == on_base:
+                    return on_base, tip, ''
+                note = f'on its own base {posted[:12]}'
+                return (
+                    posted,
+                    tip,
+                    note + ('' if posted_first else f' (it does not apply on {where})'),
+                )
+        if posted_first and posted != on_base:
+            try:
+                return on_base, self._am(forge, repo, name, on_base, mbox, cover), ''
+            except ForgeError as exc:
+                failed = failed or str(exc).splitlines()[0]
+        own = f' nor on its own base {posted[:12]}' if posted and posted != on_base else ''
+        raise ForgeError(f'v{rnd.cycle} does not apply on {where}{own}: {failed}')
+
+    def _am(
+        self, forge: Forge, repo: pathlib.Path, name: str, at: str, mbox: pathlib.Path, cover: str
+    ) -> str:
+        """*mbox* applied with `git am -3` on commit *at* in a scratch checkout of the
+        space's repository, after an empty *cover* commit when given: the tip."""
+        work = self.forge_dir(forge) / f'{name}ing'
         shutil.rmtree(work, ignore_errors=True)
         _git(repo, 'worktree', 'prune', check=False)
-        _git(repo, 'worktree', 'add', '--quiet', '--detach', str(work), bench)
+        _git(repo, 'worktree', 'add', '--quiet', '--detach', str(work), at)
         try:
-            (self.forge_dir(forge) / 'seed.mbx').write_bytes(mbox)
-            _git(work, 'am', '--quiet', '-3', str(self.forge_dir(forge) / 'seed.mbx'))
-            tip = _git(work, 'rev-parse', 'HEAD')
+            if cover:
+                _git(work, 'commit', '--quiet', '--allow-empty', '-m', cover)
+            _git(work, 'am', '--quiet', '-3', str(mbox))
+            return _git(work, 'rev-parse', 'HEAD')
         except ForgeError:
             _git(work, 'am', '--abort', check=False)
             raise
         finally:
             _git(repo, 'worktree', 'remove', '--force', str(work), check=False)
             shutil.rmtree(work, ignore_errors=True)
-        _git(repo, 'update-ref', f'refs/heads/{forge.next_branch}', tip)
-        _write(seeded_path, f'{up.key} {stamp} {tip}\n')
-        return f'{forge.next_branch} at v{up.cycle} as posted, with its trailers'
+
+    def snapshot(self, forge: Forge, rnd: Round, project: pathlib.Path) -> dict[str, Any]:
+        """Round *rnd*'s info with its snapshot (`repo`, `fork`, `tip`). A series round
+        has one when posted; an upstream round gets one the first time it is asked for:
+        the posting applied on the forge's base, after a cover commit, the way a b4 prep
+        branch keeps a series (kept as `refs/forge/<id>/vN/r0`; a harvest refreshes the
+        round and clears it). Blocking."""
+        info = self.round_info(forge, rnd)
+        if info.get('tip') or rnd.kind != 'upstream':
+            return info
+        _series, thread = self.thread(forge, rnd)
+        first = thread.cover.message if thread.cover is not None else None
+        subject = re.sub(r'^\[[^]]*\]\s*', '', first.subject) if first else forge.label
+        cover = f'{subject}\n\n{first.body if first else ""}'.rstrip() + '\n'
+        source = str(self._maildir(forge, rnd))
+        fork, tip, _note = self._apply(forge, rnd, project, 'apply', source, cover, True)
+        repo = self.space_repo(forge)
+        _git(repo, 'update-ref', f'refs/forge/{forge.id}/v{rnd.cycle}/r{rnd.round}', tip)
+        path = self._rounds_dir(forge) / rnd.key / 'round.toml'
+        added = {'repo': str(repo), 'fork': fork, 'tip': tip}
+        with path.open('a') as out:
+            out.writelines(f'{k} = {_s(v)}\n' for k, v in added.items())
+        return {**info, **added}
 
     def range_diff(self, forge: Forge, rnd: Round, against: Optional[Round] = None) -> str:
         """git range-diff of *rnd*'s series against *against* (default: the round before
@@ -945,6 +1061,7 @@ class ForgeService:
         model: str,
         thinking: str = '',
         run: Optional[Any] = None,
+        project: Optional[pathlib.Path] = None,
     ) -> str:
         """Sashiko's review of round *rnd*, run locally (`sashiko review <patches>
         --format json`) on a checkout of the round, pi answering its model turns with
@@ -954,7 +1071,10 @@ class ForgeService:
         binary = self.sashiko_binary
         if binary is None or not binary.is_file():
             raise ForgeError('Sashiko needs a build of deps/sashiko (cargo build --release)')
-        info = self.round_info(forge, rnd)
+        if project is not None:
+            info = self.snapshot(forge, rnd, project)  # An upstream round: applied first.
+        else:
+            info = self.round_info(forge, rnd)
         if not info.get('tip'):
             raise ForgeError(f'{rnd.label} has no snapshot to review')
         repo = pathlib.Path(info['repo'])
@@ -1144,7 +1264,7 @@ class ForgeService:
         design = out / 'design.md'
         if fresh(design) and design.read_text().strip():
             rnd = self.post_plan(forge, design.read_text(), author)
-            said.append(f'{sid}: the design, as {rnd.label}; I implements it')
+            said.append(f'{sid}: the design, as {rnd.label}; s i implements it')
         for path in sorted((out / 'replies').glob('*.txt')) if (out / 'replies').is_dir() else []:
             if not fresh(path):
                 continue

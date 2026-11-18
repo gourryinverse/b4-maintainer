@@ -300,44 +300,43 @@ list exactly as b4 would send it, and read like any thread. Nothing is mailed, a
 nothing starts on its own: every session opens the launch dialog, its task ticked, and
 starts when you confirm.
 
-With no forge open, the tab lists the forges. `n` makes one (a name, a project, a base)
-and its workbench with it, and opens it to give its goal; `u` starts one from a series
-already posted upstream (anyone's: authorship stays theirs), its newest version
-harvested; `F` on LKML does the same from the series you are on, or harvests it into a
-forge. `x` removes the selected forge once you confirm: its rounds, goal and design, its
-workbench and space, and its sessions (live ones ended; a tree with changes asks again).
-Its prep branch in the project stays. `Enter` opens a forge and the whole tab is that
+With no forge open, the tab lists the forges. `Enter` opens one and the whole tab is that
 forge: its rounds, the selected round's thread, and the selected message. Escape closes
 the forge, then leaves the tab.
 
+The forge keys are few; each group is a menu, a letter per choice (`s i` implements).
+
+| Key | On the list of forges |
+|---|---|
+| `n` | A new forge, with its workbench; it opens to give its goal. `b` blank (a name, a project, a base); `u` from a series posted upstream (anyone's: authorship stays theirs), its newest version harvested; `m` from an mbox file (a thread saved from a list, or what `b4 send -o` wrote), its newest version the first round, as for `u`. `F` on LKML starts one from the series you are on, or harvests it into a forge. |
+| `x` | Remove the selected forge once you confirm: its rounds, goal and design, its workbench and space, and its sessions (live ones ended; a tree with changes asks again). Its prep branch in the project stays. |
+
 | Key | In an open forge |
 |---|---|
-| `e` | Write or edit the forge's goal (its prompt) in your editor, any time: running sessions read it in `forge/prompt.md`. With nothing posted the forge shows it; the timeline starts with it. |
-| `P`, `A` | Launch a design session: it works the goal and design out with you beside the app (no prompt needed first), and writes the design once you agree, posted as `plan rN`; `I` then implements the first round. `A` accepts the selected plan (an `Acked-by:` reply). |
-| `I` | Launch the implement session. |
+| `s` | Start a session; each opens the launch dialog, its task ticked. `p` design: works the goal and design out with you beside the app (no goal needed first), and writes the design once you agree, posted as `plan rN`. `i` implement the first round. `s` submit the round: a session produces the next version, answering the review in the code and the cover letter's changelog, replying only where it did not follow a comment. `r` review the selected round: `p` review-prompts, `k` kernel-style (each change suggested directly, the replacement under the quoted lines), `s` Sashiko (a job, the model picked; an upstream round is first checked out in the forge's space, where b4 would apply it: the checkout's HEAD, the series' `base-commit:`, or a guess); reviews run in the background and end once their results are in. `t` test the newest round: each patch built in order and tested, a reply per patch with its result, a summary under the cover letter. `c` a companion beside the app on the selected round and message: short-lived and read-only, to ask questions while you review. |
 | `r` | Reply to the selected message in your editor (b4's quote); posted to the local list. |
-| `z` | Open every long quote in the messages, or fold them again; a click on a quote's marker toggles that one. |
-| `R` | Review the selected round: Sashiko (a job, the model picked), review-prompts, or kernel-style. Reviews run in the background and end once their results are in; kernel-style suggests each change directly (the replacement under the quoted lines). |
-| `T` | Launch a test session on the newest round: it builds each patch in order, runs the tests, replies to each patch with its result, and posts a summary under the cover letter. |
-| `s` | Submit the round: launch a session that produces the next version. It answers the review in the code and the cover letter's changelog, replying only where it did not follow a comment. |
-| `C` | A companion beside the app, on the selected round and message: a short-lived, read-only session to ask questions while you review. |
-| `d` | Range-diff of the selected round against the one before. |
-| `t` | The timeline: every round, its replies by who, findings, what changed since the round before; where the work started and where it is. |
-| `o` | Open the series at the selected patch in a tmux window: a detached checkout in the forge's space. |
-| `f` | Fold the selected round into the project's prep branch `b4/<forge>`; send it from Branches. |
-| `h` | Harvest an upstream posting (its thread, with the list's replies) as the next cycle's input; older versions are offered too. |
+| `A` | Accept the selected plan (an `Acked-by:` reply); shown on a plan round. |
+| `v` | View: `t` the timeline (every round, its replies by who, findings, what changed since the round before; where the work started and where it is); `d` range-diff of the selected round against the one before; `o` the series at the selected patch in a tmux window (a detached checkout in the forge's space). |
+| `u` | Upstream: `f` fold the selected round into the project's prep branch `b4/<forge>`, to send from Branches; `h` harvest an upstream posting (its thread, with the list's replies) as the next cycle's input, older versions offered too. |
+| `e` | Write or edit the forge's goal (its prompt) in your editor, any time: running sessions read it in `forge/prompt.md`. With nothing posted the forge shows it; the timeline starts with it. |
+| `z` | Open every long quote in the messages, or fold them again; a click on a quote's marker toggles that one. Shown on a message with one. |
 
 Rounds are `plan rN` (designs), `vN rM` (the series, round M of version N), and
 `vN upstream` (version N as posted, with the list's replies). Local rounds never use up
 version numbers: after `v1 r5` and a send, the forge continues at `v2 r1`, posted as
 `[PATCH v2 …]`. After an upstream round, the next version starts from that posting as
-`b4 am` makes it, the list's trailers collected; the series keeps its change-id when b4
+`b4 am` makes it, the list's trailers collected, on the forge's base (on the posting's own
+base, said so, when it does not apply there); the series keeps its change-id when b4
 can read its thread from lore.
 
 Agents are short-lived: each session starts fresh from the forge's files, and the series
 and its versions are the running record. What a session leaves (designs, rounds, replies,
 findings, test reports) arrives on its own when its turn ends, and when the forge opens.
 A review that ends its turn without results stays open for you.
+Every round runs in the forge's one workbench; each session that builds (implement,
+submit, test) has its own checkout of it. Once a newer one's results arrive, the older
+ones are retired: ended, their checkouts removed (their commits stay on the forge's
+branches). One still working, or with uncommitted changes, stays and is named.
 
 Sessions read the forge's folder in the workbench context (`forge/README.md` says
 what is there and where results go), leave the series on `forge/<id>/next` in the

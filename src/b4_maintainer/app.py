@@ -6,7 +6,7 @@ import datetime
 import email.utils
 import pathlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 
 from b4._textwidth import pad_display
 from b4.review_tui._reply import preview_and_send, reply_quote
@@ -1837,6 +1837,7 @@ class MaintainerApp(App[None]):
         service, hub = self._forges, self._sessions
         if service is None:
             return
+        states = dict(self._forge_states)  # Read here: the worker must not.
 
         def work() -> None:
             try:
@@ -1860,6 +1861,11 @@ class MaintainerApp(App[None]):
                         hub.end(sid)
                 except Exception as exc:
                     said.append(f'{sid}: cannot end it: {exc}')
+            if hub is not None and sources:
+                retired = _retire_superseded(hub, workbench, sources, states)
+                if any(line.startswith('retired') for line in retired):
+                    self.call_from_thread(self.poll_sessions)  # The drawer, without them.
+                said += retired
             if forge is not None:
                 self.call_from_thread(self._forge_collected, forge.id, said)
 
@@ -1928,6 +1934,10 @@ class MaintainerApp(App[None]):
                     return
 
                 def create() -> str:
+                    from .forge import check_base
+
+                    if found is not None:
+                        check_base(service.var.parent / found.path, base.strip())
                     forge = service.create_from_upstream(
                         series.subject, project, base, source, series.revision, series.message_id
                     )
@@ -4699,6 +4709,48 @@ def _target_label(key: str, targets: Sequence[tuple[str, str]]) -> str:
 
 NEW_BENCH = '+new'  # w's "new workbench" choice (workbench ids never hold '+').
 NEW_BENCH_LAUNCH = '\0new'  # F1's: a new workbench made from the series.
+
+
+# Forge sessions that build in a tree of their own; a newer one's results supersede them.
+ROUND_PROFILES = frozenset({'forge-implement', 'forge-rework', 'forge-test'})
+
+
+def _retire_superseded(
+    hub: SessionHub, workbench: str, sources: set[str], states: Mapping[str, str]
+) -> list[str]:
+    """A fresh session each round: once a forge session's results are collected (from
+    *sources*), the forge's older round sessions are done. Each is ended and its tree
+    removed, record and output with it (what it left is on the forge's list, its commits
+    on the space's branches); one still working, or whose tree holds uncommitted work,
+    stays. What it did (blocking)."""
+    rounds = [
+        r
+        for r in hub.records()
+        if r.workbench == workbench and r.profile_id in ROUND_PROFILES and r.mode == 'worktree'
+    ]
+    newest = max((r.created for r in rounds if r.id in sources), default='')
+    older = [r.id for r in rounds if newest and r.created < newest]
+    said, retire = [], []
+    for sid in sorted(older):
+        if states.get(sid) in ('working', 'preparing', 'starting'):
+            continue
+        try:
+            _live, losses = hub.session_losses([sid])
+        except Exception as exc:
+            said.append(f'left {sid}: {exc}')
+            continue
+        kept = [st for st in losses.values() if st.changed or st.error]
+        if kept:
+            said.append(f'left {sid}: its tree has uncommitted work')
+        else:
+            retire.append(sid)
+    if retire:
+        try:
+            gone = hub.remove_sessions(retire)
+        except Exception as exc:
+            return [*said, f'cannot retire {", ".join(retire)}: {exc}']
+        said.append(f'retired {", ".join(gone)} (superseded; trees removed)')
+    return said
 
 
 def _bench_situation(

@@ -97,6 +97,21 @@ def apply_mbox(
     return ambytes
 
 
+def posted_base(project: pathlib.Path, source: str, revision: int) -> str:
+    """The commit b4 would apply the series on in *project*, as its review checkouts
+    choose (b4.review.detect_apply_base: the checkout's HEAD when it applies there, the
+    series' base-commit, a guess from its blobs); '' when there is none."""
+    import b4.review
+
+    with b4_repo(project), _captured():
+        try:
+            lser = _series(source, revision, lookup=False)
+            base, _hint = b4.review.detect_apply_base(lser, str(project))
+        except Exception:  # b4 reports through its log and exceptions alike.
+            return ''
+    return _commit(project, base) or ''
+
+
 def apply_series(
     project: pathlib.Path,
     branch: str,

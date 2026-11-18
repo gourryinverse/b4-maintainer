@@ -19,6 +19,7 @@ import pathlib
 import re
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Protocol, Sequence
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -247,6 +248,22 @@ class Pick(ModalScreen[Optional[str]]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class Menu(Pick):
+    """A Pick whose choices each have a letter: the letter picks it at once (Enter on
+    the highlighted one too); Escape cancels."""
+
+    def __init__(self, title: str, choices: Sequence[tuple[str, str, str]]) -> None:
+        super().__init__(title, [(key, f'{letter}  {label}') for key, label, letter in choices])
+        self.letters = {letter: key for key, _label, letter in choices}
+
+    def on_key(self, event: events.Key) -> None:
+        key = self.letters.get(event.character or '')
+        if key is not None:
+            event.stop()
+            event.prevent_default()
+            self.dismiss(key)
 
 
 # The sections of a project, in order: (item kind, heading).

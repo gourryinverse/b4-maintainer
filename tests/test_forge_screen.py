@@ -131,7 +131,7 @@ async def test_n_makes_a_forge_and_starts_nothing(demo_root, tmp_path):
     app, service = make(demo_root, tmp_path)
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_tab(pilot)
-        await pilot.press('n')
+        await pilot.press('n', 'b')
         await settle(pilot)
         assert isinstance(app.screen, Ask)
         await pilot.press(*'CXL rework', 'enter')
@@ -153,7 +153,7 @@ async def test_n_makes_a_forge_and_starts_nothing(demo_root, tmp_path):
         # Made, it opens: no goal yet, and how to give one.
         assert screen.is_open()
         assert 'No goal yet' in screen.content_text()
-        assert 'e writes it' in screen.content_text() and 'P' in screen.content_text()
+        assert 'e writes it' in screen.content_text() and 's p' in screen.content_text()
         await pilot.press('escape')
         await settle(pilot)
         assert screen.forge_labels() == ['CXL rework · linux on mainline/master · nothing posted']
@@ -225,7 +225,7 @@ async def test_d_shows_why_a_round_cannot_be_compared(demo_root, tmp_path, poste
     reviewed(service, posted)  # Posted from files: no snapshots.
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_forge(pilot)
-        await pilot.press('d')
+        await pilot.press('v', 'd')
         await settle(pilot)
         assert 'no snapshot to compare' in screen.status_text()
 
@@ -250,7 +250,7 @@ async def test_e_edits_the_prompt(demo_root, tmp_path, posted):
         # A running session reads the new goal.
         assert (folder / 'prompt.md').read_text() == 'Add two files, f2 first.\n'
         assert 'sessions read it' in screen.status_text()
-        await pilot.press('t')
+        await pilot.press('v', 't')
         await settle(pilot)
         assert 'Add two files, f2 first.' in screen.content_text()  # The timeline gives it.
 
@@ -281,14 +281,16 @@ async def test_a_plan_is_accepted_with_A(demo_root, tmp_path, identity):
         assert 'Acked-by: Example Maintainer <maintainer@example.org>' in ack.message.body
 
 
-async def test_f_and_A_refuse_the_wrong_kind_of_round(demo_root, tmp_path, posted):
+async def test_A_is_offered_only_on_a_plan_round(demo_root, tmp_path, posted):
     app, service = make(demo_root, tmp_path)
     reviewed(service, posted)
     async with app.run_test(size=(180, 40)) as pilot:
-        screen = await open_forge(pilot)
+        screen = await open_forge(pilot)  # On a series round.
+        enabled = {b.binding.action for b in screen.active_bindings.values() if b.enabled}
+        assert 'accept' not in enabled
         await pilot.press('A')
         await settle(pilot)
-        assert 'select a plan round' in screen.status_text()
+        assert service.accepted_plan(service.store.list()[0][0]) is None
 
 
 async def test_findings_are_marked_like_sashikos(demo_root, tmp_path, posted):
@@ -315,7 +317,7 @@ async def test_h_harvests_a_cached_posting_and_u_starts_from_one(demo_root, tmp_
     app, service = make(demo_root, tmp_path)
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_tab(pilot)
-        await pilot.press('u')
+        await pilot.press('n', 'u')
         await settle(pilot)
         assert isinstance(app.screen, Pick)
         await pilot.press('enter')  # The first cached series.
@@ -329,7 +331,7 @@ async def test_h_harvests_a_cached_posting_and_u_starts_from_one(demo_root, tmp_
         assert screen.forge_labels()[0].endswith(rnd.label)
         await pilot.press('enter')
         await settle(pilot)
-        await pilot.press('h')
+        await pilot.press('u', 'h')
         await settle(pilot)
         assert isinstance(app.screen, Pick)
         await pilot.press('escape')
@@ -367,7 +369,7 @@ async def test_a_launch_key_opens_the_dialog_with_only_its_task(demo_root, tmp_p
     forge = service.create('Demo work', 'linux', 'HEAD', 'Add two files.\n')
     async with app.run_test(size=(220, 50)) as pilot:
         await open_forge(pilot)
-        await pilot.press('I')
+        await pilot.press('s', 'i')
         await settle(pilot)
         dialog = app.screen
         assert isinstance(dialog, LaunchDialog)
@@ -391,7 +393,7 @@ async def test_the_review_key_asks_which_review(demo_root, tmp_path):
     service.create('Demo work', 'linux', 'HEAD', '')
     async with app.run_test(size=(220, 50)) as pilot:
         screen = await open_forge(pilot)
-        await pilot.press('R')
+        await pilot.press('s', 'r')
         await settle(pilot)
         assert isinstance(app.screen, Pick)
         assert [k for k, _label in app.screen.choices] == [
@@ -402,7 +404,7 @@ async def test_the_review_key_asks_which_review(demo_root, tmp_path):
         await pilot.press('down', 'down', 'enter')  # Sashiko: not built here.
         await settle(pilot)
         assert app.screen is screen and 'Sashiko: needs a build' in screen.status_text()
-        await pilot.press('R')
+        await pilot.press('s', 'r')
         await settle(pilot)
         await pilot.press('down', 'enter')  # kernel-style.
         await settle(pilot)
@@ -430,16 +432,53 @@ async def test_f1_dialogs_elsewhere_never_offer_forge_profiles(demo_root, tmp_pa
         assert not any(p.id.startswith('forge-') for p in app.screen.profiles)
 
 
-async def test_only_the_forge_keys_show_on_its_tab(demo_root, tmp_path):
-    app, _service = make(demo_root, tmp_path)
+def footer(screen):
+    return {
+        b.binding.action for b in screen.active_bindings.values() if b.binding.show and b.enabled
+    }
+
+
+async def test_only_the_forge_keys_show_on_its_tab(demo_root, tmp_path, posted):
+    app, service = make(demo_root, tmp_path)
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_tab(pilot)
-        shown = {
-            b.binding.action
-            for b in screen.active_bindings.values()
-            if b.binding.show and b.enabled
+        assert footer(screen) == {'back', 'new', 'quit'}
+        reviewed(service, posted)
+        screen._reload()
+        await settle(pilot)
+        assert footer(screen) == {'back', 'new', 'remove', 'quit'}
+        await pilot.press('enter')
+        await settle(pilot)
+        # A few keys; each group is a menu.
+        assert footer(screen) == {
+            'back',
+            'sessions',
+            'reply',
+            'view',
+            'upstream',
+            'edit_prompt',
+            'quit',
         }
-        assert shown == {'back', 'new', 'from_upstream', 'quit'}
+
+
+async def test_the_menus_pick_by_letter(demo_root, tmp_path, posted):
+    from b4_maintainer.branchscreen import Menu
+
+    app, service = make(demo_root, tmp_path)
+    reviewed(service, posted)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_forge(pilot)
+        await pilot.press('s')
+        await settle(pilot)
+        assert isinstance(app.screen, Menu)
+        labels = [label for _key, label in app.screen.choices]
+        assert [label.split()[0] for label in labels] == ['p', 'i', 's', 'r', 't', 'c']
+        await pilot.press('escape')
+        await settle(pilot)
+        assert app.screen is screen
+        await pilot.press('v', 't')  # The timeline.
+        await settle(pilot)
+        assert app.screen is screen and 'Goal:' in screen.content_text()
 
 
 async def test_t_shows_the_timeline(demo_root, tmp_path, posted):
@@ -447,7 +486,7 @@ async def test_t_shows_the_timeline(demo_root, tmp_path, posted):
     reviewed(service, posted)
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_forge(pilot)
-        await pilot.press('t')
+        await pilot.press('v', 't')
         await settle(pilot)
         text = screen.content_text()
         assert text.startswith('Demo work · linux on mainline/master · iterate')
@@ -467,13 +506,13 @@ async def test_o_opens_the_series_at_the_selected_patch(demo_root, tmp_path, pos
     app.open_window = lambda path, name: opened.append((path, name)) or 'opened'
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_forge(pilot)
-        await pilot.press('o')  # The cover letter: not a patch.
+        await pilot.press('v', 'o')  # The cover letter: not a patch.
         await settle(pilot)
         assert 'select a patch' in screen.status_text() and looked == []
         labels = screen.thread_labels()
         screen.select_message(next(n for n, x in enumerate(labels) if 'add f2' in x))
         await settle(pilot)
-        await pilot.press('o')
+        await pilot.press('v', 'o')
         await settle(pilot)
         assert looked == [(forge.id, 'v1 r2', 2)]
         assert opened == [(tmp_path / 'look', f'{forge.id} v1-r2 2')]
@@ -493,7 +532,7 @@ async def test_harvest_offers_older_versions_too(demo_root, tmp_path):
         items[at] = dataclasses.replace(items[at], older=(earlier,))
         app.snapshot = dataclasses.replace(app.snapshot, items=tuple(items))
         newest = [items[at]]
-        await pilot.press('h')
+        await pilot.press('u', 'h')
         await settle(pilot)
         labels = [label for _key, label in app.screen.choices]
         series = newest[0].series
@@ -545,7 +584,7 @@ async def test_C_opens_a_companion_on_the_round_beside_the_app(demo_root, tmp_pa
         screen.select_message(next(n for n, x in enumerate(labels) if 'Example Maintainer' in x))
         await settle(pilot)
         msgid = screen._selected_msgid()
-        await pilot.press('C')
+        await pilot.press('s', 'c')
         await settle(pilot)
         assert isinstance(app.screen, LaunchDialog)
         assert [p.id for p in app.screen.profiles] == ['forge-companion']
@@ -568,14 +607,14 @@ async def test_sashiko_runs_as_a_job_with_the_model_picked(demo_root, tmp_path, 
     service.sashiko_binary = binary
     ran = []
 
-    def review(f, rnd, model, thinking='', run=None):
+    def review(f, rnd, model, thinking='', run=None, project=None):
         ran.append((f.id, rnd.label, model))
         return f'Sashiko on {rnd.label} ({model}): 1 new finding (high 1); 10 in, 1 out'
 
     service.sashiko = review
     async with app.run_test(size=(220, 50)) as pilot:
         screen = await open_forge(pilot)
-        await pilot.press('R')
+        await pilot.press('s', 'r')
         await settle(pilot)
         await pilot.press('down', 'down', 'enter')  # Sashiko.
         await settle(pilot)
@@ -647,7 +686,7 @@ async def test_a_review_runs_in_the_background_and_ends_once_collected(demo_root
         screen = await open_forge(pilot)
         screen.select_round('v1 r1')
         await settle(pilot)
-        await pilot.press('R')
+        await pilot.press('s', 'r')
         await settle(pilot)
         await pilot.press('down', 'enter')  # kernel-style
         await settle(pilot)
@@ -762,3 +801,147 @@ async def test_x_removes_a_forge_and_its_sessions_after_asking(demo_root, tmp_pa
         assert [f.id for f in service.store.list()[0]] == [other.id]
         assert screen.forge_labels() == ['Other · linux on mainline/master · nothing posted']
         assert 'Removed Demo work' in screen.status_text()
+
+
+async def test_i_imports_an_mbox_as_a_new_forge(demo_root, tmp_path, posted):
+    import mailbox
+
+    path = tmp_path / 'series.mbx'
+    box = mailbox.mbox(path)
+    for msg in posted[0]:
+        box.add(msg.read_bytes())
+    box.flush()
+    app, service = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_tab(pilot)
+        await pilot.press('n', 'm')
+        await settle(pilot)
+        assert isinstance(app.screen, Ask)
+        await pilot.press(*str(tmp_path / 'nothing.mbx'), 'enter')
+        await settle(pilot)
+        assert 'no such file' in screen.status_text()
+        assert service.store.list()[0] == []
+        await pilot.press('n', 'm')
+        await settle(pilot)
+        await pilot.press(*str(path), 'enter')
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)  # Two projects in the demo.
+        await pilot.press('enter')
+        await settle(pilot)
+        assert isinstance(app.screen, Ask)  # The base.
+        await pilot.press(*'mainline/master', 'enter')
+        await settle(pilot)
+        (forge,) = service.store.list()[0]
+        assert forge.label == 'demo: two changes' and forge.project == 'linux'
+        (rnd,) = service.rounds(forge)
+        assert rnd.kind == 'upstream'
+        assert screen.is_open() and screen.round_labels() == [rnd.label]
+
+
+async def test_sashiko_reviews_an_upstream_round_too(demo_root, tmp_path, posted):
+    import mailbox
+
+    app, service, _runner = make_live(demo_root, tmp_path)
+    upstream = tmp_path / 'thread'
+    box = mailbox.Maildir(upstream, create=True)
+    for path in posted[0]:
+        box.add(path.read_bytes())
+    service.create_from_upstream('Demo', 'linux', 'mainline/master', upstream, 1, 'c@x')
+    binary = tmp_path / 'sashiko'
+    binary.write_text('')
+    service.sashiko_binary = binary
+    ran = []
+
+    def review(f, rnd, model, thinking='', run=None, project=None):
+        ran.append((rnd.label, project))
+        return f'Sashiko on {rnd.label} ({model}): no findings'
+
+    service.sashiko = review
+    async with app.run_test(size=(220, 50)) as pilot:
+        screen = await open_forge(pilot)
+        assert screen.selected_round() == 'v1 upstream'
+        await pilot.press('s', 'r', 's')  # Sashiko, by letter.
+        await settle(pilot)
+        await pilot.press('enter')  # The model.
+        await settle(pilot)
+        assert [label for label, _project in ran] == ['v1 upstream']
+        assert ran[0][1] is not None  # The project, to apply the posting from.
+        assert screen.status_text().startswith('Sashiko on v1 upstream')
+
+
+async def test_a_new_forge_on_a_base_the_checkout_lacks_is_refused(demo_root, tmp_path):
+    from gitutil import git
+
+    checkout = tmp_path / 'projects' / 'linux'  # The workspace the forges are in.
+    checkout.mkdir(parents=True)
+    git('init', '-q', '-b', 'main', cwd=checkout)
+    git('commit', '-q', '--allow-empty', '-m', 'start', cwd=checkout)
+    app, service = make(demo_root, tmp_path)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_tab(pilot)
+        await pilot.press('n', 'b')
+        await settle(pilot)
+        await pilot.press(*'Demo', 'enter')
+        await settle(pilot)
+        await pilot.press('enter')  # linux.
+        await settle(pilot)
+        await pilot.press(*'mm-new', 'enter')
+        await settle(pilot)
+        assert "the base 'mm-new' is not a commit in linux" in screen.status_text()
+        assert service.store.list()[0] == []
+
+
+async def test_a_newer_round_session_retires_the_ones_it_supersedes(demo_root, tmp_path, posted):
+    from sessiondata import make_record
+
+    from b4_maintainer.sessions.hub import WorktreeInfo
+    from b4_maintainer.sessions.records import ProjectTree, Worktree
+    from b4_maintainer.sessions.trees import TreeState
+
+    app, service, runner = make_live(demo_root, tmp_path)
+    forge = reviewed(service, posted)
+    trees = app._sessions.worktrees
+
+    def building(sid, profile, minute):
+        path = f'/w/var/worktrees/{sid}/linux'
+        tree = ProjectTree('linux', Worktree(path, f'b4m/session/{sid}', 'b', 'a'))
+        trees.infos.append(WorktreeInfo(path, f'b4m/session/{sid}', sid))
+        runner.add(
+            make_record(
+                sid,
+                created=f'2026-11-18T10:{minute:02d}:00+00:00',
+                scope='workbench',
+                mode='worktree',
+                profile_id=profile,
+                workbench=forge.workbench,
+                trees=(tree,),
+            )
+        )
+        return path
+
+    building('s1', 'forge-implement', 1)  # Round 1: done, its series collected.
+    dirty = building('s2', 'forge-rework', 2)
+    trees.states[dirty] = TreeState(changed=(' M mm/foo.c',))  # Work not committed.
+    building('s3', 'forge-test', 3)
+    async with app.run_test(size=(220, 50)) as pilot:
+        screen = await open_forge(pilot)
+        for sid in ('s1', 's2', 's3'):
+            runner.emit(sid, 'working')
+        app.poll_sessions()
+        await settle(pilot)
+        runner.emit('s1', 'waiting')
+        runner.emit('s2', 'waiting')
+        app.poll_sessions()
+        await settle(pilot)
+        out = runner.store.directory('s3') / 'work' / 'out' / 'forge'
+        out.mkdir(parents=True)
+        (out / 'test.md').write_text('Nothing to test yet.\n')
+        runner.emit('s3', 'waiting')
+        app.poll_sessions()
+        await settle(pilot)
+        left = {r.id for r in app._sessions.records()}
+        assert 's1' not in left  # Superseded: ended, its tree removed.
+        assert trees.removed == ['/w/var/worktrees/s1/linux']
+        assert {'s2', 's3'} <= left  # Uncommitted work stays; the newest stays.
+        assert 'retired s1' in screen.status_text()
+        assert 'left s2' in screen.status_text()

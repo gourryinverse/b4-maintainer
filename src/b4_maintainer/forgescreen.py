@@ -22,8 +22,8 @@ from textual.screen import Screen
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
-from .branchscreen import Ask, Pick
-from .forge import Forge, ForgeService, Round
+from .branchscreen import Ask, Menu, Pick
+from .forge import Forge, ForgeService, Round, check_base
 from .model import SashikoReview, Series, SeriesState, SeriesThread, WorkItem
 from .reader import (
     QUOTE_LINES,
@@ -40,11 +40,11 @@ from .reader import (
 from .widgets import Block, TabBar, TextPane, tree_width
 from .workspace import Workspace
 
-# The reviews the review key offers: (profile, label). Sashiko is a job, not a session.
+# The reviews s r offers: (profile, label, letter). Sashiko is a job, not a session.
 REVIEWS = (
-    ('forge-review-prompts', 'review-prompts (kernel review protocol)'),
-    ('forge-kernel-style', 'kernel-style (style, structure, changelogs)'),
-    ('forge-sashiko', 'Sashiko (local pipeline, pi as its model)'),
+    ('forge-review-prompts', 'review-prompts (kernel review protocol)', 'p'),
+    ('forge-kernel-style', 'kernel-style (style, structure, changelogs)', 'k'),
+    ('forge-sashiko', 'Sashiko (local pipeline, pi as its model)', 's'),
 )
 
 
@@ -70,31 +70,19 @@ class ForgeScreen(Screen[None]):
         Binding('tab', 'cycle(1)', 'next pane', priority=True, show=False),
         Binding('shift+tab', 'cycle(-1)', 'previous pane', priority=True, show=False),
         # No forge open.
-        Binding('n', 'new', 'new forge'),
-        Binding('u', 'from_upstream', 'from upstream'),
+        Binding('n', 'new', 'new forge…'),
         Binding('x', 'remove', 'remove forge'),
-        # A forge open.
+        # A forge open: few keys, each group a menu with a letter per choice.
+        Binding('s', 'sessions', 'session…'),
         Binding('r', 'reply', 'reply'),
-        Binding('d', 'range_diff', 'range-diff'),
-        Binding('t', 'timeline', 'timeline'),
-        Binding('o', 'look', 'open at patch'),
         Binding('A', 'accept', 'accept plan'),
-        Binding('P', "launch('forge-plan')", 'design'),
-        Binding('I', "launch('forge-implement')", 'implement'),
-        Binding('s', "launch('forge-rework')", 'submit round'),
-        Binding('C', 'companion', 'companion'),
-        Binding('R', 'review', 'review'),
-        Binding('T', "launch('forge-test')", 'test'),
-        Binding('f', 'fold', 'fold to prep'),
-        Binding('h', 'harvest', 'harvest upstream'),
+        Binding('v', 'view', 'view…'),
+        Binding('u', 'upstream', 'upstream…'),
         Binding('e', 'edit_prompt', 'goal'),
         Binding('z', 'toggle_quotes', 'quotes'),
     ]
-    _CLOSED = frozenset({'new', 'from_upstream', 'remove'})
-    _OPEN = frozenset(
-        {'reply', 'range_diff', 'accept', 'launch', 'review', 'fold', 'harvest'}
-        | {'edit_prompt', 'timeline', 'look', 'companion'}
-    )
+    _CLOSED = frozenset({'new', 'remove'})
+    _OPEN = frozenset({'sessions', 'reply', 'view', 'upstream', 'edit_prompt'})
 
     def __init__(self, service: ForgeService, workspace: Optional[Workspace] = None) -> None:
         super().__init__()
@@ -150,6 +138,9 @@ class ForgeScreen(Screen[None]):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
         if action == 'remove':
             return not self.is_open() and bool(self._forges)
+        if action == 'accept':  # Only on a plan round.
+            rnd = self._round() if self.is_open() else None
+            return rnd is not None and rnd.kind == 'plan'
         if action in self._CLOSED:
             return not self.is_open()
         if action in self._OPEN:
@@ -226,8 +217,11 @@ class ForgeScreen(Screen[None]):
         return self.service.var.parent  # The workspace.
 
     def _checkout(self, forge: Forge) -> pathlib.Path:
-        project = self.workspace.project(forge.project) if self.workspace is not None else None
-        path = project.path if project is not None else f'projects/{forge.project}'
+        return self._project_checkout(forge.project)
+
+    def _project_checkout(self, project_id: str) -> pathlib.Path:
+        project = self.workspace.project(project_id) if self.workspace is not None else None
+        path = project.path if project is not None else f'projects/{project_id}'
         return self._root() / path
 
     def _me(self, forge: Forge) -> tuple[str, str]:
@@ -275,9 +269,9 @@ class ForgeScreen(Screen[None]):
         self.refresh_bindings()  # x needs a forge.
         said = '; '.join([*([note] if note else []), *problems])
         if not forges:
-            said = said or 'n makes a forge; u starts one from an upstream series'
+            said = said or 'n makes a forge: blank, from an upstream series, or from an mbox'
         elif not said:
-            said = 'Enter opens a forge; n makes one; u starts one from upstream; x removes one'
+            said = 'Enter opens a forge; n makes one; x removes one'
         self._status(said)
 
     def _highlighted_id(self) -> str:
@@ -410,19 +404,22 @@ class ForgeScreen(Screen[None]):
                 listing.highlighted = index
             self._load_thread()
             self.query_one('#forge-tree', OptionList).focus()
-            self._status(self._note or 'r replies; R reviews; s submits the round')
+            self._status(
+                self._note or 's starts a session (review, submit the round…); r replies; v views'
+            )
         else:
             self.query_one('#forge-tree', OptionList).clear_options()
             goal = self._goal.strip()
             said = (
-                f'Goal:\n\n{goal}\n\ne edits it in your editor; running sessions read it.'
+                f'Goal:\n\n{goal}\n\ne edits it in your editor; running sessions read it. '
+                's p designs the work with you; s i implements it.'
                 if goal
-                else 'No goal yet: e writes it in your editor, or P launches a design session '
+                else 'No goal yet: e writes it in your editor, or s p starts a design session '
                 'that works it out with you.'
             )
             self.query_one('#forge-content', TextPane).set_text(
-                f'Nothing posted yet.\n\n{said}\n\nP designs the work, I implements it; what '
-                'a session leaves arrives here when it finishes.'
+                f'Nothing posted yet.\n\n{said}\n\nWhat a session leaves arrives here when it '
+                'finishes.'
             )
             listing.focus()
             self._status(self._note or 'Nothing posted yet; escape closes the forge')
@@ -542,7 +539,79 @@ class ForgeScreen(Screen[None]):
         return found.bases[0].branch if found is not None and found.bases else ''
 
     def action_new(self) -> None:
-        """n: a forge, named, for one project, from a base; its workbench made with it.
+        """n: a new forge: blank, from a series posted upstream, or from an mbox file."""
+        choices = [
+            ('blank', 'blank: a name, a project, a base', 'b'),
+            ('upstream', 'from a series posted upstream (its newest version)', 'u'),
+            ('mbox', 'from an mbox file (a saved thread, or b4 send -o)', 'm'),
+        ]
+        actions = {
+            'blank': self._new_blank,
+            'upstream': self._from_upstream,
+            'mbox': self._import_mbox,
+        }
+
+        def picked(key: Optional[str]) -> None:
+            if key in actions:
+                actions[key]()
+
+        self.app.push_screen(Menu('New forge', choices), picked)
+
+    def action_sessions(self) -> None:
+        """s: start a session on the forge: each opens the launch dialog, its task
+        ticked; reviews ask which."""
+        choices = [
+            ('forge-plan', 'design: work out the goal and design with an agent', 'p'),
+            ('forge-implement', 'implement the first round', 'i'),
+            ('forge-rework', 'submit the round: rework it into the next version', 's'),
+            ('review', 'review the selected round…', 'r'),
+            ('forge-test', 'test the newest round, a reply per patch', 't'),
+            ('companion', 'companion: ask about the selected round', 'c'),
+        ]
+
+        def picked(key: Optional[str]) -> None:
+            if key is None:
+                return
+            if key == 'review':
+                self._review()
+            elif key == 'companion':
+                self._companion()
+            else:
+                self.action_launch(key)
+
+        self.app.push_screen(Menu('Start a session', choices), picked)
+
+    def action_view(self) -> None:
+        """v: other views of the selected round."""
+        choices = [
+            ('timeline', 'timeline: every round, where the work started and is', 't'),
+            ('diff', 'range-diff against the round before', 'd'),
+            ('look', 'checkout at the selected patch, in a tmux window', 'o'),
+        ]
+        actions = {'timeline': self._timeline, 'diff': self._range_diff, 'look': self._look}
+
+        def picked(key: Optional[str]) -> None:
+            if key in actions:
+                actions[key]()
+
+        self.app.push_screen(Menu('View', choices), picked)
+
+    def action_upstream(self) -> None:
+        """u: between the forge and upstream."""
+        choices = [
+            ('fold', "fold the selected round into the project's prep branch", 'f'),
+            ('harvest', 'harvest an upstream posting as the next input', 'h'),
+        ]
+        actions = {'fold': self._fold, 'harvest': self._harvest}
+
+        def picked(key: Optional[str]) -> None:
+            if key in actions:
+                actions[key]()
+
+        self.app.push_screen(Menu('Upstream', choices), picked)
+
+    def _new_blank(self) -> None:
+        """A forge, named, for one project, from a base; its workbench made with it.
         Nothing starts."""
         projects = self._projects()
         if not projects:
@@ -561,10 +630,10 @@ class ForgeScreen(Screen[None]):
                     if base is None:
                         return
                     service = self.service
-                    self._work(
+                    self._make(
+                        project,
+                        base.strip(),
                         lambda: service.create(label.strip(), project, base.strip(), ''),
-                        self._made,
-                        'forge-new',
                     )
 
                 title = f'Base for {label.strip()} ({project})'
@@ -577,6 +646,72 @@ class ForgeScreen(Screen[None]):
                 self.app.push_screen(Pick(title, projects), picked)
 
         self.app.push_screen(Ask('Name the new forge'), named)
+
+    def _import_mbox(self) -> None:
+        """n m: a forge jumpstarted from an mbox file (a thread saved from a list, or what
+        `b4 send -o` wrote): its newest version is the first round, authorship kept, and
+        the next round is the next version's first, as for u."""
+        projects = self._projects()
+        if not projects:
+            self._status('No projects in the workspace')
+            return
+        service = self.service
+        root = self._root()
+
+        def given(text: Optional[str]) -> None:
+            if not text or not text.strip():
+                return
+            path = pathlib.Path(text.strip()).expanduser()
+            path = path if path.is_absolute() else root / path
+            self._status(f'Reading {path}…')
+            self._work(
+                lambda: service.read_mbox(path),
+                lambda found: picked_series(found, path),
+                'forge-import',
+            )
+
+        def picked_series(series: Series, path: pathlib.Path) -> None:
+            def picked(project: Optional[str]) -> None:
+                if not project:
+                    return
+
+                def based(base: Optional[str]) -> None:
+                    if base is None:
+                        return
+                    self._make(
+                        project,
+                        base.strip(),
+                        lambda: service.create_from_upstream(
+                            series.subject,
+                            project,
+                            base.strip(),
+                            path,
+                            series.revision,
+                            series.message_id,
+                        ),
+                    )
+
+                title = f'Base for {series.subject} v{series.revision} ({project})'
+                self.app.push_screen(Ask(title, self._default_base(project)), based)
+
+            if len(projects) == 1:
+                picked(projects[0][0])
+            else:
+                title = f'Which project is {series.subject} for?'
+                self.app.push_screen(Pick(title, projects), picked)
+
+        self.app.push_screen(Ask('Import which mbox? (a path)'), given)
+
+    def _make(self, project: str, base: str, make: Callable[[], Forge]) -> None:
+        """Make a forge in a worker, its base checked first where *project* is checked
+        out: a base git cannot resolve there is refused with why, nothing made."""
+        checkout = self._project_checkout(project)
+
+        def work() -> Forge:
+            check_base(checkout, base)
+            return make()
+
+        self._work(work, self._made, 'forge-new')
 
     def _made(self, forge: Forge) -> None:
         """Made, the forge opens: its goal is the next thing to give."""
@@ -610,8 +745,8 @@ class ForgeScreen(Screen[None]):
             choices.append((str(n), f'{s.subject} v{s.revision} ({who})'))
         return choices, postings
 
-    def action_from_upstream(self) -> None:
-        """u: a forge that continues a series posted upstream (any author's: authorship
+    def _from_upstream(self) -> None:
+        """n u: a forge that continues a series posted upstream (any author's: authorship
         stays theirs): its newest version harvested; the next round is the next
         version's first."""
         choices, items = self._upstream_choices()
@@ -631,7 +766,9 @@ class ForgeScreen(Screen[None]):
                 if base is None:
                     return
                 service = self.service
-                self._work(
+                self._make(
+                    project,
+                    base.strip(),
                     lambda: service.create_from_upstream(
                         series.subject,
                         project,
@@ -640,8 +777,6 @@ class ForgeScreen(Screen[None]):
                         series.revision,
                         series.message_id,
                     ),
-                    self._made,
-                    'forge-new',
                 )
 
             title = f'Base for {series.subject} ({project})'
@@ -722,8 +857,8 @@ class ForgeScreen(Screen[None]):
 
         self._edit(path, edited)
 
-    def action_range_diff(self) -> None:
-        """d: the selected round against the one before it, as git range-diff shows it."""
+    def _range_diff(self) -> None:
+        """v d: the selected round against the one before it, as git range-diff shows it."""
         forge, rnd = self._open, self._round()
         if forge is None or rnd is None:
             return
@@ -736,8 +871,8 @@ class ForgeScreen(Screen[None]):
 
         self._work(lambda: service.range_diff(forge, rnd), show, 'forge-diff')
 
-    def action_timeline(self) -> None:
-        """t: where the work started and where it is: every round, its replies and
+    def _timeline(self) -> None:
+        """v t: where the work started and where it is: every round, its replies and
         findings, and what changed since the round before."""
         forge = self._open
         if forge is None:
@@ -750,13 +885,13 @@ class ForgeScreen(Screen[None]):
 
         self._work(lambda: service.summary(forge), show, 'forge-timeline')
 
-    def action_look(self) -> None:
-        """o: the series at the selected patch, checked out in the forge's space, in a
+    def _look(self) -> None:
+        """v o: the series at the selected patch, checked out in the forge's space, in a
         tmux window: the files in context."""
         forge, rnd, (row, _reply) = self._open, self._round(), self._message()
         post = find_post(self._thread, row.key) if row is not None and self._thread else None
         if forge is None or rnd is None or post is None or post.counter < 1:
-            self._status('o opens the series at a patch: select a patch')
+            self._status('v o opens the series at a patch: select a patch')
             return
         opener = getattr(self.app, 'open_window', None)
         service, part = self.service, post.counter
@@ -765,7 +900,13 @@ class ForgeScreen(Screen[None]):
             name = f'{forge.id} {rnd.key} {part}'
             self._status(opener(path, name) if opener is not None else f'Checked out at {path}')
 
-        self._work(lambda: service.look(forge, rnd, part), opened, 'forge-look')
+        checkout = self._checkout(forge)
+
+        def look() -> pathlib.Path:
+            service.snapshot(forge, rnd, checkout)  # An upstream round: applied first.
+            return service.look(forge, rnd, part)
+
+        self._work(look, opened, 'forge-look')
 
     def action_accept(self) -> None:
         """A: accept the selected plan (an Acked-by reply): sessions follow its design."""
@@ -784,8 +925,8 @@ class ForgeScreen(Screen[None]):
             lambda: service.accept_plan(forge, rnd, self._me(forge)), accepted, 'forge-accept'
         )
 
-    def action_companion(self) -> None:
-        """C: a short-lived, read-only companion beside the app, on the round (and
+    def _companion(self) -> None:
+        """s c: a short-lived, read-only companion beside the app, on the round (and
         message) selected: ask it questions while reviewing."""
         self.action_launch('forge-companion', focus=True)
 
@@ -827,15 +968,15 @@ class ForgeScreen(Screen[None]):
             return 'needs a build of deps/sashiko (cargo build --release)'
         return ''
 
-    def action_review(self) -> None:
-        """R: which review: review-prompts, kernel-style (sessions), or Sashiko (a local
+    def _review(self) -> None:
+        """s r: which review: review-prompts, kernel-style (sessions), or Sashiko (a local
         job, pi answering its model turns)."""
         if self._open is None:
             return
         missing = self._sashiko_missing()
         choices = [
-            (pid, label + (f' — {missing}' if pid == 'forge-sashiko' and missing else ''))
-            for pid, label in REVIEWS
+            (pid, label + (f' — {missing}' if pid == 'forge-sashiko' and missing else ''), key)
+            for pid, label, key in REVIEWS
         ]
 
         def picked(pid: Optional[str]) -> None:
@@ -846,7 +987,7 @@ class ForgeScreen(Screen[None]):
                 return
             self.action_launch(pid)
 
-        self.app.push_screen(Pick('Which review?', choices), picked)
+        self.app.push_screen(Menu('Which review?', choices), picked)
 
     def _sashiko(self) -> None:
         """Sashiko on the selected round: the model picked from pi's list, then a job in
@@ -856,8 +997,8 @@ class ForgeScreen(Screen[None]):
         if missing:
             self._status(f'Sashiko: {missing}')
             return
-        if forge is None or rnd is None or rnd.kind != 'series':
-            self._status('Sashiko reviews a series round: select one')
+        if forge is None or rnd is None or rnd.kind == 'plan':
+            self._status('Sashiko reviews a series (a vN round): select one, not a plan')
             return
         hub = getattr(self.app, '_sessions', None)
         presets = self.workspace.models if self.workspace is not None else ()
@@ -880,15 +1021,18 @@ class ForgeScreen(Screen[None]):
                 self._reopen(rnd.key, said)
 
             self._status(f'Sashiko is reviewing {rnd.label} (pi: {model or "default"})…')
-            self._work(lambda: service.sashiko(forge, rnd, model), done, 'forge-sashiko')
+            checkout = self._checkout(forge)
+            self._work(
+                lambda: service.sashiko(forge, rnd, model, project=checkout), done, 'forge-sashiko'
+            )
 
         def offer(choices: list[tuple[str, str]]) -> None:
             self.app.push_screen(Pick(f'Sashiko on {rnd.label}: which model?', choices), chosen)
 
         self._work(models, offer, 'forge-models')
 
-    def action_fold(self) -> None:
-        """f: the selected round's series as the project's prep branch for this forge
+    def _fold(self) -> None:
+        """u f: the selected round's series as the project's prep branch for this forge
         (made, or its commits replaced: the next send is its next revision); sent from
         Branches."""
         from .app import Confirm
@@ -897,7 +1041,7 @@ class ForgeScreen(Screen[None]):
         if forge is None or rnd is None:
             return
         if rnd.kind != 'series':
-            self._status('f folds a series round: select one')
+            self._status('u f folds a series round: select one')
             return
         service = self.service
         repo = self._checkout(forge)
@@ -916,8 +1060,8 @@ class ForgeScreen(Screen[None]):
         )
         self.app.push_screen(Confirm(prompt), answered)
 
-    def action_harvest(self) -> None:
-        """h: an upstream posting of this series (its thread from the mail cache, with the
+    def _harvest(self) -> None:
+        """u h: an upstream posting of this series (its thread from the mail cache, with the
         list's replies) as that version's upstream round: the next cycle's input."""
         forge = self._open
         if forge is None:
