@@ -179,6 +179,16 @@ def test_reviews_and_tests_land_on_the_newest_round(world, tmp_path):
     (report,) = thread.cover.replies
     assert report.message.author_email == 'test@forge.local'
     assert 'passed' in report.message.body
+    # The next test run also replies to each patch with its result.
+    patch = thread.patches[0].message.msgid
+    reply = f'In-Reply-To: <{patch}>\n\nBuilt; the f1 test passed.\n'
+    files = {'test.md': 'Both patches build and pass.\n', 'replies/1.txt': reply}
+    session(service, forge, 's4', 'forge-test', files)
+    assert service.collect(forge) == ['s4: a reply on v1 r1', 's4: a test report on v1 r1']
+    _series, thread = service.thread(forge, Round(1, 1))
+    (result,) = thread.patches[0].replies
+    assert result.message.author_email == 'test@forge.local'
+    assert 'the f1 test passed' in result.message.body
 
 
 def test_a_plan_is_posted_reviewed_and_accepted(world, tmp_path):

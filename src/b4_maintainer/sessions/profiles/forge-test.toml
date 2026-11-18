@@ -23,6 +23,6 @@ custom_label = "Notes for this session (optional)"
 id = "test"
 label = "test"
 default = true
-prompt = """Build and test the newest round's series: check out its series branch (state.md names it) in your tree, build it, and run the tests that exercise the change (vng when it needs a running kernel). Write out/forge/test.md: what you ran, how, and the outcome (passed, failed, infrastructure error, timeout, skipped, or unsupported); zero tests run is not a pass."""
+prompt = """Build and test the newest round's series: check out its series branch (state.md names it) in your tree. Build each patch in order (the series must bisect), and run the tests that exercise the change (vng when it needs a running kernel). Reply to each patch with its result, as a test robot does on a list: out/forge/replies/<n>.txt, first line `In-Reply-To: <message-id>` with that patch's Message-ID from the newest round's mbox in rounds/, a blank line, then what you built and ran on that patch and the outcome (passed, failed, infrastructure error, timeout, skipped, or unsupported), quoting the error lines when it failed; zero tests run is not a pass. Then write out/forge/test.md: the summary for the whole series, posted under its cover letter."""
 needs = "worktree"
 skills = ["vng"]

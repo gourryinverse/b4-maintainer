@@ -276,3 +276,13 @@ def test_the_design_session_works_the_design_out_with_the_maintainer_then_hands_
     assert 'ask the maintainer' in prompt and 'do not wait' in prompt
     assert 'agrees' in prompt and 'out/forge/design.md' in prompt
     assert 'implement session' in prompt  # The hand-off to the first round.
+
+
+def test_a_test_session_replies_to_each_patch_and_summarizes_on_the_cover():
+    from b4_maintainer.sessions.profiles import load_profiles
+
+    builtin = pathlib.Path(__file__).parent.parent / 'src/b4_maintainer/sessions/profiles'
+    profiles = {p.id: p for p in load_profiles(builtin, None)[0]}
+    prompt = profiles['forge-test'].fields[0].choices[0].prompt
+    assert 'each patch' in prompt and 'out/forge/replies/' in prompt
+    assert 'In-Reply-To' in prompt and 'out/forge/test.md' in prompt

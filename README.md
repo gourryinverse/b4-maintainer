@@ -318,7 +318,7 @@ the forge, then leaves the tab.
 | `r` | Reply to the selected message in your editor (b4's quote); posted to the local list. |
 | `z` | Open every long quote in the messages, or fold them again; a click on a quote's marker toggles that one. |
 | `R` | Review the selected round: Sashiko (a job, the model picked), review-prompts, or kernel-style. Reviews run in the background and end once their results are in; kernel-style suggests each change directly (the replacement under the quoted lines). |
-| `T` | Launch a test session. |
+| `T` | Launch a test session on the newest round: it builds each patch in order, runs the tests, replies to each patch with its result, and posts a summary under the cover letter. |
 | `s` | Submit the round: launch a session that produces the next version. It answers the review in the code and the cover letter's changelog, replying only where it did not follow a comment. |
 | `C` | A companion beside the app, on the selected round and message: a short-lived, read-only session to ask questions while you review. |
 | `d` | Range-diff of the selected round against the one before. |
