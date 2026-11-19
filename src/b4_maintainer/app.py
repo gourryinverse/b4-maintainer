@@ -932,6 +932,8 @@ class MaintainerApp(App[None]):
             return self._draft is not None or self._saved_draft is not None
         if isinstance(self.screen, WorkbenchScreen) and action == 'focus_editor':
             return self._draft is not None and bool(self._draft.pane)
+        if isinstance(self.screen, SettingsScreen):
+            return action in ('quit', 'cycle_pane')  # Its own keys; Tab moves between boxes.
         if isinstance(self.screen, (BranchesScreen, WorkbenchScreen, ForgeScreen)):
             return action == 'quit'  # The screen has its own keys.
         if action == 'focus_session':

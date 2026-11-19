@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical, VerticalScroll
 from textual.markup import escape
 from textual.screen import Screen
 from textual.widgets import Footer, OptionList, Static
@@ -33,10 +34,15 @@ if TYPE_CHECKING:
     from .upstreams import Upstream, UpstreamService
 
 ACTIONS = (
-    ('pgp', 'Sign with an existing PGP key (from gpg) for every project'),
-    ('patatt', 'Make a new patatt ed25519 key and sign with it for every project'),
-    ('stop', 'Stop signing for every project (messages go unsigned)'),
+    ('pgp', 'Use an existing PGP key (from gpg)'),
+    ('patatt', 'Make a new patatt ed25519 key'),
+    ('stop', 'Stop signing (mail goes unsigned)'),
 )
+SIGNING_HELP = (
+    "For every project, in your global git configuration; a checkout's own key still wins."
+)
+MODEL_HELP = "This machine only (var/workspace.toml). Unset, sessions use pi's default."
+
 
 AUTHORITIES = (
     ('mainline', 'mainline: where series land (one per project; ends review by default)'),
@@ -44,33 +50,32 @@ AUTHORITIES = (
     ('preliminary', 'preliminary: queued for testing, may still change (e.g. mm-unstable)'),
 )
 UPSTREAM_HELP = (
-    'A series in a tracked branch shows its label in the list and its tree evidence. '
-    'Authority ranks the branches. A view lists what a branch holds, under Upstream '
-    'branches, and takes those series out of the list views. Ends review: a series '
-    'fully in that branch leaves every queue. Enter changes a branch; d untracks it.'
+    "A series in a tracked branch shows the branch's label. Authority ranks branches; a "
+    'view lists what a branch holds (and takes it out of the list views); ends review: a '
+    'series fully in the branch leaves every queue.'
 )
 
 
 class SettingsScreen(Screen[None]):
     DEFAULT_CSS = """
-    SettingsScreen #settings-status {
-        height: auto; padding: 0 1; border-top: solid $panel-lighten-2;
-        border-title-color: $text-muted;
+    SettingsScreen #settings-body { height: 1fr; }
+    SettingsScreen .section {
+        height: auto; max-width: 132; margin: 1 1 0 1; padding: 0 1;
+        border: round $panel-lighten-2; border-title-color: $accent;
+        border-title-style: bold;
     }
-    SettingsScreen #settings-actions {
-        height: auto; border: none; border-top: solid $panel-lighten-2;
-        border-title-color: $text-muted;
+    SettingsScreen .section:focus-within { border: round $accent; }
+    SettingsScreen .section OptionList {
+        height: auto; max-height: 100%; border: none; padding: 0; background: transparent;
     }
-    SettingsScreen #settings-note { height: auto; padding: 0 1; }
-    SettingsScreen #settings-models {
-        height: auto; border: none; border-top: solid $panel-lighten-2;
-        border-title-color: $text-muted;
+    SettingsScreen .section OptionList:focus { background-tint: $foreground 0%; }
+    /* Only the focused list shows its cursor. */
+    SettingsScreen .section OptionList:blur > .option-list--option-highlighted {
+        background: transparent; color: $foreground; text-style: none;
     }
-    SettingsScreen #settings-upstreams {
-        height: auto; max-height: 20; border: none; border-top: solid $panel-lighten-2;
-        border-title-color: $text-muted;
-    }
-    SettingsScreen #settings-upstream-help { height: auto; padding: 0 1; color: $text-muted; }
+    SettingsScreen .hint { height: auto; margin-top: 1; color: $text-muted; }
+    SettingsScreen #settings-status { height: auto; margin-bottom: 1; }
+    SettingsScreen #settings-note { height: 1; padding: 0 1; color: $text-muted; }
     """
     BINDINGS = [
         Binding('escape', 'back', 'back'),
@@ -96,24 +101,33 @@ class SettingsScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield TabBar('settings')
-        yield Static('', id='settings-status', markup=False)
-        yield OptionList(*(Option(label, id=key) for key, label in ACTIONS), id='settings-actions')
+        with VerticalScroll(id='settings-body', can_focus=False):  # Tab: box to box.
+            with Vertical(classes='section', id='settings-signing') as signing_box:
+                signing_box.border_title = 'Signing'
+                yield Static('', id='settings-status', markup=False)
+                yield OptionList(
+                    *(Option(label, id=key) for key, label in ACTIONS), id='settings-actions'
+                )
+                yield Static(SIGNING_HELP, classes='hint', markup=False)
+            if self._models is not None:
+                with Vertical(classes='section', id='settings-sessions') as sessions_box:
+                    sessions_box.border_title = 'Agent sessions'
+                    yield OptionList(
+                        Option(self._model_label(''), id='model'), id='settings-models'
+                    )
+                    yield Static(MODEL_HELP, classes='hint', markup=False)
+            if self._upstreams is not None:
+                with Vertical(classes='section', id='settings-branches') as branches_box:
+                    branches_box.border_title = 'Upstream branches'
+                    yield OptionList(id='settings-upstreams')
+                    yield Static(
+                        UPSTREAM_HELP, id='settings-upstream-help', classes='hint', markup=False
+                    )
         yield Static('', id='settings-note', markup=False)
-        if self._models is not None:
-            yield OptionList(Option(self._model_label(''), id='model'), id='settings-models')
-        if self._upstreams is not None:
-            yield OptionList(id='settings-upstreams')
-            yield Static(UPSTREAM_HELP, id='settings-upstream-help', markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one('#settings-status', Static).border_title = 'Signing'
-        self.query_one('#settings-actions', OptionList).border_title = 'Set up'
         self.query_one('#settings-actions', OptionList).focus()
-        if self._models is not None:
-            self.query_one('#settings-models', OptionList).border_title = 'Agent sessions'
-        if self._upstreams is not None:
-            self.query_one('#settings-upstreams', OptionList).border_title = 'Upstream branches'
         self._reload()
 
     def on_screen_resume(self) -> None:
@@ -163,8 +177,8 @@ class SettingsScreen(Screen[None]):
 
     @staticmethod
     def _model_label(current: str) -> str:
-        shown = current or "pi's default model"
-        return f'Default model: {shown}  (Enter chooses another, for this machine)'
+        shown = current or "pi's default"
+        return f'Default model   {shown}'
 
     def _show_model(self, current: str) -> None:
         self._model_text = current

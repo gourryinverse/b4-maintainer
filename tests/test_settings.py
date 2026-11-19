@@ -120,3 +120,40 @@ async def test_f7_chooses_the_default_model_for_this_machine(demo_root, home, tm
         await settle(pilot)
         assert 'default_model' not in local.read_text()
         assert screen.model_text() == ''
+
+
+async def test_settings_shows_only_its_own_keys(demo_root, home):
+    app = MaintainerApp(FixtureSource(demo_root).load)
+    async with app.run_test(size=(160, 40)) as pilot:
+        screen = await open_settings(pilot)
+        shown = {b.binding.action for b in screen.active_bindings.values() if b.enabled}
+        assert 'back' in shown and 'quit' in shown
+        assert not shown & {'preview', 'search', 'sort_latest'}  # The list's, not here.
+
+
+async def test_tab_moves_between_the_settings_boxes(demo_root, home, tmp_path):
+    from b4_maintainer.modelsetting import DefaultModel
+
+    class Hub:
+        def models(self, presets, default=''):
+            return []
+
+    root = tmp_path / 'ws'
+    root.mkdir()
+    (root / 'workspace.toml').write_text('')
+    from b4_maintainer.upstreams import UpstreamService
+
+    app = MaintainerApp(
+        FixtureSource(demo_root).load,
+        default_model=DefaultModel(root, Hub()),
+        upstreams=UpstreamService(root),
+    )
+    async with app.run_test(size=(160, 40)) as pilot:
+        await open_settings(pilot)
+        boxes = ['settings-actions', 'settings-models', 'settings-upstreams']
+        assert app.focused.id == boxes[0]
+        for expected in [*boxes[1:], boxes[0]]:  # Box to box, and round again.
+            await pilot.press('tab')
+            assert app.focused.id == expected
+        await pilot.press('shift+tab')
+        assert app.focused.id == boxes[-1]
