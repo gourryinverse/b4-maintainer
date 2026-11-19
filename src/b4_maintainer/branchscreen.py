@@ -1131,7 +1131,7 @@ class BranchesScreen(Screen[None]):
             if key:  # A key configured: signed is the default.
                 choices.insert(0, ('signed', f'Send signed with patatt ({key})'))
             else:
-                lines.append('No signing key: F6 Settings sets one up for every project.')
+                lines.append('No signing key: F7 Settings sets one up for every project.')
 
             def answered(way: Optional[str]) -> None:
                 if way in ('signed', 'unsigned'):
@@ -1473,7 +1473,7 @@ class BranchesScreen(Screen[None]):
                         0, ('signed', f'Send signed with patatt ({summary.signing_key})')
                     )
                 else:
-                    lines.append('No signing key: F6 Settings sets one up for every project.')
+                    lines.append('No signing key: F7 Settings sets one up for every project.')
 
             def answered(way: Optional[str]) -> None:
                 if way in ('signed', 'unsigned'):

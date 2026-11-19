@@ -106,6 +106,7 @@ if TYPE_CHECKING:
     from .adapters.apply import ApplyResult  # b4: only when applying.
     from .adapters.tmux import TerminalEditor
     from .forge import ForgeService
+    from .modelsetting import DefaultModel
     from .patchmail import ReplyTo
     from .upstreams import UpstreamService
     from .workbench import WorkbenchService
@@ -497,8 +498,8 @@ class MaintainerApp(App[None]):
         Binding('f2', "tab('lkml')", 'LKML', key_display='F2', show=False),
         Binding('f3', "tab('workbench')", 'Workbench', key_display='F3', show=False),
         Binding('f4', 'artifacts', 'Branches', key_display='F4', show=False),
-        Binding('f6', "tab('settings')", 'Settings', key_display='F6', show=False),
-        Binding('f7', "tab('forge')", 'Forge', key_display='F7', show=False),
+        Binding('f6', "tab('forge')", 'Forge', key_display='F6', show=False),
+        Binding('f7', "tab('settings')", 'Settings', key_display='F7', show=False),
         Binding('question_mark', 'keys', 'help', key_display='?', show=False),  # In the tab bar.
         Binding('f1', 'launch_session', 'session', key_display='F1', show=False),  # Tab bar.
         Binding('f12', 'focus_session', 'to session', key_display='F12', show=False),
@@ -523,6 +524,7 @@ class MaintainerApp(App[None]):
         upstreams: Optional['UpstreamService'] = None,
         forges: Optional['ForgeService'] = None,
         clipboard: Sequence[Sequence[str]] = (),
+        default_model: Optional['DefaultModel'] = None,
     ) -> None:
         super().__init__()
         # Copies also go through these (clipboard.commands()): some terminals ignore OSC 52.
@@ -536,6 +538,7 @@ class MaintainerApp(App[None]):
         # Outside tmux (or when its pane cannot open): the editor in this terminal.
         self._terminal_editor = terminal_editor if drafts is not None else None
         self._upstreams = upstreams  # Settings tracks and untracks upstream branches with it.
+        self._default_model = default_model  # Settings chooses the sessions' default model.
         self._save_timer: Any = None
         self._editor_timer: Any = None
         self._drafts_changed = False
@@ -566,7 +569,7 @@ class MaintainerApp(App[None]):
         self._sessions = sessions
         self._branches = branches  # The Branches screen's data and actions (live only).
         self._workbenches = workbenches  # F3's workbenches (live only).
-        self._forges = forges  # F7's forges (live only).
+        self._forges = forges  # F6's forges (live only).
         self._forge_beside: Optional[str] = None  # The session launched from the Forge tab.
         self._forge_states: dict[str, str] = {}  # Forge sessions' last states seen.
         if workbenches is not None:  # Each save brings the workbench's space in line.
@@ -1921,7 +1924,7 @@ class MaintainerApp(App[None]):
 
                 def harvest() -> str:
                     rnd = service.harvest(forge, source, series.revision, series.message_id)
-                    return f'Harvested into {forge.label} as {rnd.label}: F7 opens it'
+                    return f'Harvested into {forge.label} as {rnd.label}: F6 opens it'
 
                 work(harvest)
                 return
@@ -1943,7 +1946,7 @@ class MaintainerApp(App[None]):
                     forge = service.create_from_upstream(
                         series.subject, project, base, source, series.revision, series.message_id
                     )
-                    return f'Made forge {forge.label} from v{series.revision}: F7 opens it'
+                    return f'Made forge {forge.label} from v{series.revision}: F6 opens it'
 
                 work(create)
 
@@ -2906,7 +2909,9 @@ class MaintainerApp(App[None]):
             elif tab == 'branches' and self._branches is not None:
                 screen = BranchesScreen(self._branches, snapshot.workspace)
             elif tab == 'settings':
-                screen = SettingsScreen(self._project_checkouts, self._upstreams)
+                screen = SettingsScreen(
+                    self._project_checkouts, self._upstreams, self._default_model
+                )
             elif tab == 'forge' and self._forges is not None:
                 screen = ForgeScreen(self._forges, snapshot.workspace)
             else:

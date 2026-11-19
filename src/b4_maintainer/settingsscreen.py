@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Settings (F6): which key signs mail for every project, and setting one up there (an
+"""Settings (F7): which key signs mail for every project, and setting one up there (an
 existing PGP key from gpg, a new patatt ed25519 key) or stopping signing; each after a
 confirmation, in the global git configuration (a checkout's own key still overrides).
+
+Then the default model for agent sessions (this machine's var/workspace.toml): pi's own
+default unless one is chosen here.
 
 Then each project's tracked upstream branches: tracking one (its remote fetched into the
 checkout, the ref written to workspace.toml), changing how membership in it counts, and
@@ -26,6 +29,7 @@ from .widgets import TabBar
 from .workspace import Ref, make_ref
 
 if TYPE_CHECKING:
+    from .modelsetting import DefaultModel
     from .upstreams import Upstream, UpstreamService
 
 ACTIONS = (
@@ -58,6 +62,10 @@ class SettingsScreen(Screen[None]):
         border-title-color: $text-muted;
     }
     SettingsScreen #settings-note { height: auto; padding: 0 1; }
+    SettingsScreen #settings-models {
+        height: auto; border: none; border-top: solid $panel-lighten-2;
+        border-title-color: $text-muted;
+    }
     SettingsScreen #settings-upstreams {
         height: auto; max-height: 20; border: none; border-top: solid $panel-lighten-2;
         border-title-color: $text-muted;
@@ -73,8 +81,13 @@ class SettingsScreen(Screen[None]):
         self,
         checkouts: Callable[[], Sequence[tuple[str, pathlib.Path]]],
         upstreams: Optional['UpstreamService'] = None,
+        models: Optional['DefaultModel'] = None,
     ) -> None:
         super().__init__()
+        self._models = models  # The default model for agent sessions.
+        self._note = ''  # What the last change said, shown under the signing status.
+        self._reloads = 0  # Reloads started: only the newest one's results are shown.
+        self._model_text = ''
         self._checkouts = checkouts  # (project, checkout) of each project, for their own keys.
         self._upstreams = upstreams
         self._listed: dict[str, 'Upstream'] = {}  # Option id: tracked branch.
@@ -86,6 +99,8 @@ class SettingsScreen(Screen[None]):
         yield Static('', id='settings-status', markup=False)
         yield OptionList(*(Option(label, id=key) for key, label in ACTIONS), id='settings-actions')
         yield Static('', id='settings-note', markup=False)
+        if self._models is not None:
+            yield OptionList(Option(self._model_label(''), id='model'), id='settings-models')
         if self._upstreams is not None:
             yield OptionList(id='settings-upstreams')
             yield Static(UPSTREAM_HELP, id='settings-upstream-help', markup=False)
@@ -95,12 +110,14 @@ class SettingsScreen(Screen[None]):
         self.query_one('#settings-status', Static).border_title = 'Signing'
         self.query_one('#settings-actions', OptionList).border_title = 'Set up'
         self.query_one('#settings-actions', OptionList).focus()
+        if self._models is not None:
+            self.query_one('#settings-models', OptionList).border_title = 'Agent sessions'
         if self._upstreams is not None:
             self.query_one('#settings-upstreams', OptionList).border_title = 'Upstream branches'
         self._reload()
 
     def on_screen_resume(self) -> None:
-        self._reload()
+        self._reload(self._note)  # Back from a picker: what the last change said stays.
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
         if action == 'untrack':
@@ -108,19 +125,34 @@ class SettingsScreen(Screen[None]):
         return True
 
     def _reload(self, note: str = '') -> None:
+        self._note = note
+        self._reloads += 1
+        ticket = self._reloads
         service = self._upstreams
+        models = self._models
+
+        def latest(show: Callable[..., None]) -> Callable[..., None]:
+            # A superseded reload's thread runs on (exclusive cannot stop it): its news
+            # must not overwrite a newer one's.
+            return lambda *args: show(*args) if ticket == self._reloads else None
 
         def work() -> None:
             lines = signing.signing_status(self._checkouts())
-            self.app.call_from_thread(self._show, lines, note)
+            self.app.call_from_thread(latest(self._show), lines, note)
+            if models is not None:
+                try:
+                    current = models.current()
+                except Exception as exc:  # A broken workspace.toml: said, not fatal.
+                    current = f'? ({exc})'
+                self.app.call_from_thread(latest(self._show_model), current)
             if service is not None:
                 try:
                     listed: Optional[list['Upstream']] = service.listing()
                 except Exception as exc:  # A broken workspace.toml: say so, keep going.
                     listed, note2 = None, f'Upstream branches: {exc}'
-                    self.app.call_from_thread(self.show_notice, note2)
+                    self.app.call_from_thread(latest(self.show_notice), note2)
                 if listed is not None:
-                    self.app.call_from_thread(self._show_upstreams, listed)
+                    self.app.call_from_thread(latest(self._show_upstreams), listed)
 
         self.run_worker(work, thread=True, group='settings', exclusive=True)
 
@@ -128,6 +160,19 @@ class SettingsScreen(Screen[None]):
         self._status_text = '\n'.join([*lines, *([note] if note else [])])
         self.query_one('#settings-status', Static).update('\n'.join(lines))
         self.query_one('#settings-note', Static).update(note)
+
+    @staticmethod
+    def _model_label(current: str) -> str:
+        shown = current or "pi's default model"
+        return f'Default model: {shown}  (Enter chooses another, for this machine)'
+
+    def _show_model(self, current: str) -> None:
+        self._model_text = current
+        listing = self.query_one('#settings-models', OptionList)
+        listing.replace_option_prompt('model', self._model_label(current))
+
+    def model_text(self) -> str:
+        return self._model_text
 
     def status_text(self) -> str:
         return self._status_text
@@ -188,7 +233,9 @@ class SettingsScreen(Screen[None]):
             self.choose(event.option.id)
 
     def choose(self, action: str) -> None:
-        if action.startswith('add:'):
+        if action == 'model':
+            self._choose_model()
+        elif action.startswith('add:'):
             self._track(action.removeprefix('add:'))
         elif action in self._listed:
             self._change(self._listed[action])
@@ -203,6 +250,29 @@ class SettingsScreen(Screen[None]):
                 signing.stop_signing,
                 'Signing stopped',
             )
+
+    def _choose_model(self) -> None:
+        """The default model: pi's own, a preset, or any model in pi's catalog."""
+        models = self._models
+        if models is None:
+            return
+
+        def work() -> None:
+            try:
+                choices = models.choices()
+            except Exception as exc:
+                self.app.call_from_thread(self._reload, f'Cannot list the models: {exc}')
+                return
+            self.app.call_from_thread(offer, choices)
+
+        def offer(choices: list[tuple[str, str]]) -> None:
+            self.app.push_screen(Pick('Default model for agent sessions?', choices), picked)
+
+        def picked(key: Optional[str]) -> None:
+            if key and models is not None:
+                self._upstream_work(lambda: models.set(key))
+
+        self.run_worker(work, thread=True, group='settings-act')
 
     def _pgp(self) -> None:
         def work() -> None:

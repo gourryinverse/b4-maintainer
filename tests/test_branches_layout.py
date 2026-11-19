@@ -374,7 +374,7 @@ async def test_without_a_key_a_patch_can_only_go_unsigned(demo_root):
         await settle(pilot)
         pick = app.screen
         assert [k for k, _label in pick.choices] == ['unsigned']
-        assert 'F6' in pick.title_text  # Where to set one up.
+        assert 'F7' in pick.title_text  # Where to set one up.
         await pilot.press('enter')
         await settle(pilot)
         assert [sign for _p, _t, sign in sent] == [False]

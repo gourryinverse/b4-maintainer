@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The Forge tab (F7): agentic development as a local mailing list.
+"""The Forge tab (F6): agentic development as a local mailing list.
 
 With no forge open it lists the forges; Enter opens one, and the whole tab is that
 forge: its rounds (plans, series rounds, upstream postings), the selected round's thread
@@ -1176,11 +1176,12 @@ class ForgeScreen(Screen[None]):
             return
         hub = getattr(self.app, '_sessions', None)
         presets = self.workspace.models if self.workspace is not None else ()
+        default = self.workspace.default_model if self.workspace is not None else ''
 
         by_key: dict[str, str] = {}
 
         def models() -> list[tuple[str, str]]:
-            found = hub.models(presets) if hub is not None else []
+            found = hub.models(presets, default) if hub is not None else []
             usable = [m for m in found if m.available and m.kind != 'dry-run']
             by_key.update({m.id: m.model for m in usable} or {'default': ''})
             return [(m.id, m.label) for m in usable] or [('default', "pi's default model")]

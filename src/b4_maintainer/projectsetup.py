@@ -10,6 +10,7 @@ a failure never leaves a registered project without b4 state.
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,49 @@ def read_config(root: pathlib.Path) -> dict[str, Any]:
             raise ValueError(f'var/{CONFIG_NAME}: {e}') from e
         config = merge_config(config, overrides)
     return config
+
+
+def set_local_setting(root: pathlib.Path, table: str, key: str, value: str) -> pathlib.Path:
+    """`[table] key = "value"` in this machine's var/workspace.toml ('' removes it), the
+    rest of the file (comments too) as it was; the file. Raises ValueError when the edit
+    would not read back."""
+    path = local_config_path(root)
+    text = path.read_text() if path.is_file() else ''
+    lines = text.splitlines(keepends=True)
+    header = re.compile(rf'^\s*\[\s*{re.escape(table)}\s*\]\s*(#.*)?$')
+    setting = re.compile(rf'^\s*{re.escape(key)}\s*=')
+    line = f'{key} = {json.dumps(value)}\n'
+    start = next((n for n, x in enumerate(lines) if header.match(x.rstrip('\n'))), None)
+    if start is None:
+        if value:
+            lead = (
+                ''
+                if not text or text.endswith('\n\n')
+                else ('\n' if text.endswith('\n') else '\n\n')
+            )
+            lines.append(f'{lead}[{table}]\n{line}')
+    else:
+        end = next(
+            (n for n in range(start + 1, len(lines)) if lines[n].lstrip().startswith('[')),
+            len(lines),
+        )
+        found = next((n for n in range(start + 1, end) if setting.match(lines[n])), None)
+        if found is not None:
+            lines[found : found + 1] = [line] if value else []
+        elif value:
+            lines.insert(start + 1, line)
+    new = ''.join(lines)
+    try:
+        read = tomllib.loads(new).get(table, {}).get(key, '')
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f'var/{CONFIG_NAME}: the edit would not parse ({e})') from e
+    if read != value:
+        raise ValueError(f'var/{CONFIG_NAME}: the edit did not read back as asked')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f'.{path.name}.tmp')
+    tmp.write_text(new)
+    os.replace(tmp, path)
+    return path
 
 
 def has_config(root: pathlib.Path) -> bool:

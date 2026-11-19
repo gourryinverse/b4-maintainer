@@ -261,8 +261,8 @@ TABS = (
     ('workbench', 'F3', 'Workbench'),
     ('branches', 'F4', 'Branches'),
     ('refresh', 'F5', 'Refresh'),  # Not a tab: F5 runs the refresh from any of them.
-    ('settings', 'F6', 'Settings'),
-    ('forge', 'F7', 'Forge'),
+    ('forge', 'F6', 'Forge'),
+    ('settings', 'F7', 'Settings'),
     ('help', '?', 'Help'),  # Not a tab: the keys of whichever is open.
 )
 # Entries that are keys rather than tabs: a click presses the key, so the open screen

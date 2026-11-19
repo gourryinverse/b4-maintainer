@@ -728,7 +728,7 @@ class LiveSource:
         if sign is None:
             sign = self.will_sign(project_id)
         elif sign and not self.signing_key(project_id):
-            raise RuntimeError('no signing key configured (F6 Settings sets one up)')
+            raise RuntimeError('no signing key configured (F7 Settings sets one up)')
         b4state.activate(self.checkout(project))
         smtp, fromaddr = b4.get_smtp(dryrun=self.email_dryrun)
         sent = b4.send_mail(

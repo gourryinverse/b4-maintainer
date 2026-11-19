@@ -74,3 +74,38 @@ def test_without_a_catalog_presets_cannot_be_checked_but_stay_usable():
     found = by_id(model_choices(None, [{'id': 'deep', 'model': 'alpha/alpha-large-2'}]))
     assert list(found) == ['default', 'deep', 'dry-run']
     assert found['deep'].available
+
+
+def test_the_settings_default_model_is_the_default_and_pis_own_stays_offered():
+    catalog = parse_catalog(LISTING)
+    choices = model_choices(catalog, [], default='beta/beta-pro')
+    assert [c.id for c in choices][:2] == ['default', 'pi-default']
+    found = by_id(choices)
+    assert (found['default'].model, found['default'].kind) == ('beta/beta-pro', 'default')
+    assert 'beta/beta-pro' in found['default'].label
+    assert found['pi-default'].model == '' and found['pi-default'].label == "pi's default model"
+
+
+def test_a_preset_named_as_the_default_brings_its_thinking_and_arguments():
+    presets = [{'id': 'deep', 'model': 'alpha/alpha-large-2', 'thinking': 'high', 'args': ['--x']}]
+    found = by_id(model_choices(parse_catalog(LISTING), presets, default='deep'))
+    default = found['default']
+    assert (default.model, default.thinking, default.args) == (
+        'alpha/alpha-large-2',
+        'high',
+        ('--x',),
+    )
+    assert default.kind == 'default' and 'deep' in default.label
+    assert 'deep' in found  # Still offered as itself.
+
+
+def test_a_default_model_pi_does_not_list_is_unavailable_and_pis_own_remains():
+    found = by_id(model_choices(parse_catalog(LISTING), [], default='gamma/old'))
+    assert not found['default'].available and "not in pi's model list" in found['default'].reason
+    assert found['pi-default'].available
+
+
+def test_without_a_default_model_pis_default_is_the_default():
+    choices = model_choices(parse_catalog(LISTING), [], default='')
+    assert choices[0].id == 'default' and choices[0].model == ''
+    assert 'pi-default' not in by_id(choices)

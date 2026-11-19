@@ -116,8 +116,8 @@ share, a subject tag (`[ndctl PATCH]`) or the directories a series touches decid
 | `F3` | **Workbench**: workbenches, their contents, and their sessions. |
 | `F4` | **Branches**: bases, prep branches, session work, and sending. |
 | `F5` | Refresh: fetch mail and branches, from any tab. |
-| `F6` | **Settings**: signing and tracked branches. |
-| `F7` | **Forge**: building a series with an agent, reviewed like mail. |
+| `F6` | **Forge**: building a series with an agent, reviewed like mail. |
+| `F7` | **Settings**: signing, the sessions' default model, and tracked branches. |
 | `?` | Every key on the current tab. |
 
 Each tab keeps its place when you switch away. The footer shows the common keys; `` ` ``
@@ -271,11 +271,16 @@ On a prep branch:
 | `o` | Preview exactly what would be sent (`b4 send -o`). |
 | `S` | Send. A summary comes first, and sending is refused while there are no recipients, the cover letter still says EDITME, a commit lacks your sign-off, or checks fail. Then b4 runs in the terminal and asks once more. |
 
-### Settings (F6)
+### Settings (F7)
 
 **Signing.** Which key signs your mail, and setting one up in your global git
 configuration: an existing PGP key from gpg, a new patatt ed25519 key, or no signing.
 Without a key, mail goes out unsigned.
+
+**Agent sessions.** The default model for this machine (`[sessions] default_model` in
+`var/workspace.toml`): pi's own default until you choose one, from your `[[models]]`
+presets or pi's model list. The launch dialog starts on it (pi's own stays offered), and
+launches without a dialog and Sashiko's model pick use it too.
 
 **Upstream branches.** Each project's tracked branches, with what membership in each
 means:
@@ -292,7 +297,7 @@ configuration. `Enter` on a branch changes it; `d` untracks it, and its remote g
 once nothing else uses it. Settings rewrites only that project's `refs = [...]` lines,
 and a branch that one of your bases builds on cannot be untracked.
 
-### Forge (F7)
+### Forge (F6)
 
 A forge is where you build a series with an agent, the way you work upstream: design,
 post, review inline, rework, and send. Each round of the series is posted to a local
@@ -458,7 +463,7 @@ lists = ["linux-mm@kvack.org"]
 | `[drafts]` `editor`, `tmux_width` | `auto` (tmux pane, else this terminal), `terminal`, or `app` (the in-app pane). |
 | `[sashiko]` `senders`, `hide_clean` | Sashiko's addresses; leave its replies that found nothing out of threads. |
 | `[layout]` `three_pane`, `single_pane`, `preview_width`, `quote_lines` | Terminal widths for the layouts (160, 100) and the expanded preview (100); quoted lines a folded quote keeps in sight (8). |
-| `[sessions]` | Session limits (`max_live`, `max_builds`), `pi` and `pi_args`, `pane_width`, the agent's commit identity, sandbox priority, `assisted_by`. |
+| `[sessions]` | Session limits (`max_live`, `max_builds`), `default_model` (a preset's `id` or pi's `provider/model`; unset: pi's default), `pi` and `pi_args`, `pane_width`, the agent's commit identity, sandbox priority, `assisted_by`. |
 | `[[models]]` | Model presets for the launch dialog. |
 | `[[guidance]]` `id`, `path` | Use another checkout of a guidance source (e.g. review-prompts). |
 

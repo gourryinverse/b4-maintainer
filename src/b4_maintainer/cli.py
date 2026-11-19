@@ -114,6 +114,7 @@ def build_app(argv: Optional[Sequence[str]] = None) -> 'MaintainerApp':
 def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp':
     from .app import MaintainerApp
     from .branches import BranchService
+    from .modelsetting import DefaultModel
     from .upstreams import UpstreamService
 
     source.email_dryrun = args.email_dry_run
@@ -130,6 +131,7 @@ def _live_app(source: 'LiveSource', args: argparse.Namespace) -> 'MaintainerApp'
         terminal_editor=editors[1],
         upstreams=UpstreamService(source.root),
         sessions=(hub := _sessions(source.root, workspace, private=True)),
+        default_model=DefaultModel(source.root, hub),
         branches=BranchService(
             source.root,
             _with_spaces(source.root, hub),

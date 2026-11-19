@@ -560,3 +560,22 @@ async def test_a_series_that_conflicts_offers_to_hand_it_to_the_agent(demo_root,
         [(sid, _request)] = runner.launches
         assert trees.unapplied == [(sid, trees.unapplied[0][1], 'b' * 40)]
         assert store.record(sid).worktree.agent_applies
+
+
+async def test_the_default_model_setting_is_preselected_and_launched(demo_root, store, runner):
+    path = demo_root / 'workspace.json'
+    config = json.loads(path.read_text())
+    config.setdefault('sessions', {})['default_model'] = 'alpha/alpha-small'
+    path.write_text(json.dumps(config))
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        assert dialog.selected('model') == 'default'
+        assert 'default: alpha/alpha-small' in dialog.labels()
+        assert "pi's default model" in dialog.labels()  # Still offered.
+        await act(pilot, dialog.pick, 'goal', 'review')
+        assert 'alpha/alpha-small' in dialog.summary_text()
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        assert store.record(sid).model == 'alpha/alpha-small'

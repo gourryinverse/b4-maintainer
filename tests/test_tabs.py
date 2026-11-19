@@ -47,8 +47,8 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
         assert tab_text(app) == (
-            ' F1 Session  F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Settings'
-            '  F7 Forge  ? Help '
+            ' F1 Session  F2 LKML  F3 Workbench  F4 Branches  F5 Refresh  F6 Forge'
+            '  F7 Settings  ? Help '
         )
         assert app.screen.query_one(TabBar).current == 'lkml'
         await pilot.press('f3')
@@ -59,7 +59,7 @@ async def test_every_tab_shows_the_bar_with_itself_marked(demo_root, tmp_path):
         await settle(pilot)
         assert isinstance(app.screen, BranchesScreen)
         assert app.screen.query_one(TabBar).current == 'branches'
-        await pilot.press('f7')
+        await pilot.press('f6')
         await settle(pilot)
         assert isinstance(app.screen, ForgeScreen)
         assert app.screen.query_one(TabBar).current == 'forge'

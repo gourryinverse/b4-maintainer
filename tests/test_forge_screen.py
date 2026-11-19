@@ -1,4 +1,4 @@
-"""Contract: F7 opens the Forge tab. With no forge open it lists the forges; Enter opens
+"""Contract: F6 opens the Forge tab. With no forge open it lists the forges; Enter opens
 one, and the whole tab is that forge: its rounds, the selected round's thread, and the
 selected message. Escape closes the forge back to the list, then returns to LKML."""
 
@@ -55,7 +55,7 @@ async def settle(pilot):
 
 async def open_tab(pilot):
     await settle(pilot)
-    await pilot.press('f7')
+    await pilot.press('f6')
     await settle(pilot)
     screen = pilot.app.screen
     assert isinstance(screen, ForgeScreen)
@@ -66,7 +66,7 @@ async def test_the_tab_bar_names_the_forge_tab(demo_root, tmp_path):
     app, _service = make(demo_root, tmp_path)
     async with app.run_test(size=(180, 40)) as pilot:
         screen = await open_tab(pilot)
-        assert 'F7 Forge' in screen.query_one(TabBar).text()
+        assert 'F6 Forge' in screen.query_one(TabBar).text()
 
 
 async def test_no_forges_says_how_to_make_one(demo_root, tmp_path):
@@ -159,11 +159,11 @@ async def test_n_makes_a_forge_and_starts_nothing(demo_root, tmp_path):
         assert screen.forge_labels() == ['CXL rework · linux on mainline/master · nothing posted']
 
 
-async def test_without_a_forge_service_f7_does_nothing(demo_root):
+async def test_without_a_forge_service_f6_does_nothing(demo_root):
     app = MaintainerApp(FixtureSource(demo_root).load)
     async with app.run_test(size=(180, 40)) as pilot:
         await settle(pilot)
-        await pilot.press('f7')
+        await pilot.press('f6')
         await settle(pilot)
         assert not isinstance(app.screen, ForgeScreen)
 
@@ -564,7 +564,7 @@ async def test_F_on_lkml_starts_a_forge_from_the_series_or_harvests_it(demo_root
         assert made.label == item.series.subject and made.origin == item.series.message_id
         (rnd,) = service.rounds(made)
         assert rnd.label == f'v{item.series.revision} upstream'
-        assert 'F7' in app.status_text()  # Stays on LKML; says where it is.
+        assert 'F6' in app.status_text()  # Stays on LKML; says where it is.
         await pilot.press('F')
         await settle(pilot)
         await pilot.press('down', 'enter')  # Into the existing forge (the first after New).

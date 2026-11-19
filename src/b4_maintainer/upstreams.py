@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Tracked upstream branches (a project's refs), as Settings (F6) edits them.
+"""Tracked upstream branches (a project's refs), as Settings (F7) edits them.
 
 workspace.toml is the maintainer's own file: a write rewrites only one project's
 refs = [...] (one ref per line) and leaves every other byte as it was, then must read

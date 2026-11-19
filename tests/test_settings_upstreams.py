@@ -1,4 +1,4 @@
-"""Contract: F6 Settings lists each project's tracked upstream branches (label, branch,
+"""Contract: F7 Settings lists each project's tracked upstream branches (label, branch,
 authority, view, ends review; local branches marked) with what membership does, and
 manages them: Enter on "track a branch" walks remote (or a new one by URL), branch
 (listed from the remote), label, authority, view, and ends review, then confirms;
