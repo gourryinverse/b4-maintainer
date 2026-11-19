@@ -175,6 +175,10 @@ class ForgeScreen(Screen[None]):
         rnd = self._round()
         return rnd.label if rnd is not None else ''
 
+    def select_forge(self, label: str) -> None:
+        index = next(n for n, (f, _r) in enumerate(self._forges) if f.label == label)
+        self.query_one('#forge-list', OptionList).highlighted = index
+
     def select_round(self, label: str) -> None:
         index = next(n for n, r in enumerate(self._rounds) if r.label == label)
         self.query_one('#forge-rounds', OptionList).highlighted = index
@@ -604,6 +608,7 @@ class ForgeScreen(Screen[None]):
             ('review', 'review the selected round…', 'r'),
             ('forge-test', 'test the newest round, a reply per patch', 't'),
             ('companion', 'companion: ask about the selected round', 'c'),
+            ('open', "open one of the forge's sessions already running…", 'o'),
         ]
 
         def picked(key: Optional[str]) -> None:
@@ -611,12 +616,35 @@ class ForgeScreen(Screen[None]):
                 return
             if key == 'review':
                 self._review()
+            elif key == 'open':
+                self._open_session()
             elif key == 'companion':
                 self._companion()
             else:
                 self.action_launch(key)
 
         self.app.push_screen(Menu('Start a session', choices), picked)
+
+    def _open_session(self) -> None:
+        """s o: one of the forge's live sessions (they run in its workbench) beside the
+        app again, focused: one left behind when the forge was closed, a review, a
+        companion."""
+        forge = self._open
+        listed = getattr(self.app, 'bench_sessions', None)
+        opener = getattr(self.app, 'open_bench_session', None)
+        if forge is None or listed is None or opener is None:
+            self._status('Agent sessions are not available here')
+            return
+        found = listed(forge.workbench)
+        if not found:
+            self._status("None of the forge's sessions is running: s starts one")
+            return
+
+        def picked(sid: Optional[str]) -> None:
+            if sid:
+                opener(sid)
+
+        self.app.push_screen(Pick(f'{forge.label}: which session?', found), picked)
 
     def action_view(self) -> None:
         """v: other views of the selected round."""

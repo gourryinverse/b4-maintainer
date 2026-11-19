@@ -3736,6 +3736,13 @@ class MaintainerApp(App[None]):
         record = hub.store.record(sid)
         return gather([record], record.series, hub.store.directory)
 
+    def bench_sessions(self, workbench: str) -> list[tuple[str, str]]:
+        """The workbench's live sessions, newest first, as (id, label: its task, its id,
+        its state), from the last poll (no reading)."""
+        views = [v for v in self._overview.sessions if v.record.workbench == workbench]
+        views.sort(key=lambda v: v.record.created, reverse=True)
+        return [(v.record.id, _bench_session_label(v)) for v in views]
+
     def open_bench_session(self, sid: str) -> None:
         """Enter on a workbench session: beside the app, focused; outside tmux, its window."""
         hub = self._sessions
@@ -4745,6 +4752,13 @@ def _target_label(key: str, targets: Sequence[tuple[str, str]]) -> str:
 
 NEW_BENCH = '+new'  # w's "new workbench" choice (workbench ids never hold '+').
 NEW_BENCH_LAUNCH = '\0new'  # F1's: a new workbench made from the series.
+
+
+def _bench_session_label(view: SessionView) -> str:
+    record = view.record
+    task = record.profile_id.removeprefix('forge-') or 'session'
+    name = record.name or record.id
+    return f'{task}  {name}  ({view.state})'
 
 
 SASHIKO_POLL = 5.0  # Seconds between looks at the forges' Sashiko jobs.

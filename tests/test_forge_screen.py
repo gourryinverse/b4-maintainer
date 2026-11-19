@@ -473,7 +473,7 @@ async def test_the_menus_pick_by_letter(demo_root, tmp_path, posted):
         await settle(pilot)
         assert isinstance(app.screen, Menu)
         labels = [label for _key, label in app.screen.choices]
-        assert [label.split()[0] for label in labels] == ['p', 'i', 's', 'r', 't', 'c']
+        assert [label.split()[0] for label in labels] == ['p', 'i', 's', 'r', 't', 'c', 'o']
         await pilot.press('escape')
         await settle(pilot)
         assert app.screen is screen
@@ -1018,3 +1018,36 @@ async def test_a_running_sashiko_shows_its_progress_offers_to_stop_and_lands(
         await settle(pilot)
         assert 'no new findings' in screen.status_text()
         assert screen.query_one('#forge-rounds').border_subtitle == ''
+
+
+async def test_s_o_reopens_a_running_session_of_the_forge(demo_root, tmp_path):
+    from sessiondata import make_record
+
+    from b4_maintainer.branchscreen import Pick
+
+    app, service, runner = make_live(demo_root, tmp_path)
+    forge = service.create('Demo work', 'linux', 'HEAD', '')
+    other = service.create('Other', 'linux', 'HEAD', '')
+    for sid, profile, bench in (
+        ('s1', 'forge-implement', forge.workbench),
+        ('s2', 'forge-kernel-style', forge.workbench),
+        ('s3', 'forge-test', other.workbench),  # Another forge's.
+    ):
+        runner.add(make_record(sid, scope='workbench', profile_id=profile, workbench=bench))
+    async with app.run_test(size=(220, 50)) as pilot:
+        screen = await open_tab(pilot)
+        app.poll_sessions()
+        await settle(pilot)
+        screen.select_forge('Demo work')
+        await pilot.press('enter')
+        await settle(pilot)
+        await pilot.press('s', 'o')
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        keys = [k for k, _label in app.screen.choices]
+        assert keys == ['s1', 's2']  # This forge's, live.
+        labels = [label for _k, label in app.screen.choices]
+        assert 'implement' in labels[0] and 'kernel-style' in labels[1]
+        await pilot.press('down', 'enter')
+        await settle(pilot)
+        assert runner.beside == 's2'  # Beside the app again.
