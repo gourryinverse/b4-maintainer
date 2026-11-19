@@ -579,7 +579,7 @@ class SessionHub:
         counted = [v for v in overview.sessions if v.state in COUNTED_LIVE]
         reason = self.worktree_reason(project)
         return Situation(
-            self.models(workspace.models, workspace.default_model),
+            self.models(workspace.models, workspace.default_model, workspace.default_thinking),
             workspace.session_limits,
             live=len(counted),
             live_builds=sum(v.record.mode == 'worktree' for v in counted),
@@ -612,12 +612,14 @@ class SessionHub:
             if not self._catalog_read:
                 self._catalog_text, self._catalog_read = self._catalog(), True
 
-    def models(self, presets: Sequence[Mapping[str, Any]], default: str = '') -> list[ModelChoice]:
+    def models(
+        self, presets: Sequence[Mapping[str, Any]], default: str = '', thinking: str = ''
+    ) -> list[ModelChoice]:
         """Model choices from pi's catalog (None if pi cannot list it); *default*: the
-        model the default stands for ('' for pi's own)."""
+        model the default stands for ('' for pi's own), at *thinking* ('' for its own)."""
         self.read_catalog()
         text = self._catalog_text
-        return model_choices(parse_catalog(text) if text else None, presets, default)
+        return model_choices(parse_catalog(text) if text else None, presets, default, thinking)
 
     def launch(
         self,

@@ -157,3 +157,36 @@ async def test_tab_moves_between_the_settings_boxes(demo_root, home, tmp_path):
             assert app.focused.id == expected
         await pilot.press('shift+tab')
         assert app.focused.id == boxes[-1]
+
+
+async def test_f7_chooses_the_default_thinking_level(demo_root, home, tmp_path):
+    from b4_maintainer.modelsetting import DefaultModel
+
+    class Hub:
+        def models(self, presets, default='', thinking=''):
+            return []
+
+    root = tmp_path / 'ws'
+    root.mkdir()
+    (root / 'workspace.toml').write_text('')
+    app = MaintainerApp(FixtureSource(demo_root).load, default_model=DefaultModel(root, Hub()))
+    async with app.run_test(size=(160, 40)) as pilot:
+        screen = await open_settings(pilot)
+        assert screen.thinking_text() == ''  # The model's own.
+        screen.choose('thinking')
+        await settle(pilot)
+        pick = app.screen
+        assert isinstance(pick, Pick)
+        keys = [k for k, _label in pick.choices]
+        assert keys[0] == '-' and 'high' in keys and 'max' in keys
+        await pilot.press(*['down'] * keys.index('high'), 'enter')
+        await settle(pilot)
+        local = root / 'var' / 'workspace.toml'
+        assert 'default_thinking = "high"' in local.read_text()
+        assert screen.thinking_text() == 'high'
+        assert 'Sessions think at high' in screen.status_text()
+        screen.choose('thinking')
+        await settle(pilot)
+        await pilot.press('enter')  # The model's own again.
+        await settle(pilot)
+        assert 'default_thinking' not in local.read_text()

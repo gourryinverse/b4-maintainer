@@ -566,16 +566,17 @@ async def test_the_default_model_setting_is_preselected_and_launched(demo_root, 
     path = demo_root / 'workspace.json'
     config = json.loads(path.read_text())
     config.setdefault('sessions', {})['default_model'] = 'alpha/alpha-small'
+    config['sessions']['default_thinking'] = 'low'
     path.write_text(json.dumps(config))
     app = make_app(demo_root, store, runner)
     async with app.run_test(size=(180, 50)) as pilot:
         dialog = await open_dialog(pilot)
         assert dialog.selected('model') == 'default'
-        assert 'default: alpha/alpha-small' in dialog.labels()
+        assert 'default: alpha/alpha-small, thinking low' in dialog.labels()
         assert "pi's default model" in dialog.labels()  # Still offered.
         await act(pilot, dialog.pick, 'goal', 'review')
         assert 'alpha/alpha-small' in dialog.summary_text()
         await pilot.press('ctrl+s')
         await settle(pilot)
         [(sid, _request)] = runner.launches
-        assert store.record(sid).model == 'alpha/alpha-small'
+        assert (store.record(sid).model, store.record(sid).thinking) == ('alpha/alpha-small', 'low')

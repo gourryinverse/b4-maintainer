@@ -109,3 +109,29 @@ def test_without_a_default_model_pis_default_is_the_default():
     choices = model_choices(parse_catalog(LISTING), [], default='')
     assert choices[0].id == 'default' and choices[0].model == ''
     assert 'pi-default' not in by_id(choices)
+
+
+def test_the_default_thinking_level_rides_with_the_default_model():
+    catalog = parse_catalog(LISTING)
+    found = by_id(model_choices(catalog, [], default='beta/beta-pro', thinking='high'))
+    assert (found['default'].model, found['default'].thinking) == ('beta/beta-pro', 'high')
+    assert 'thinking high' in found['default'].label
+    assert found['pi-default'].thinking == ''  # pi's own, as pi has it.
+
+
+def test_a_thinking_level_alone_applies_to_pis_default_model():
+    found = by_id(model_choices(parse_catalog(LISTING), [], thinking='low'))
+    assert (found['default'].model, found['default'].thinking) == ('', 'low')
+    assert "pi's default model" in found['default'].label and 'pi-default' in found
+
+
+def test_the_default_thinking_level_overrides_a_named_presets():
+    presets = [{'id': 'deep', 'model': 'alpha/alpha-large-2', 'thinking': 'high'}]
+    found = by_id(model_choices(parse_catalog(LISTING), presets, default='deep', thinking='low'))
+    assert found['default'].thinking == 'low' and found['deep'].thinking == 'high'
+
+
+def test_an_unknown_thinking_level_makes_the_default_unavailable():
+    found = by_id(model_choices(parse_catalog(LISTING), [], thinking='lots'))
+    assert not found['default'].available and 'thinking must be one of' in found['default'].reason
+    assert found['pi-default'].available

@@ -106,6 +106,7 @@ TABLE_KEYS = {
             'max_live',
             'max_builds',
             'default_model',
+            'default_thinking',
             'worktree_warn',
             'worktree_warn_gb',
             'pi',
@@ -257,6 +258,7 @@ class Workspace:
     # The model a launch uses unless another is chosen ([sessions] default_model: a preset's
     # id or pi's provider/model); empty: pi's own default.
     default_model: str = ''
+    default_thinking: str = ''  # Its thinking level ([sessions] default_thinking).
     # pi and site launcher options ([sessions] pi, pi_args): site-specific, so kept in the
     # workspace's own configuration.
     pi: str = 'pi'
@@ -330,6 +332,7 @@ class Workspace:
             session_limits=SessionLimits.from_config(config.get('sessions', {})),
             models=tuple(m for m in config.get('models', []) if isinstance(m, dict)),
             default_model=str(config.get('sessions', {}).get('default_model', '')).strip(),
+            default_thinking=str(config.get('sessions', {}).get('default_thinking', '')).strip(),
             pi=str(config.get('sessions', {}).get('pi', 'pi')),
             pi_args=tuple(str(a) for a in config.get('sessions', {}).get('pi_args', [])),
             pane_width=int(config.get('sessions', {}).get('pane_width', 90)),

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The models a session can use: the default (pi's, or the one `[sessions] default_model`
-names), `[[models]]` presets, dry-run, pi's catalog.
+names, at `default_thinking`), `[[models]]` presets, dry-run, pi's catalog.
 
 pi owns providers, credentials, and its model catalog; b4-maintainer only lists what pi
 reports (`pi --list-models`) and passes the choice on (`--model`, `--thinking`). Presets
@@ -83,28 +83,39 @@ def _preset(raw: Mapping[str, Any], known: Optional[set[str]]) -> Optional[Model
 
 
 def model_choices(
-    catalog: Optional[Sequence[CatalogModel]], presets: Sequence[Any], default: str = ''
+    catalog: Optional[Sequence[CatalogModel]],
+    presets: Sequence[Any],
+    default: str = '',
+    thinking: str = '',
 ) -> list[ModelChoice]:
     """The default, presets in config order, dry-run, then the catalog (None: unknown).
 
     The default (`default`, what a launch without a choice uses) is pi's default model;
     with *default* (`[sessions] default_model`: a preset's id or pi's `provider/model`),
-    that model, and pi's own stays offered (`pi-default`)."""
+    that model, and with *thinking* (`[sessions] default_thinking`) at that thinking level
+    (over a preset's own); either set, pi's own default stays offered (`pi-default`)."""
     known = {m.id for m in catalog} if catalog is not None else None
     pi_default = ModelChoice('default', "pi's default model", 'default')
     parsed = [p for raw in presets if isinstance(raw, Mapping) and (p := _preset(raw, known))]
-    if default:
-        named = next((p for p in parsed if p.id == default), None)
+    if default or thinking:
+        named = next((p for p in parsed if p.id == default), None) if default else None
         if named is not None:
-            chosen = dataclasses.replace(
-                named, id='default', kind='default', label=f'default: {named.label}'
-            )
+            chosen = dataclasses.replace(named, id='default', kind='default')
+            name = named.label
         else:
-            chosen = ModelChoice('default', f'default: {default}', 'default', default)
-            if known is not None and default not in known:
+            chosen = ModelChoice('default', '', 'default', default)
+            name = default or "pi's default model"
+            if default and known is not None and default not in known:
                 chosen = dataclasses.replace(
                     chosen, available=False, reason=f"{default} is not in pi's model list"
                 )
+        if thinking:
+            chosen = dataclasses.replace(chosen, thinking=thinking)
+            name = f'{name}, thinking {thinking}'
+            if thinking not in THINKING:
+                reason = f'thinking must be one of {", ".join(THINKING)}'
+                chosen = dataclasses.replace(chosen, available=False, reason=reason)
+        chosen = dataclasses.replace(chosen, label=f'default: {name}')
         choices = [chosen, dataclasses.replace(pi_default, id='pi-default')]
     else:
         choices = [pi_default]

@@ -41,7 +41,10 @@ ACTIONS = (
 SIGNING_HELP = (
     "For every project, in your global git configuration; a checkout's own key still wins."
 )
-MODEL_HELP = "This machine only (var/workspace.toml). Unset, sessions use pi's default."
+MODEL_HELP = (
+    "This machine only (var/workspace.toml). Unset, sessions use pi's default model at "
+    "the model's own thinking level."
+)
 
 
 AUTHORITIES = (
@@ -93,6 +96,7 @@ class SettingsScreen(Screen[None]):
         self._note = ''  # What the last change said, shown under the signing status.
         self._reloads = 0  # Reloads started: only the newest one's results are shown.
         self._model_text = ''
+        self._thinking_text = ''
         self._checkouts = checkouts  # (project, checkout) of each project, for their own keys.
         self._upstreams = upstreams
         self._listed: dict[str, 'Upstream'] = {}  # Option id: tracked branch.
@@ -113,7 +117,9 @@ class SettingsScreen(Screen[None]):
                 with Vertical(classes='section', id='settings-sessions') as sessions_box:
                     sessions_box.border_title = 'Agent sessions'
                     yield OptionList(
-                        Option(self._model_label(''), id='model'), id='settings-models'
+                        Option(self._model_label(''), id='model'),
+                        Option(self._thinking_label(''), id='thinking'),
+                        id='settings-models',
                     )
                     yield Static(MODEL_HELP, classes='hint', markup=False)
             if self._upstreams is not None:
@@ -155,10 +161,10 @@ class SettingsScreen(Screen[None]):
             self.app.call_from_thread(latest(self._show), lines, note)
             if models is not None:
                 try:
-                    current = models.current()
+                    current, level = models.current(), models.thinking()
                 except Exception as exc:  # A broken workspace.toml: said, not fatal.
-                    current = f'? ({exc})'
-                self.app.call_from_thread(latest(self._show_model), current)
+                    current, level = f'? ({exc})', ''
+                self.app.call_from_thread(latest(self._show_model), current, level)
             if service is not None:
                 try:
                     listed: Optional[list['Upstream']] = service.listing()
@@ -180,10 +186,19 @@ class SettingsScreen(Screen[None]):
         shown = current or "pi's default"
         return f'Default model   {shown}'
 
-    def _show_model(self, current: str) -> None:
-        self._model_text = current
+    @staticmethod
+    def _thinking_label(level: str) -> str:
+        shown = level or "the model's own"
+        return f'Thinking        {shown}'
+
+    def _show_model(self, current: str, level: str = '') -> None:
+        self._model_text, self._thinking_text = current, level
         listing = self.query_one('#settings-models', OptionList)
         listing.replace_option_prompt('model', self._model_label(current))
+        listing.replace_option_prompt('thinking', self._thinking_label(level))
+
+    def thinking_text(self) -> str:
+        return self._thinking_text
 
     def model_text(self) -> str:
         return self._model_text
@@ -249,6 +264,8 @@ class SettingsScreen(Screen[None]):
     def choose(self, action: str) -> None:
         if action == 'model':
             self._choose_model()
+        elif action == 'thinking':
+            self._choose_thinking()
         elif action.startswith('add:'):
             self._track(action.removeprefix('add:'))
         elif action in self._listed:
@@ -287,6 +304,19 @@ class SettingsScreen(Screen[None]):
                 self._upstream_work(lambda: models.set(key))
 
         self.run_worker(work, thread=True, group='settings-act')
+
+    def _choose_thinking(self) -> None:
+        """The default thinking level: the model's own, or one of pi's levels."""
+        models = self._models
+        if models is None:
+            return
+
+        def picked(key: Optional[str]) -> None:
+            if key and models is not None:
+                self._upstream_work(lambda: models.set_thinking(key))
+
+        title = 'Default thinking level for agent sessions?'
+        self.app.push_screen(Pick(title, models.thinking_choices()), picked)
 
     def _pgp(self) -> None:
         def work() -> None:

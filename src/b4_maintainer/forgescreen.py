@@ -1177,19 +1177,20 @@ class ForgeScreen(Screen[None]):
         hub = getattr(self.app, '_sessions', None)
         presets = self.workspace.models if self.workspace is not None else ()
         default = self.workspace.default_model if self.workspace is not None else ''
+        thinking = self.workspace.default_thinking if self.workspace is not None else ''
 
-        by_key: dict[str, str] = {}
+        by_key: dict[str, tuple[str, str]] = {}  # Choice: (model, thinking).
 
         def models() -> list[tuple[str, str]]:
-            found = hub.models(presets, default) if hub is not None else []
+            found = hub.models(presets, default, thinking) if hub is not None else []
             usable = [m for m in found if m.available and m.kind != 'dry-run']
-            by_key.update({m.id: m.model for m in usable} or {'default': ''})
+            by_key.update({m.id: (m.model, m.thinking) for m in usable} or {'default': ('', '')})
             return [(m.id, m.label) for m in usable] or [('default', "pi's default model")]
 
         def chosen(key: Optional[str]) -> None:
             if key is None:
                 return
-            model = by_key.get(key, '')
+            model, level = by_key.get(key, ('', ''))
             service = self.service
 
             def started(said: str) -> None:
@@ -1201,7 +1202,7 @@ class ForgeScreen(Screen[None]):
             self._status(f'Checking out {rnd.label} for Sashiko…')
             checkout = self._checkout(forge)
             self._work(
-                lambda: service.start_sashiko(forge, rnd, model, project=checkout),
+                lambda: service.start_sashiko(forge, rnd, model, project=checkout, thinking=level),
                 started,
                 'forge-sashiko',
             )

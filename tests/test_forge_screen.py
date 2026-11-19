@@ -1125,8 +1125,11 @@ async def test_a_collection_in_the_background_keeps_the_maintainers_place(
                 break
             await pilot.pause(0.05)
         content.focus()
-        content.scroll_to(y=20, animate=False, immediate=True)
-        await settle(pilot)
+        for _ in range(20):  # A late render (under load) resets the scroll: until it holds.
+            content.scroll_to(y=20, animate=False, immediate=True)
+            await settle(pilot)
+            if content.scroll_y == 20:
+                break
         assert content.scroll_y == 20
         # A companion answers on the newest round while the maintainer reads.
         newest = service.rounds(forge)[-1]
@@ -1172,3 +1175,35 @@ async def test_a_rounds_notes_come_first_under_its_cover_and_take_replies(
     _series, thread = service.thread(forge, first)
     asked = [r for r in thread.cover.replies if 'documentation' in r.message.body]
     assert asked and asked[0].message.subject == 'Re: [NOTES] Summary (v1 r1)'
+
+
+async def test_sashiko_takes_the_default_thinking_level(demo_root, tmp_path, posted):
+    import json
+
+    path = demo_root / 'workspace.json'
+    config = json.loads(path.read_text())
+    config.setdefault('sessions', {})['default_thinking'] = 'high'
+    path.write_text(json.dumps(config))
+    app, service, _runner = make_live(demo_root, tmp_path)
+    reviewed(service, posted)
+    binary = tmp_path / 'sashiko'
+    binary.write_text('')
+    service.sashiko_binary = binary
+    ran = []
+
+    def start(f, rnd, model, project=None, thinking=''):
+        ran.append((model, thinking))
+        return f'Sashiko is reviewing {rnd.label} in the background'
+
+    service.start_sashiko = start
+    async with app.run_test(size=(220, 50)) as pilot:
+        await open_forge(pilot)
+        await pilot.press('s', 'r')
+        await settle(pilot)
+        await pilot.press('down', 'down', 'enter')  # Sashiko.
+        await settle(pilot)
+        assert isinstance(app.screen, Pick)
+        assert 'thinking high' in app.screen.choices[0][1]
+        await pilot.press('enter')  # The default.
+        await settle(pilot)
+        assert ran == [('', 'high')]

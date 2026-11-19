@@ -133,6 +133,7 @@ def test_the_default_model_reaches_the_workspace(tmp_path):
     (tmp_path / 'workspace.toml').write_text(SHARED)
     local = local_config_path(tmp_path)
     local.parent.mkdir(parents=True)
-    local.write_text('[sessions]\ndefault_model = "deep"\n')
+    local.write_text('[sessions]\ndefault_model = "deep"\ndefault_thinking = "low"\n')
     ws = Workspace.from_config(read_config(tmp_path))
     assert ws.default_model == 'deep' and ws.session_limits.max_builds == 2
+    assert ws.default_thinking == 'low'

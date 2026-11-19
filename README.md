@@ -277,10 +277,12 @@ On a prep branch:
 configuration: an existing PGP key from gpg, a new patatt ed25519 key, or no signing.
 Without a key, mail goes out unsigned.
 
-**Agent sessions.** The default model for this machine (`[sessions] default_model` in
-`var/workspace.toml`): pi's own default until you choose one, from your `[[models]]`
-presets or pi's model list. The launch dialog starts on it (pi's own stays offered), and
-launches without a dialog and Sashiko's model pick use it too.
+**Agent sessions.** The default model for this machine and its thinking level
+(`[sessions] default_model` and `default_thinking` in `var/workspace.toml`): pi's own
+default model at the model's own level until you choose, from your `[[models]]` presets
+or pi's model list, and from pi's levels (`off` to `max`; it overrides a preset's). The
+launch dialog starts on it (pi's own stays offered), and launches without a dialog and
+Sashiko's model pick use it too.
 
 **Upstream branches.** Each project's tracked branches, with what membership in each
 means:
@@ -463,7 +465,7 @@ lists = ["linux-mm@kvack.org"]
 | `[drafts]` `editor`, `tmux_width` | `auto` (tmux pane, else this terminal), `terminal`, or `app` (the in-app pane). |
 | `[sashiko]` `senders`, `hide_clean` | Sashiko's addresses; leave its replies that found nothing out of threads. |
 | `[layout]` `three_pane`, `single_pane`, `preview_width`, `quote_lines` | Terminal widths for the layouts (160, 100) and the expanded preview (100); quoted lines a folded quote keeps in sight (8). |
-| `[sessions]` | Session limits (`max_live`, `max_builds`), `default_model` (a preset's `id` or pi's `provider/model`; unset: pi's default), `pi` and `pi_args`, `pane_width`, the agent's commit identity, sandbox priority, `assisted_by`. |
+| `[sessions]` | Session limits (`max_live`, `max_builds`), `default_model` (a preset's `id` or pi's `provider/model`; unset: pi's default) and `default_thinking`, `pi` and `pi_args`, `pane_width`, the agent's commit identity, sandbox priority, `assisted_by`. |
 | `[[models]]` | Model presets for the launch dialog. |
 | `[[guidance]]` `id`, `path` | Use another checkout of a guidance source (e.g. review-prompts). |
 
