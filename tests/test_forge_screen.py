@@ -1100,3 +1100,41 @@ async def test_a_reply_reaches_the_forges_companions_with_the_thread_refreshed(
     folder = service.space(forge) / 'context' / 'forge'
     assert 'Why does f2 come second?' in (folder / 'rounds' / f'{rnd.key}.mbx').read_text()
     assert reply.message.msgid in (folder / 'focus.md').read_text()
+
+
+async def test_a_collection_in_the_background_keeps_the_maintainers_place(
+    demo_root, tmp_path, posted
+):
+    app, service = make(demo_root, tmp_path)
+    forge = reviewed(service, posted)
+    first = service.rounds(forge)[0]
+    _series, thread = service.thread(forge, first)
+    long = ''.join(f'Line {n} of a long comment.\n' for n in range(1, 120))
+    service.post_reply(forge, first, thread.patches[0].message.msgid, ME, long)
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_forge(pilot)
+        screen.select_round('v1 r1')  # An older round than the newest.
+        await settle(pilot)
+        labels = screen.thread_labels()
+        screen.select_message(next(n for n, x in enumerate(labels) if 'Example Maintainer' in x))
+        await settle(pilot)
+        msgid = screen._selected_msgid()
+        content = screen.query_one('#forge-content', TextPane)
+        for _ in range(100):  # The message shown (its render after a refresh, under load).
+            if 'Line 119' in content.text and content.virtual_size.height > 40:
+                break
+            await pilot.pause(0.05)
+        content.focus()
+        content.scroll_to(y=20, animate=False, immediate=True)
+        await settle(pilot)
+        assert content.scroll_y == 20
+        # A companion answers on the newest round while the maintainer reads.
+        newest = service.rounds(forge)[-1]
+        _series, latest = service.thread(forge, newest)
+        service.post_reply(forge, newest, latest.patches[1].message.msgid, ME, 'An answer.\n')
+        app._forge_collected(forge.id, ['c1: a reply on v1 r2'])
+        await settle(pilot)
+        assert screen._round().label == 'v1 r1'  # Same round,
+        assert screen._selected_msgid() == msgid  # same message,
+        assert content.scroll_y == 20 and app.focused is content  # same place.
+        assert 'c1: a reply on v1 r2' in screen.status_text()

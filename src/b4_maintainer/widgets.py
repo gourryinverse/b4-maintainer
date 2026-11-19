@@ -139,6 +139,11 @@ class TextPane(ScrollView, can_focus=True):
     def set_text(self, text: str) -> None:
         self.set_blocks([Block(text)])
 
+    def shows(self, blocks: list[Block]) -> bool:
+        """Whether *blocks* are what the pane shows (set_blocks would change nothing but
+        the scroll and the opened folds)."""
+        return self._blocks == [dataclasses.replace(b, text=printable(b.text)) for b in blocks]
+
     def set_blocks(self, blocks: list[Block], open_folds: bool = False) -> None:
         self._blocks = [dataclasses.replace(b, text=printable(b.text)) for b in blocks]
         self._opened = {b.fold for b in self._blocks if b.fold} if open_folds else set()

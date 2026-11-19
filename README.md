@@ -333,6 +333,8 @@ can read its thread from lore.
 Agents are short-lived: each session starts fresh from the forge's files, and the series
 and its versions are the running record. What a session leaves (designs, rounds, replies,
 findings, test reports) arrives on its own when its turn ends, and when the forge opens.
+Arriving while you read, it leaves your place as it is (round, message, scroll, focus);
+the status line says what came.
 A review that ends its turn without results stays open for you.
 Every round runs in the forge's one workbench; each session that builds (implement,
 submit, test) has its own checkout of it. Once a newer one's results arrive, the older

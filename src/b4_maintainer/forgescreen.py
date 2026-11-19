@@ -107,10 +107,15 @@ class ForgeScreen(Screen[None]):
         self._rows: list[TreeRow] = []
         self._status_text = ''
         self._keep_round = ''  # The round to select after a reload (its key).
+        # The reader's place kept across a reload: the message (its Message-ID), and, for
+        # one in the background, where the message was scrolled to (None: not kept).
+        self._keep_msgid = ''
+        self._keep_scroll: Optional[float] = None
         self._note = ''  # What the status line says after it.
         self._goal = ''  # The open forge's goal (prompt), as read with its rounds.
         self._expand_quotes = False  # z: long quotes open in every message.
         self._sashiko_progress = ''  # The open forge's Sashiko job, as far as it is.
+        self._quiet = False  # The reload under way is in the background.
 
     def compose(self) -> ComposeResult:
         yield TabBar('forge')
@@ -142,9 +147,11 @@ class ForgeScreen(Screen[None]):
             self._reload()
 
     def reload_rounds(self, note: str = '') -> None:
-        """The open forge's rounds read again (the app collected new ones), keeping the
-        selected round unless a newer one arrived."""
-        self._reopen('', note)
+        """The open forge's rounds read again (the app collected new ones) in the
+        background: the maintainer keeps their place (round, message, scroll, focus);
+        *note* says what arrived."""
+        rnd = self._round()
+        self._reopen(rnd.key if rnd is not None else '', note, quiet=True)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> Optional[bool]:
         if action == 'remove':
@@ -383,16 +390,27 @@ class ForgeScreen(Screen[None]):
         self._reopen(collect=True)
 
     def _reopen(
-        self, keep: str = '', note: str = '', collect: bool = False, asked: bool = False
+        self,
+        keep: str = '',
+        note: str = '',
+        collect: bool = False,
+        asked: bool = False,
+        quiet: bool = False,
     ) -> None:
         """Read the open forge's rounds again; select *keep* (a round key), else the
-        newest; *note* stays in the status line. *collect*: first take what its sessions
-        left since (opening the forge, coming back to the tab); *asked*: c asked for it,
-        so nothing new is said too."""
+        newest, on the message selected when it is the round shown; *note* stays in the
+        status line. *collect*: first take what its sessions left since (opening the
+        forge, coming back to the tab); *asked*: c asked for it, so nothing new is said
+        too. *quiet*: in the background: the scroll and focus stay too."""
         forge = self._open
         if forge is None:
             return
+        shown = self._round()
         self._keep_round = keep
+        self._keep_msgid = self._selected_msgid() if shown is not None and shown.key == keep else ''
+        content = self.query_one('#forge-content', TextPane)
+        self._keep_scroll = content.scroll_y if quiet and self._keep_msgid else None
+        self._quiet = quiet
         self._note = note
         service = self.service
 
@@ -404,7 +422,8 @@ class ForgeScreen(Screen[None]):
                     said = [f'Cannot collect: {exc} (c tries again)']
                 if said:
                     self._note = '; '.join(said)
-                    self._keep_round = ''  # Show what arrived.
+                    self._keep_round = self._keep_msgid = ''  # Show what arrived.
+                    self._keep_scroll = None
                 elif asked:
                     self._note = "Nothing new from the forge's sessions"
             if collect:  # A Sashiko job that ended (the app closed meanwhile, say).
@@ -436,7 +455,8 @@ class ForgeScreen(Screen[None]):
             with self.prevent(OptionList.OptionHighlighted):
                 listing.highlighted = index
             self._load_thread()
-            self.query_one('#forge-tree', OptionList).focus()
+            if not self._quiet:  # In the background, focus stays where the reader is.
+                self.query_one('#forge-tree', OptionList).focus()
             self._status(
                 self._note or 's starts a session (review, submit the round…); r replies; v views'
             )
@@ -500,8 +520,18 @@ class ForgeScreen(Screen[None]):
             width = tree_width(tree)
             tree.add_options([Option(tree_prompt(r, width)) for r in self._rows])
             if self._rows:
-                tree.highlighted = 0
-        self._show_message()
+                kept = self._row_of(self._keep_msgid) if self._keep_msgid else None
+                tree.highlighted = kept if kept is not None else 0
+        scroll = self._keep_scroll if self._keep_msgid else None
+        self._keep_msgid, self._keep_scroll = '', None
+        self._show_message(scroll)
+
+    def _row_of(self, msgid: str) -> Optional[int]:
+        """The tree row showing message *msgid*, if any."""
+        for index in range(len(self._rows)):
+            if self._msgid_at(index) == msgid:
+                return index
+        return None
 
     def _quote_lines(self) -> int:
         return self.workspace.quote_lines if self.workspace is not None else QUOTE_LINES
@@ -520,8 +550,10 @@ class ForgeScreen(Screen[None]):
         self._expand_quotes = not self._expand_quotes
         self.query_one('#forge-content', TextPane).set_folds(self._expand_quotes)
 
-    def _message(self) -> tuple[Optional[TreeRow], Any]:
-        index = self.query_one('#forge-tree', OptionList).highlighted
+    def _message(self, index: Optional[int] = -1) -> tuple[Optional[TreeRow], Any]:
+        """The row at *index* (the highlighted one by default) and its reply, if any."""
+        if index == -1:
+            index = self.query_one('#forge-tree', OptionList).highlighted
         if self._thread is None or index is None or index >= len(self._rows):
             return None, None
         row = self._rows[index]
@@ -529,7 +561,10 @@ class ForgeScreen(Screen[None]):
         reply = replies[row.node - 1] if row.node and row.node <= len(replies) else None
         return row, reply
 
-    def _show_message(self) -> None:
+    def _show_message(self, scroll: Optional[float] = None) -> None:
+        """The highlighted message in the content pane; *scroll*: the same message shown
+        again (a reload in the background): unchanged, it stays as it is (scroll, opened
+        quotes); changed, it is shown scrolled to where it was."""
         content = self.query_one('#forge-content', TextPane)
         row, reply = self._message()
         self.refresh_bindings()  # z shows only on a message with a long quote.
@@ -537,13 +572,21 @@ class ForgeScreen(Screen[None]):
             content.set_text('')
             return
         if reply is not None:
-            blocks = message_blocks(reply, self._quote_lines())
-            content.set_blocks(blocks, open_folds=self._expand_quotes)
+            blocks, opened = message_blocks(reply, self._quote_lines()), self._expand_quotes
         else:
-            content.set_blocks(root_blocks(self._thread, row.key, self._item))
+            blocks, opened = root_blocks(self._thread, row.key, self._item), False
+        if scroll is not None and content.shows(blocks):
+            return
+        content.set_blocks(blocks, open_folds=opened)
+        if scroll is not None:
+            content.scroll_to(y=scroll, animate=False, immediate=True)
 
     def _selected_msgid(self) -> str:
-        row, reply = self._message()
+        return self._msgid_at(-1)
+
+    def _msgid_at(self, index: Optional[int]) -> str:
+        """The Message-ID of the message at tree row *index* (-1: the highlighted one)."""
+        row, reply = self._message(index)
         if reply is not None:
             return reply.message.msgid
         post = find_post(self._thread, row.key) if row is not None and self._thread else None
