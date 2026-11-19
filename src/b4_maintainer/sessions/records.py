@@ -91,6 +91,9 @@ class SessionRecord:
     reads: tuple[tuple[str, str], ...] = ()
     # Its workbench's space (var/workbenches/<id>), whose context/ it reads live.
     space: str = ''
+    # Launched without the sandbox (the maintainer's explicit choice): nothing limits what
+    # it reads, writes, or runs.
+    unconfined: bool = False
     # Its name, from the store's names.toml (never saved in session.json); not part of
     # what the record is, so a renamed record still equals itself.
     name: str = field(default='', compare=False)

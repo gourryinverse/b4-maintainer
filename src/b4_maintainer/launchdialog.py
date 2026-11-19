@@ -69,6 +69,11 @@ TREE_KINDS = frozenset({'apply', 'deliver', 'base'})  # Uses that make a tree.
 BASE_PLACEHOLDER = 'Base: empty lets b4 choose (HEAD if it applies, the series base, a guess)'
 NO_SERIES = 'a workspace session has no series to apply'
 LAUNCH = 'Launch (ctrl+s)'
+UNCONFINED_LABEL = 'Run without the sandbox (no limits)'
+UNCONFINED_WARNING = (
+    '⚠ NO SANDBOX: this session runs on your machine as you, with network, and nothing '
+    'limits what it reads, writes, or runs. Launch it only for work that needs it.'
+)
 MODE_LABELS = {
     'lightweight': 'lightweight: analyze the series mail and the checkout; writes only out/',
     'worktree': 'worktree: the series applied in its own tree, to edit, build, run, and test',
@@ -108,6 +113,10 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
     LaunchDialog Input:focus { border: none; background: $primary-background; }
     LaunchDialog #launch-summary { width: 1fr; height: auto; }
     LaunchDialog #buttons { height: 3; align: right middle; padding: 0 1; }
+    LaunchDialog .unconfined {
+        height: auto; padding: 0 1; margin-top: 1;
+        background: #e01b24; color: #ffffff; text-style: bold;  /* Bright red, any theme. */
+    }
     """
     BINDINGS = [
         Binding('escape', 'cancel', 'cancel'),
@@ -277,6 +286,12 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         models = [(m.id, _model_label(m), not m.available) for m in shown]
         default = next((n for n, m in enumerate(shown) if m.available), None)
         widgets += self._group('Model', 'model', models, default)
+        widgets += self._checks('Sandbox', 'unconfined', [('off', UNCONFINED_LABEL, False)])
+        warning = Static(
+            UNCONFINED_WARNING, classes='unconfined', markup=False, id='launch-unconfined'
+        )
+        warning.display = False  # Shown once ticked.
+        widgets.append(warning)
         widgets.append(self._advanced())
         return widgets
 
@@ -443,6 +458,10 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
         button = radio.pressed_button if radio is not None else None
         return self._keys[id(button)][1] if button is not None else None
 
+    def unconfined(self) -> bool:
+        """The maintainer ticked "Run without the sandbox"."""
+        return 'off' in self.ticked('unconfined')
+
     def ticked(self, group: str) -> list[str]:
         """Ticked keys of a list, in option order."""
         widget = self._lists.get(group)
@@ -489,6 +508,7 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             frozenset(self._skills_off),
             self._context_off(),
             trees=uses,
+            unconfined=self.unconfined(),
         )
 
     def _context_off(self) -> frozenset[str]:
@@ -525,6 +545,8 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
                 self._show_mode(self.plan.mode)
         if 'base' in self._inputs:
             self._inputs['base'].display = self.plan.mode == 'worktree'
+        for warning in self.query('#launch-unconfined'):
+            warning.display = self.unconfined()
         skills = self._lists.get('skills')
         if skills is not None and set(self.ticked('skills')) != set(self.plan.skills):
             with self.prevent(SelectionList.SelectedChanged):  # Suggested, not chosen.
@@ -662,7 +684,11 @@ class LaunchDialog(ModalScreen[Optional[LaunchResult]]):
             lines.append(f'Guidance: {", ".join(guidance)}')
         if p.skills:
             lines.append(f'Skills:   {", ".join(p.skills)}')
-        lines.append(f'May:      {PERMISSION_LABELS.get(p.permissions, p.permissions)}')
+        if self.unconfined():
+            lines.append('May:      anything: no sandbox, no limits (unconfined)')
+            lines.append('Sandbox:  NONE')
+        else:
+            lines.append(f'May:      {PERMISSION_LABELS.get(p.permissions, p.permissions)}')
         if self._tree_groups() and not self.trees:  # A series: each project's checkout.
             lines.append('Checkouts:')
             for project, use in self._tree_uses():

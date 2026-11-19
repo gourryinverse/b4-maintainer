@@ -93,6 +93,7 @@ def test_the_extension_learns_the_session_through_its_environment(tmp_path):
         # git must not find a repository around the session (e.g. the workspace's own).
         'GIT_CEILING_DIRECTORIES': str(directory),
         'B4M_SANDBOX': '',  # This machine's sandbox was not used for the launch.
+        'B4M_UNCONFINED': '',  # Confined: the extension enforces the session's limits.
         'B4M_NICE': '10',  # Sandboxed commands run at low priority.
         'B4M_IONICE': 'low',
     }
@@ -237,3 +238,19 @@ def test_a_read_only_session_in_a_workbench_space_reads_the_whole_space(tmp_path
     policy = policy_for(store, 's1')
     assert str(space) in policy.readable
     assert not any(w.startswith(str(space)) for w in policy.writable)
+
+
+def test_an_unconfined_session_runs_without_the_sandbox_and_is_told_so(tmp_path):
+    record = make_record('s1', permissions='execute', unconfined=True)
+    _store, cmd = command(tmp_path, record, LaunchSpec(REQUEST, sandboxed=True))
+    assert cmd.env['B4M_UNCONFINED'] == '1' and cmd.env['B4M_SANDBOX'] == ''
+    store = SessionStore(tmp_path / 'var' / 'sessions')
+    prepare_session(store, record, REQUEST, source='', sandboxed=True)
+    system = (store.directory('s1') / 'system.md').read_text()
+    assert 'runs without the sandbox' in system and 'unconfined' in system
+    assert 'Shell commands run in a sandbox' not in system
+
+
+def test_sessions_are_confined_by_default(tmp_path):
+    _store, cmd = command(tmp_path, make_record('s1'), LaunchSpec(REQUEST, sandboxed=True))
+    assert cmd.env['B4M_UNCONFINED'] == '' and cmd.env['B4M_SANDBOX'] == '1'

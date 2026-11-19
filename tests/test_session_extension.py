@@ -27,10 +27,18 @@ HOOK = str(pathlib.Path(sys.executable).parent / 'b4-maintainer')
 REQUEST = Request('Review the series.', 'You assist a maintainer.', 'lightweight', ())
 
 
-def run(tmp_path, steps=None, permissions='read-only', worktree=None, sandboxed=False, readable=()):
+def run(
+    tmp_path,
+    steps=None,
+    permissions='read-only',
+    worktree=None,
+    sandboxed=False,
+    readable=(),
+    unconfined=False,
+):
     """One print-mode pi run; returns the session's events and pi's transcript."""
     store = SessionStore(tmp_path / 'var' / 'sessions')
-    record = make_record('x1', model=DRY_RUN_MODEL, permissions=permissions)
+    record = make_record('x1', model=DRY_RUN_MODEL, permissions=permissions, unconfined=unconfined)
     if worktree is not None:
         from b4_maintainer.sessions.records import Worktree
 
@@ -323,3 +331,20 @@ def test_mail_for_an_idle_session_starts_a_turn_with_it(tmp_path, home):
         runner.stop(record)
     finally:
         subprocess.run([*base, 'kill-server'], capture_output=True)
+
+
+def test_an_unconfined_session_is_not_limited(tmp_path, home):
+    """Launched without the sandbox (the maintainer's choice): reads, writes, and shell
+    commands go through unchecked."""
+    secret = home / 'secret.txt'
+    secret.write_text('readable now\n')
+    elsewhere = home / 'made-by-agent.txt'
+    steps = [
+        {'tool': 'read', 'args': {'path': str(secret)}},
+        {'tool': 'write', 'args': {'path': str(elsewhere), 'content': 'written\n'}},
+        {'tool': 'bash', 'args': {'command': f'cat {secret} | tr a-z A-Z'}},
+    ]
+    _events, transcript, _stdout = run(tmp_path, steps, sandboxed=True, unconfined=True)
+    assert 'outside the session' not in transcript and 'not allowed' not in transcript
+    assert 'readable now' in transcript and 'READABLE NOW' in transcript
+    assert elsewhere.read_text() == 'written\n'

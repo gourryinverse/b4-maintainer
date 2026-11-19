@@ -60,6 +60,8 @@ class LaunchChoice:
     trees: tuple[tuple[str, str], ...] = ()
     # A series launch: (project, base) of each other project's tree.
     bases: tuple[tuple[str, str], ...] = ()
+    # Without the sandbox (never the default): no limits on the session at all.
+    unconfined: bool = False
 
 
 @dataclass(frozen=True)
@@ -185,6 +187,7 @@ def new_record(
         model=planned.model.model,
         thinking=planned.thinking,
         permissions=planned.permissions,
+        unconfined=choice.unconfined,
         context=tuple(i.id for i in planned.included),
         skills=planned.skills,
         workbench=choice.workbench,

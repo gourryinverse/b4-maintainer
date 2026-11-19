@@ -430,3 +430,14 @@ def test_a_session_being_prepared_says_so():
     now = datetime.datetime(2026, 10, 23, 12, 1, tzinfo=datetime.timezone.utc)
     row = session_row(view('p', 'preparing', mode='worktree'), now)
     assert 'preparing its worktree' in row
+
+
+def test_an_unconfined_session_says_so_first_on_its_row():
+    import datetime
+
+    from b4_maintainer.drawer import session_row
+
+    now = datetime.datetime(2026, 10, 23, 12, 1, tzinfo=datetime.timezone.utc)
+    row = session_row(view('u', 'working', unconfined=True), now)
+    assert row.split(' ', 1)[1].startswith('⚠ NO SANDBOX')
+    assert 'NO SANDBOX' not in session_row(view('c', 'working'), now)

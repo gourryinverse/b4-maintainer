@@ -382,6 +382,11 @@ with the items applied, a tree at the base with the items to apply itself, the c
 to read, or the mail only. The prompt package holds each series' thread, Sashiko's
 reviews, and, only if you tick them, your unsent drafts on that thread.
 
+Sessions run in a sandbox: no network, only their own folders writable, and a shell
+limited to the sandbox (read-only git where none works). *Run without the sandbox* in the
+dialog (never the default) lifts every limit for that session: it runs on your machine as
+you, with network, behind a bright red warning; the drawer marks it `⚠ NO SANDBOX`.
+
 Sessions write their results under `out/` and list them in `out/artifacts.toml`:
 findings, reports, reproducers, results, and proposed changes. They appear under the
 workbench's Artifacts, and `R` can add them to a reply.

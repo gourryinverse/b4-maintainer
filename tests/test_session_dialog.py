@@ -338,6 +338,7 @@ async def test_tab_moves_between_sections_and_shift_tab_back(demo_root, store, r
             'tree:linux',
             'tree:qemu',
             'model',
+            'unconfined',  # The sandbox opt-out, a Tab stop of its own.
             'advanced',
             'launch',
             'cancel',
@@ -580,3 +581,33 @@ async def test_the_default_model_setting_is_preselected_and_launched(demo_root, 
         await settle(pilot)
         [(sid, _request)] = runner.launches
         assert (store.record(sid).model, store.record(sid).thinking) == ('alpha/alpha-small', 'low')
+
+
+async def test_the_sandbox_stays_on_unless_ticked_off_with_a_red_warning(demo_root, store, runner):
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        warning = dialog.query_one('#launch-unconfined')
+        assert dialog.ticked('unconfined') == [] and not warning.display  # Off by default.
+        assert 'Sandbox:' not in dialog.summary_text()
+        await act(pilot, dialog.pick, 'goal', 'review')
+        await act(pilot, dialog._lists['unconfined'].select, 'off')
+        assert warning.display and 'NO SANDBOX' in str(warning.render())
+        assert warning.styles.background.hex.upper() == '#E01B24'  # Bright red.
+        assert 'Sandbox:  NONE' in dialog.summary_text()
+        assert 'writes only' not in dialog.summary_text()  # No limits claimed.
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        assert store.record(sid).unconfined
+
+
+async def test_a_launch_left_as_it_is_is_confined(demo_root, store, runner):
+    app = make_app(demo_root, store, runner)
+    async with app.run_test(size=(180, 50)) as pilot:
+        dialog = await open_dialog(pilot)
+        await act(pilot, dialog.pick, 'goal', 'review')
+        await pilot.press('ctrl+s')
+        await settle(pilot)
+        [(sid, _request)] = runner.launches
+        assert not store.record(sid).unconfined

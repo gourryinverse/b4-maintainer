@@ -125,7 +125,9 @@ def pi_command(
         'B4M_READABLE': '\n'.join(r for r in readable if r),
         # git must not find a repository around the session (e.g. the workspace's own).
         'GIT_CEILING_DIRECTORIES': str(directory),
-        'B4M_SANDBOX': '1' if spec.sandboxed else '',
+        'B4M_SANDBOX': '1' if spec.sandboxed and not record.unconfined else '',
+        # The maintainer launched it without the sandbox: the extension enforces nothing.
+        'B4M_UNCONFINED': '1' if record.unconfined else '',
         'B4M_NICE': str(site.nice),
         'B4M_IONICE': site.ionice,
         **spec.env,
@@ -142,6 +144,12 @@ SPACE_TEXT = (
     'that your own context does not have. The rest of the space ({space}) is readable '
     'too: repos/ holds its repositories (every branch and commit the workbench has, for '
     "read-only git), and its checkouts (other sessions' trees, look/) may be read."
+)
+UNCONFINED_TEXT = (
+    "This session runs without the sandbox, by the maintainer's choice: on their machine, "
+    'as them, with network, and nothing limits what you read, write, or run. Keep to the '
+    'task: change nothing outside your tree and output directory, and run nothing that '
+    'reaches beyond this machine (mail, pushes, uploads) unless the maintainer asks'
 )
 SANDBOXED_TEXT = (
     "Shell commands run in a sandbox without network that sees only this session's "
@@ -218,7 +226,9 @@ def system_prompt(
 ) -> str:
     """*files*: (name, what it holds) in context/, besides the task."""
     permissions = PERMISSION_TEXT.get(record.permissions, record.permissions)
-    if sandboxed:
+    if record.unconfined:
+        permissions, sandboxed = 'unconfined (no sandbox, no limits)', False
+    elif sandboxed:
         permissions = record.permissions
     listed = ', '.join(f'{name} ({what})' for name, what in (('task.md', 'the task'), *files))
     facts = [
@@ -228,6 +238,8 @@ def system_prompt(
         f'Write output files only under {work / "out"}.',
         f'Permissions: {permissions}.',
     ]
+    if record.unconfined:
+        facts.append(f'{UNCONFINED_TEXT}.')
     if record.space:
         facts.append(
             SPACE_TEXT.format(context=pathlib.Path(record.space) / 'context', space=record.space)

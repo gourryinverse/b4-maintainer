@@ -4,7 +4,7 @@
  *
  * - Reports the session's state to the drawer (events.jsonl).
  * - Enforces the session's limits before every tool call (pi has no permissions of its
- *   own): shell commands are decided by b4-maintainer's guard (`b4-maintainer hook`);
+ *   own; none for a session launched unconfined, B4M_UNCONFINED): shell commands are decided by b4-maintainer's guard (`b4-maintainer hook`);
  *   reads and searches stay within the session's readable directories; writes and edits
  *   go only to the session's output directory and worktree. A failed check blocks.
  * - Registers the scripted dry-run model (`b4m/dry-run`): no model or provider is called.
@@ -39,6 +39,8 @@ const EVENTS = env.B4M_EVENTS ?? "";
 const PERMISSIONS = env.B4M_PERMISSIONS ?? "read-only";
 // The client found the sandbox usable at launch: every shell command runs in it.
 const SANDBOXED = env.B4M_SANDBOX === "1";
+// The maintainer launched it without the sandbox: no limits are enforced at all.
+const UNCONFINED = env.B4M_UNCONFINED === "1";
 const lines = (value: string | undefined) => (value ?? "").split("\n").filter((v) => v);
 
 // ---------------------------------------------------------------------------------------
@@ -386,7 +388,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event: any, ctx: any) => {
 		const tool = String(event.toolName ?? "");
-		if (tool !== "bash" || SANDBOXED) record("tool", tool); // Else the hook records it.
+		if (tool !== "bash" || SANDBOXED || UNCONFINED) record("tool", tool); // Else the hook does.
+		if (UNCONFINED) return undefined;
 		const reason = check(tool, event.input, ctx?.cwd ?? process.cwd());
 		return reason ? { block: true, reason } : undefined;
 	});

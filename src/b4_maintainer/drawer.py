@@ -96,10 +96,14 @@ def _goal(record: SessionRecord) -> str:
     return 'custom' if record.choices.get('goal:text') else record.profile_id
 
 
+UNCONFINED_MARK = '⚠ NO SANDBOX · '  # Launched unconfined: said first on its row.
+
+
 def session_row(view: SessionView, now: datetime.datetime) -> str:
     r = view.record
+    flag = UNCONFINED_MARK if r.unconfined else ''
     return (
-        f'{mark(view.state)} {session_name(r)} · {session_label(r)} · {state_text(view)} · {_goal(r)} · {r.mode} · '
+        f'{mark(view.state)} {flag}{session_name(r)} · {session_label(r)} · {state_text(view)} · {_goal(r)} · {r.mode} · '
         f'{_model(r)} · {age(r.created, now)}'
     )
 
