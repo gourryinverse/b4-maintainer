@@ -11,6 +11,7 @@ nothing here starts one by itself, and nothing here sends mail: a finished round
 folded into a prep branch (f), sent from Branches.
 """
 
+import dataclasses
 import pathlib
 import subprocess
 from typing import Any, Callable, Optional
@@ -23,7 +24,7 @@ from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .branchscreen import Ask, Menu, Pick
-from .forge import Forge, ForgeService, Round, check_base
+from .forge import Forge, ForgeService, Round, check_base, note_label
 from .model import SashikoReview, Series, SeriesState, SeriesThread, WorkItem
 from .reader import (
     QUOTE_LINES,
@@ -510,8 +511,22 @@ class ForgeScreen(Screen[None]):
         self._item = WorkItem(series, SeriesState(), project=project, sashiko=review)
         self._thread = thread
         bots = self.workspace.bots if self.workspace is not None else ()
-        self._rows = tree_rows(thread, self._item, set(post_keys(thread)), bots=bots)
+        rows = tree_rows(thread, self._item, set(post_keys(thread)), bots=bots)
+        self._rows = [self._note_row(thread, row) for row in rows]
         self.call_after_refresh(self._fill_tree)  # Shown first: rows fit its width.
+
+    @staticmethod
+    def _note_row(thread: SeriesThread, row: TreeRow) -> TreeRow:
+        """A row of one of the round's notes named for it: `notes: Summary · forge agent`."""
+        replies = thread_replies(thread, row.key) if row.node else ()
+        if not row.node or row.node > len(replies):
+            return row
+        message = replies[row.node - 1].message
+        label = note_label(message.subject)
+        if not label or message.author_name not in row.label:
+            return row
+        named = row.label.replace(message.author_name, f'notes: {label} · {message.author_name}', 1)
+        return dataclasses.replace(row, label=named)
 
     def _fill_tree(self) -> None:
         tree = self.query_one('#forge-tree', OptionList)

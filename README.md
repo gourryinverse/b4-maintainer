@@ -335,6 +335,16 @@ and its versions are the running record. What a session leaves (designs, rounds,
 findings, test reports) arrives on its own when its turn ends, and when the forge opens.
 Arriving while you read, it leaves your place as it is (round, message, scroll, focus);
 the status line says what came.
+The forge keeps running notes, its memory from round to round: a summary (each round's
+entry, newest first, as brief as possible: what was done and what was not), a test plan,
+and the current design (its decisions and tradeoffs). Implement and submit sessions bring
+all three up to date; a test session, the test plan; accepting a plan starts the design.
+Every round carries them as `[NOTES]` replies first under its cover letter (`notes:
+Summary`, `Test plan`, `Design` in the tree): forge-only mail, never part of the series
+or sent. Reply to one with `r` like any review; the next round reads it. Notes a
+session rewrites after its round is posted follow as updates under them. A harvested
+upstream round carries the newest notes, marked as carried from the round they came
+from.
 A review that ends its turn without results stays open for you.
 Every round runs in the forge's one workbench; each session that builds (implement,
 submit, test) has its own checkout of it. Once a newer one's results arrive, the older

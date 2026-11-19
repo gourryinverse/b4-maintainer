@@ -1138,3 +1138,37 @@ async def test_a_collection_in_the_background_keeps_the_maintainers_place(
         assert screen._selected_msgid() == msgid  # same message,
         assert content.scroll_y == 20 and app.focused is content  # same place.
         assert 'c1: a reply on v1 r2' in screen.status_text()
+
+
+async def test_a_rounds_notes_come_first_under_its_cover_and_take_replies(
+    demo_root, tmp_path, posted, identity
+):
+    app, service = make(demo_root, tmp_path)
+    forge = service.create('Demo work', 'linux', 'mainline/master', '')
+    first = service.post_round(forge, posted[0])
+    _series, thread = service.thread(forge, first)
+    service.post_reply(forge, first, thread.cover.message.msgid, ME, 'An early comment.\n')
+    texts = {'summary': 'Added f1 and f2.\n', 'test-plan': 'Build each.\n', 'design': 'Two.\n'}
+    service._apply_notes(forge, first, texts, ('forge agent', 'agent@forge.local'), update=False)
+
+    def edit(path, cwd):
+        path.write_text(path.read_text() + '\nSay what is left for documentation.\n')
+        return True
+
+    app.edit_in_terminal = edit
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_forge(pilot)
+        labels = screen.thread_labels()
+        notes = [n for n, x in enumerate(labels) if 'notes: ' in x]
+        early = next(n for n, x in enumerate(labels) if 'Example Maintainer' in x)
+        assert len(notes) == 3 and notes == [1, 2, 3] and early > 3, labels
+        assert 'Summary' in labels[1] and 'Test plan' in labels[2] and 'Design' in labels[3]
+        screen.select_message(1)
+        await settle(pilot)
+        assert '## v1 r1' in screen.content_text()
+        await pilot.press('r')
+        await settle(pilot)
+        assert 'Reply posted' in screen.status_text()
+    _series, thread = service.thread(forge, first)
+    asked = [r for r in thread.cover.replies if 'documentation' in r.message.body]
+    assert asked and asked[0].message.subject == 'Re: [NOTES] Summary (v1 r1)'

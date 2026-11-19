@@ -176,7 +176,7 @@ def test_reviews_and_tests_land_on_the_newest_round(world, tmp_path):
     (part,) = review.patches
     assert part.msgid == thread.patches[1].message.msgid
     assert part.findings[0].locations == (('f2', 1),)
-    (report,) = thread.cover.replies
+    (report,) = [r for r in thread.cover.replies if '[NOTES]' not in r.message.subject]
     assert report.message.author_email == 'test@forge.local'
     assert 'passed' in report.message.body
     # The next test run also replies to each patch with its result.
@@ -900,3 +900,142 @@ def test_the_context_says_where_the_rounds_code_is_checked_out(world, tmp_path):
     look = service.look(forge, first, 1)
     focus = (service.write_context(forge, first) / 'focus.md').read_text()
     assert f'Its code at a patch, checked out: {look} (at patch 1/2) (read-only)' in focus
+
+
+NOTES = {
+    'notes/summary.md': 'Added f1 and f2.\nNot done: documentation.\n',
+    'notes/test-plan.md': 'Build each patch; run the f tests.\n',
+    'notes/design.md': 'Two files, one patch each.\n',
+}
+
+
+def note_subjects(thread):
+    return [r.message.subject for r in thread.cover.replies if '[NOTES]' in r.message.subject]
+
+
+def test_round_sessions_leave_notes_carried_from_round_to_round(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER, **NOTES})
+    said = service.collect(forge)
+    assert said == [f'the series on {forge.next_branch}, as v1 r1', 's1: notes on v1 r1']
+    first = Round(1, 1)
+    _series, thread = service.thread(forge, first)
+    assert len(thread.patches) == 2  # Not part of the series.
+    assert note_subjects(thread) == [
+        'Re: [NOTES] Summary (v1 r1)',
+        'Re: [NOTES] Test plan (v1 r1)',
+        'Re: [NOTES] Design (v1 r1)',
+    ]
+    replies = [r for r in thread.cover.replies if '[NOTES]' in r.message.subject]
+    assert replies[0].message.body.startswith('# Summary: Demo\n\n## v1 r1\n\nAdded f1 and f2.')
+    assert replies[0].message.author_email == 'agent@forge.local'
+
+    # The next round: only a summary entry given; the test plan and design carry over.
+    commit_series(checkout, forge, ['uno\n', 'two\n'])
+    session(
+        service,
+        forge,
+        's2',
+        'forge-rework',
+        {'cover.md': COVER, 'notes/summary.md': 'f1 says uno.\n'},
+    )
+    said = service.collect(forge)
+    assert 's2: notes on v1 r2' in said
+    summary = service.notes(forge)['summary']
+    assert summary.index('## v1 r2\n\nf1 says uno.') < summary.index('## v1 r1\n\nAdded f1')
+    _series, thread = service.thread(forge, Round(1, 2))
+    bodies = {r.message.subject: r.message.body for r in thread.cover.replies}
+    assert 'Build each patch' in bodies['Re: [NOTES] Test plan (v1 r2)']
+    folder = service.write_context(forge)
+    assert (folder / 'notes' / 'summary.md').read_text() == summary
+    assert (folder / 'notes' / 'design.md').read_text() == 'Two files, one patch each.\n'
+
+
+def test_a_round_without_notes_carries_a_placeholder_summary_entry(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER})
+    service.collect(forge)
+    assert '## v1 r1\n\n(its session left no summary)' in service.notes(forge)['summary']
+    _series, thread = service.thread(forge, Round(1, 1))
+    assert len(note_subjects(thread)) == 3
+
+
+def test_notes_written_after_the_round_update_it(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    home = session(service, forge, 's1', 'forge-implement', {'cover.md': COVER, **NOTES})
+    service.collect(forge)
+    # Asked to fix its summary, the session rewrites it: the round's notes are updated.
+    (home / 'work' / 'out' / 'forge' / 'notes' / 'summary.md').write_text('Added f1, f2.\n')
+    assert service.collect(forge) == ['s1: notes updated on v1 r1']
+    summary = service.notes(forge)['summary']
+    assert summary.count('## v1 r1') == 1 and 'Added f1, f2.' in summary
+    _series, thread = service.thread(forge, Round(1, 1))
+    assert 'Re: [NOTES] Summary (v1 r1, updated)' in note_subjects(thread)
+
+
+def test_a_test_session_brings_the_test_plan_up_to_date(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER, **NOTES})
+    service.collect(forge)
+    plan = 'Build each patch; run the f tests. Ran both: passed.\n'
+    # Its design is not its to change: only the test plan is taken.
+    session(
+        service, forge, 't1', 'forge-test', {'notes/test-plan.md': plan, 'notes/design.md': 'x\n'}
+    )
+    assert service.collect(forge) == ['t1: the test plan updated on v1 r1']
+    assert service.notes(forge)['test-plan'] == plan
+    assert service.notes(forge)['design'] == 'Two files, one patch each.\n'
+    _series, thread = service.thread(forge, Round(1, 1))
+    assert 'Re: [NOTES] Test plan (v1 r1, updated)' in note_subjects(thread)
+
+
+def test_harvesting_upstream_carries_the_notes_marked(world, tmp_path, posted):
+    import mailbox
+
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER, **NOTES})
+    service.collect(forge)
+    upstream = tmp_path / 'thread'
+    box = mailbox.Maildir(upstream, create=True)
+    for path in posted[0]:
+        box.add(path.read_bytes())
+    up = service.harvest(forge, upstream, 1, 'cover@example.org')
+    _series, thread = service.thread(forge, up)
+    assert note_subjects(thread) == [
+        'Re: [NOTES] Summary (carried from v1 r1)',
+        'Re: [NOTES] Test plan (carried from v1 r1)',
+        'Re: [NOTES] Design (carried from v1 r1)',
+    ]
+    first = next(r for r in thread.cover.replies if '[NOTES] Summary' in r.message.subject)
+    assert first.message.body.startswith(
+        "Carried from v1 r1: the forge's notes, not part of the v1 posting."
+    )
+    assert first.message.author_email == 'notes@forge.local'
+    service.harvest(forge, upstream, 1, 'cover@example.org')  # Again: not carried twice.
+    _series, thread = service.thread(forge, up)
+    assert len(note_subjects(thread)) == 3
+
+
+def test_accepting_a_plan_starts_the_running_design(world, tmp_path):
+    _project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    session(service, forge, 's1', 'forge-plan', {'design.md': 'Two patches: f1, then f2.\n'})
+    service.collect(forge)
+    assert service.notes(forge)['design'] == ''
+    service.accept_plan(forge, Round(0, 1), ME)
+    assert service.notes(forge)['design'] == 'Two patches: f1, then f2.\n'

@@ -286,3 +286,18 @@ def test_a_test_session_replies_to_each_patch_and_summarizes_on_the_cover():
     prompt = profiles['forge-test'].fields[0].choices[0].prompt
     assert 'each patch' in prompt and 'out/forge/replies/' in prompt
     assert 'In-Reply-To' in prompt and 'out/forge/test.md' in prompt
+
+
+def test_round_and_test_sessions_keep_the_forges_notes():
+    from b4_maintainer.sessions.profiles import load_profiles
+
+    builtin = pathlib.Path(__file__).parent.parent / 'src/b4_maintainer/sessions/profiles'
+    profiles = {p.id: p for p in load_profiles(builtin, None)[0]}
+
+    def prompt(pid):
+        return profiles[pid].fields[0].choices[0].prompt
+
+    for pid in ('forge-implement', 'forge-rework'):
+        assert 'out/forge/notes/' in prompt(pid) and 'summary entry' in prompt(pid)
+    assert '[NOTES]' in prompt('forge-rework')  # Replies to them are review too.
+    assert 'out/forge/notes/test-plan.md' in prompt('forge-test')

@@ -23,6 +23,6 @@ custom_label = "Notes for this session (optional)"
 id = "implement"
 label = "implement"
 default = true
-prompt = """Implement the design (design.md; the prompt when there is none) as a patch series in your tree, kernel style, one logical change per commit, each building. Leave the series on the series branch state.md names and the cover letter in out/forge/cover.md. If the forge continues an upstream posting (an upstream round in rounds/), the series branch already holds it as b4 am makes it, the list's trailers collected: work from there. Keep a trailer on a patch you do not change materially; drop it from a patch you rework substantially."""
+prompt = """Implement the design (design.md; the prompt when there is none) as a patch series in your tree, kernel style, one logical change per commit, each building. Leave the series on the series branch state.md names and the cover letter in out/forge/cover.md. If the forge continues an upstream posting (an upstream round in rounds/), the series branch already holds it as b4 am makes it, the list's trailers collected: work from there. Keep a trailer on a patch you do not change materially; drop it from a patch you rework substantially. Then bring the forge's notes up to date in out/forge/notes/ (README.md says how): a brief summary entry for this round (what was done, what was not), the test plan, and the design with the decisions and tradeoffs you made."""
 needs = "worktree"
 skills = ["kernel-style"]

@@ -41,7 +41,15 @@ from typing import Any, Callable, Optional, Sequence
 
 from .adapters.b4mbox import load_thread, parse_mbox
 from .adapters.sessiontree import LOCKED, lock_worktrees
-from .model import SEVERITIES, Finding, SashikoPatch, SashikoReview, Series, SeriesThread
+from .model import (
+    SEVERITIES,
+    Finding,
+    Reply,
+    SashikoPatch,
+    SashikoReview,
+    Series,
+    SeriesThread,
+)
 from .workbench import Entry, Workbench, WorkbenchStore
 
 MODES = ('iterate', 'aggressive')
@@ -62,6 +70,18 @@ AUTHORS = {
     'forge-test': ('forge test robot', 'test@forge.local'),
     'forge-companion': ('forge companion', 'companion@forge.local'),
 }
+
+# The forge's running notes, handed from round to round: (key, label, file). Each round
+# carries them as forge-only `Re: [NOTES] <label>` replies under its cover letter.
+NOTES = (
+    ('summary', 'Summary', 'summary.md'),
+    ('test-plan', 'Test plan', 'test-plan.md'),
+    ('design', 'Design', 'design.md'),
+)
+NOTES_AUTHOR = ('forge notes', 'notes@forge.local')  # Who carries notes forward.
+# Sessions that make a round write all the notes; a test session, the test plan.
+ROUND_MAKERS = frozenset({'forge-implement', 'forge-rework'})
+NO_SUMMARY = '(its session left no summary)'
 
 NO_GOAL = """\
 No goal written yet: ask the maintainer what the work is (the design session works it
@@ -89,6 +109,11 @@ folder is the forge's, kept current while you work:
   write there).
 - focus.md: the round (and message) the maintainer is looking at, and where its code
   is checked out, for a companion.
+- notes/: the forge's running notes, its memory from round to round: summary.md (each
+  round's entry, newest first: what was done and what was not), test-plan.md, and
+  design.md (the current design, its decisions and tradeoffs; once there, it
+  supersedes design.md above). Every round carries them as `[NOTES]` replies under its
+  cover letter, and the maintainer may reply to them: read those replies as review.
 
 Where to leave your results (in your session's out/ folder; the forge collects them):
 
@@ -107,6 +132,13 @@ Where to leave your results (in your session's out/ folder; the forge collects t
   "explanation": "...", "file": "path", "line": N, "preexisting": false}}]}}]}}.
 - out/forge/test.md: the series' test summary, posted under its cover letter (test
   sessions only; each patch's result is a reply to it).
+- out/forge/notes/: the notes brought up to date (sessions that make a round write all
+  three; a test session, the test plan):
+  - summary.md: this round's entry only, as brief as possible: a few lines on what was
+    done, and what was not (and why). The forge puts it first in the running summary.
+  - test-plan.md: the whole test plan, updated (start from notes/test-plan.md).
+  - design.md: the whole current design, updated with the decisions and tradeoffs made
+    (start from notes/design.md, or design.md when there is none).
 
 Your tree's repository is shared with the forge and other sessions, whose checkouts are
 outside your view: never run `git worktree prune` (or remove a worktree you did not make)
@@ -271,6 +303,38 @@ def _maildir_message(raw: bytes) -> mailbox.MaildirMessage:
 
 def _msgid(msg: Any) -> str:
     return str(msg.get('Message-Id', '')).strip().strip('<>')
+
+
+def _subject(msg: Any) -> str:
+    return ' '.join(str(msg.get('Subject', '')).split())
+
+
+# A round's note: `Re: [NOTES] Summary (v1 r2)`; its label is group 1.
+_NOTE = re.compile(r'^Re: \[NOTES\] (Summary|Test plan|Design)\b')
+_NOTE_ORDER = {label: n for n, (_key, label, _name) in enumerate(NOTES)}
+
+
+def note_label(subject: str) -> str:
+    """'Summary', 'Test plan', or 'Design' for one of a round's notes; else ''."""
+    matched = _NOTE.match(' '.join(subject.split()))
+    return matched[1] if matched else ''
+
+
+def _notes_first(replies: tuple[Reply, ...]) -> tuple[Reply, ...]:
+    """A post's replies with the round's notes (each with the replies beneath it) first,
+    in order; the rest as they were."""
+    groups: list[list[Reply]] = []
+    for reply in replies:
+        if reply.depth == 0 or not groups:
+            groups.append([reply])
+        else:
+            groups[-1].append(reply)
+
+    def rank(group: list[Reply]) -> int:
+        label = note_label(group[0].message.subject)
+        return _NOTE_ORDER[label] if label else len(_NOTE_ORDER)
+
+    return tuple(r for group in sorted(groups, key=rank) for r in group)
 
 
 def _git(repo: pathlib.Path, *args: str, check: bool = True) -> str:
@@ -617,7 +681,10 @@ class ForgeService:
             ]
         shutil.rmtree(self._rounds_dir(forge) / rnd.key, ignore_errors=True)
         upstream = [m.as_bytes() for m in msgs if not _msgid(m).endswith('.forge.local')]
-        return self._new_round(forge, rnd, upstream + kept, source=str(source), msgid=msgid)
+        made = self._new_round(forge, rnd, upstream + kept, source=str(source), msgid=msgid)
+        if not any(_NOTE.match(_subject(email.message_from_bytes(m))) for m in kept):
+            self._carry_notes(forge, made)
+        return made
 
     def read_mbox(self, path: pathlib.Path) -> Series:
         """The newest version of the patch series in mbox *path* (a thread saved from a
@@ -677,7 +744,14 @@ class ForgeService:
         series = found[-1]
         if rnd.kind == 'upstream':
             series = next((s for s in found if s.revision == rnd.cycle), series)
-        return series, load_thread(series)
+        thread = load_thread(series)
+        if thread.cover is not None:  # The round's notes first under its cover letter.
+            cover = replace(thread.cover, replies=_notes_first(thread.cover.replies))
+            thread = replace(thread, cover=cover)
+        elif thread.patches:  # No cover letter: under its first patch.
+            first = replace(thread.patches[0], replies=_notes_first(thread.patches[0].replies))
+            thread = replace(thread, patches=(first, *thread.patches[1:]))
+        return series, thread
 
     def _find(self, forge: Forge, msgid: str) -> Optional[Round]:
         """The round whose mail holds *msgid*."""
@@ -738,6 +812,8 @@ class ForgeService:
         msgid = str(self.round_info(forge, rnd).get('msgid', ''))
         sent = self.post_reply(forge, rnd, msgid, me, f'Acked-by: {email.utils.formataddr(me)}\n')
         _write(self.forge_dir(forge) / 'accepted', f'{rnd.key}\n')
+        if not self.notes(forge)['design'].strip():  # The running design starts from it.
+            _write(self._notes_dir(forge) / 'design.md', self.design(forge))
         return sent
 
     def accepted_plan(self, forge: Forge) -> Optional[Round]:
@@ -1085,7 +1161,11 @@ class ForgeService:
             else:
                 parts.append(f'{len(thread.patches)} patches')
             who: dict[str, int] = {}
+            notes = 0
             for reply in _all_replies(thread):
+                if _NOTE.match(' '.join(reply.message.subject.split())):
+                    notes += 1  # The forge's notes: counted apart, not as replies.
+                    continue
                 address = reply.message.author_email.lower()
                 if address.endswith('@forge.local'):
                     kind = address.split('@', 1)[0]
@@ -1094,6 +1174,8 @@ class ForgeService:
                 who[kind] = who.get(kind, 0) + 1
             if who:
                 parts.append('replies: ' + ', '.join(f'{k} {n}' for k, n in sorted(who.items())))
+            if notes:
+                parts.append(f'notes {notes}')
             review = self.review(forge, rnd, thread)
             if review is not None:
                 worst = ', '.join(
@@ -1427,8 +1509,9 @@ class ForgeService:
         except (OSError, ValueError):
             return set()
 
-    def outputs(self, forge: Forge) -> list[tuple[str, str, pathlib.Path]]:
-        """The forge's sessions, oldest first: (session, profile, its out/forge folder)."""
+    def outputs(self, forge: Forge) -> list[tuple[str, str, pathlib.Path, str]]:
+        """The forge's sessions, oldest first: (session, profile, its out/forge folder,
+        when it was made)."""
         from .sessions.records import SessionRecord
 
         found = []
@@ -1443,7 +1526,7 @@ class ForgeService:
                 continue
             out = path.parent / 'work' / 'out' / 'forge'
             found.append((record.created, record.id, record.profile_id, out))
-        return [(sid, profile, out) for _c, sid, profile, out in sorted(found)]
+        return [(sid, profile, out, created) for created, sid, profile, out in sorted(found)]
 
     def collect(self, forge: Forge) -> list[str]:
         """Turn what the forge's sessions left since the last time into mail on the local
@@ -1460,9 +1543,10 @@ class ForgeService:
         said: list[str] = []
         sources: set[str] = set()
         done = self._collected(forge)
-        for sid, profile, out in self.outputs(forge):
+        for sid, profile, out, created in self.outputs(forge):
             author = AUTHORS.get(profile, AGENT)
             taken = self._collect_one(forge, sid, author, out, done)
+            taken += self._collect_notes(forge, sid, profile, created, author, out, done)
             if taken:
                 sources.add(sid)
             said += taken
@@ -1470,6 +1554,7 @@ class ForgeService:
         series = self._collect_series(forge)
         if series:
             said.append(series)
+        said += self._settle_notes(forge, self._newest_series(forge) if series else None)
         return said, sources
 
     def _newest_series(self, forge: Forge) -> Optional[Round]:
@@ -1550,6 +1635,208 @@ class ForgeService:
         rnd = self.post_series(forge, repo, f'b4m/bench/{forge.workbench}', tip, cover)
         return f'the series on {forge.next_branch}, as {rnd.label}'
 
+    # The running notes: summary, test plan, design.
+
+    def _notes_dir(self, forge: Forge) -> pathlib.Path:
+        return self.forge_dir(forge) / 'notes'
+
+    def notes(self, forge: Forge) -> dict[str, str]:
+        """The running notes as they stand, by key ('' for one not written yet)."""
+        folder = self._notes_dir(forge)
+        return {
+            key: (folder / name).read_text() if (folder / name).is_file() else ''
+            for key, _label, name in NOTES
+        }
+
+    def _summary_with(self, forge: Forge, label: str, entry: str) -> str:
+        """The running summary with round *label*'s entry first (replacing its old one)."""
+        parts = re.split(r'(?m)^(?=## )', self.notes(forge)['summary'])
+        title = parts[0].strip() if parts and not parts[0].startswith('## ') else ''
+        older = [
+            part.strip()
+            for part in parts
+            if part.startswith('## ') and part.splitlines()[0].strip() != f'## {label}'
+        ]
+        entries = [f'## {label}\n\n{entry.strip()}', *older]
+        return f'{title or f"# Summary: {forge.label}"}\n\n' + '\n\n'.join(entries) + '\n'
+
+    def _collect_notes(
+        self,
+        forge: Forge,
+        sid: str,
+        profile: str,
+        created: str,
+        author: tuple[str, str],
+        out: pathlib.Path,
+        done: set[str],
+    ) -> list[str]:
+        """A session's notes (out/forge/notes/): a test session's test plan goes to the
+        newest round now; a round session's notes wait for its round (_settle_notes)."""
+        folder = out / 'notes'
+        if profile not in ROUND_MAKERS and profile != 'forge-test':
+            return []
+        wanted = NOTES if profile in ROUND_MAKERS else [n for n in NOTES if n[0] == 'test-plan']
+        texts: dict[str, str] = {}
+        for key, _label, name in wanted:
+            path = folder / name
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            mark = f'{sid}:notes/{name}:{stat.st_size}:{stat.st_mtime_ns}'
+            if mark in done:
+                continue
+            done.add(mark)
+            if path.read_text().strip():
+                texts[key] = path.read_text()
+        if not texts:
+            return []
+        if profile in ROUND_MAKERS:
+            pending = self._notes_dir(forge) / 'pending'
+            for key, text in texts.items():
+                _write(pending / f'{key}.md', text)
+            meta = {'session': sid, 'created': created, 'author': list(author)}
+            _write(pending / 'meta.json', json.dumps(meta))
+            return []
+        newest = self._newest_series(forge)
+        if newest is None:
+            _write(self._notes_dir(forge) / 'test-plan.md', texts['test-plan'])
+            return [f'{sid}: the test plan, kept for the first round']
+        self._apply_notes(forge, newest, texts, author, update=True)
+        return [f'{sid}: the test plan updated on {newest.label}']
+
+    def _settle_notes(self, forge: Forge, posted: Optional[Round]) -> list[str]:
+        """The round sessions' waiting notes placed: on the round *posted* just now (its
+        notes, the running ones carried where the session gave none); else, when the
+        session made the newest round already, as an update to it; else they wait."""
+        pending = self._notes_dir(forge) / 'pending'
+        texts = {
+            key: (pending / f'{key}.md').read_text()
+            for key, _label, _name in NOTES
+            if (pending / f'{key}.md').is_file()
+        }
+        try:
+            meta = json.loads((pending / 'meta.json').read_text())
+        except (OSError, ValueError):
+            meta = {}
+        given = meta.get('author')
+        author = (
+            (str(given[0]), str(given[1])) if isinstance(given, list) and len(given) == 2 else AGENT
+        )
+        sid = str(meta.get('session', ''))
+        if posted is not None:
+            self._apply_notes(forge, posted, texts, author, update=False)
+            shutil.rmtree(pending, ignore_errors=True)
+            return [f'{sid}: notes on {posted.label}'] if texts else []  # Else carried.
+        if not texts:
+            return []
+        newest = self._newest_series(forge)
+        made = str(self.round_info(forge, newest).get('posted', '')) if newest else ''
+        if newest is None or not (meta.get('created') and str(meta['created']) < made):
+            return []  # For the round the session has yet to make.
+        self._apply_notes(forge, newest, texts, author, update=True)
+        shutil.rmtree(pending, ignore_errors=True)
+        return [f'{sid}: notes updated on {newest.label}']
+
+    def _apply_notes(
+        self,
+        forge: Forge,
+        rnd: Round,
+        texts: dict[str, str],
+        author: tuple[str, str],
+        update: bool,
+    ) -> None:
+        """*texts* (by key) into the running notes, and posted in round *rnd*: a new
+        round gets all three under its cover letter (the running ones where *texts* has
+        none, the summary's entry a placeholder); an *update*, each given one under the
+        round's note it updates."""
+        folder = self._notes_dir(forge)
+        if 'summary' in texts or not update:
+            entry = texts.get('summary', NO_SUMMARY)
+            _write(folder / 'summary.md', self._summary_with(forge, rnd.label, entry))
+        for key in ('test-plan', 'design'):
+            if key in texts:
+                _write(folder / f'{key}.md', texts[key])
+        _write(folder / 'from', f'{rnd.label}\n')
+        current = self.notes(forge)
+        posted = self._round_notes(forge, rnd)
+        for key, label, _name in NOTES:
+            if update and key not in texts:
+                continue
+            parent = posted.get(label, '') if update else ''
+            suffix = f'{rnd.label}, updated' if update else rnd.label
+            self._post_note(forge, rnd, label, suffix, current[key], author, parent)
+
+    def _carry_notes(self, forge: Forge, rnd: Round) -> None:
+        """The running notes carried into upstream round *rnd*, marked: they are the
+        forge's, not part of the posting."""
+        current = self.notes(forge)
+        if not any(text.strip() for text in current.values()):
+            return
+        origin = (
+            (self._notes_dir(forge) / 'from').read_text().strip()
+            if (self._notes_dir(forge) / 'from').is_file()
+            else 'the forge'
+        )
+        mark = (
+            f"Carried from {origin}: the forge's notes, not part of the v{rnd.cycle} posting.\n\n"
+        )
+        for key, label, _name in NOTES:
+            self._post_note(
+                forge,
+                rnd,
+                label,
+                f'carried from {origin}',
+                mark + current[key],
+                NOTES_AUTHOR,
+            )
+
+    def _round_notes(self, forge: Forge, rnd: Round) -> dict[str, str]:
+        """Round *rnd*'s notes: label -> Message-ID (the first of each)."""
+        found: dict[str, tuple[str, str]] = {}
+        for msg in mailbox.Maildir(self._maildir(forge, rnd), create=False):
+            matched = _NOTE.match(_subject(msg))
+            if matched is None or not _msgid(msg).endswith('.forge.local'):
+                continue
+            when = str(msg.get('Date', ''))
+            try:
+                stamp = email.utils.parsedate_to_datetime(when).isoformat()
+            except (TypeError, ValueError):
+                stamp = when
+            label = matched[1]
+            if label not in found or stamp < found[label][0]:
+                found[label] = (stamp, _msgid(msg))
+        return {label: msgid for label, (_stamp, msgid) in found.items()}
+
+    def _post_note(
+        self,
+        forge: Forge,
+        rnd: Round,
+        label: str,
+        suffix: str,
+        text: str,
+        author: tuple[str, str],
+        parent: str = '',
+    ) -> str:
+        """One note in round *rnd*: under *parent*, else under the round's cover letter
+        (read first there: thread()); its Message-ID."""
+        series, _thread = self.thread(forge, rnd)
+        root = series.message_id
+        box = mailbox.Maildir(self._maildir(forge, rnd), create=False)
+        target = parent or root
+        msg = EmailMessage()
+        msg['From'] = email.utils.formataddr(author)
+        msg['To'] = f'{forge.id}@forge.local'
+        msg['Subject'] = f'Re: [NOTES] {label} ({suffix})'
+        msg['Date'] = email.utils.formatdate(localtime=True)
+        msgid = email.utils.make_msgid(domain=f'{forge.id}.forge.local')
+        msg['Message-Id'] = msgid
+        msg['In-Reply-To'] = f'<{target}>'
+        references = [f'<{root}>'] + ([f'<{target}>'] if target != root else [])
+        msg['References'] = ' '.join(references)
+        msg.set_content(text if text.strip() else '(none yet)\n')
+        box.add(_maildir_message(msg.as_bytes()))
+        return msgid.strip('<>')
+
     # The sessions' view.
 
     def _write_goal(self, forge: Forge, folder: pathlib.Path) -> None:
@@ -1589,6 +1876,10 @@ class ForgeService:
         (folder / 'accepted.md').write_text(
             f'Accepted: {accepted.label}\n' if accepted else 'Not accepted yet.\n'
         )
+        notes = folder / 'notes'
+        notes.mkdir(exist_ok=True)
+        for key, text in self.notes(forge).items():
+            (notes / f'{key}.md').write_text(text or '(none yet)\n')
         rounds = self.rounds(forge)
         newest: dict[str, Round] = {}
         for rnd in rounds:
