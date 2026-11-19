@@ -8,6 +8,7 @@ runner: polling reads state and never starts, stops, or resumes anything.
 
 import dataclasses
 import datetime
+import json
 import os
 import pathlib
 import shutil
@@ -24,7 +25,7 @@ from .guidance import provenance
 from .launch import LaunchChoice, Situation, Target, new_record, plan
 from .models import ModelChoice, model_choices, parse_catalog
 from .pane import LIVE
-from .pi import LaunchSpec, prepare_session
+from .pi import MAIL, LaunchSpec, prepare_session
 from .policy import ContextItem, launch_check
 from .profiles import BUILTIN_DIR, Profile, load_profiles
 from .rebase import rebase_record, rebase_request
@@ -1071,6 +1072,13 @@ class SessionHub:
 
     def artifacts(self, sid: str) -> list[str]:
         return self.store.artifacts(sid)
+
+    def mail(self, sid: str, text: str) -> None:
+        """*text* to running session *sid* as a message from the maintainer (blocking): the
+        session's extension delivers it, a turn now when idle, else after the current one."""
+        path = self.store.directory(sid) / MAIL
+        with path.open('a') as f:
+            f.write(json.dumps({'text': text}) + '\n')
 
 
 def _tree_at(record: SessionRecord, path: str) -> Optional[Worktree]:

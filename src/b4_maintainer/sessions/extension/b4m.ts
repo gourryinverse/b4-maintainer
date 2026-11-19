@@ -10,13 +10,14 @@
  * - Registers the scripted dry-run model (`b4m/dry-run`): no model or provider is called.
  *
  * - Adds `/back` and F12: return to b4-maintainer's pane, leaving the session running.
+ * - Delivers mail for the session (B4M_MAIL): each as a user message.
  *
  * The session is described by B4M_* environment variables (see sessions/pi.py); without
  * them the extension only registers the dry-run model.
  */
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, realpathSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashTool } from "@earendil-works/pi-coding-agent";
@@ -324,6 +325,52 @@ export default function (pi: ExtensionAPI) {
 			...bash,
 			execute: async (id: string, params: any, signal: any, onUpdate: any) => bash.execute(id, params, signal, onUpdate),
 		} as any);
+	}
+
+	// Mail for the session: b4-maintainer appends a JSON line ({"text": ...}) to B4M_MAIL
+	// (outside the agent's view) when the maintainer writes to it, e.g. a reply on a forge
+	// round for its companion. Each line becomes a user message: a turn now when idle,
+	// else once the current turn is over. Only lines written while it runs are delivered.
+	const mail = env.B4M_MAIL ?? "";
+	if (mail) {
+		let offset = existsSync(mail) ? statSync(mail).size : 0;
+		let partial = "";
+		const deliver = () => {
+			let size = 0;
+			try {
+				size = existsSync(mail) ? statSync(mail).size : 0;
+			} catch {
+				return;
+			}
+			if (size < offset) offset = 0; // Replaced: read it from the start.
+			if (size === offset) return;
+			let chunk = "";
+			try {
+				const fd = openSync(mail, "r");
+				const buffer = Buffer.alloc(size - offset);
+				readSync(fd, buffer, 0, buffer.length, offset);
+				closeSync(fd);
+				chunk = buffer.toString("utf8");
+			} catch {
+				return; // Tried again on the next tick.
+			}
+			offset = size;
+			const text = partial + chunk;
+			const complete = text.split("\n");
+			partial = complete.pop() ?? "";
+			for (const line of complete) {
+				let message = "";
+				try {
+					message = String(JSON.parse(line)?.text ?? "");
+				} catch {
+					continue;
+				}
+				if (message) pi.sendUserMessage(message, { deliverAs: "followUp" });
+			}
+		};
+		const timer = setInterval(deliver, 1000);
+		(timer as any).unref?.();
+		pi.on("session_shutdown", () => clearInterval(timer));
 	}
 
 	pi.on("session_start", () => record("start"));

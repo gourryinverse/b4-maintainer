@@ -133,7 +133,8 @@ def test_a_workbench_session_reads_the_space_not_copies(tmp_path):
     assert str(space / 'context') in system and 'items.md' in system
     [(_sid, spec)] = [(s, x) for s, x in zip([record.id], runner.specs)]
     command = pi_command(store, record, spec, Site(tmp_path, 'b4-maintainer'))
-    assert str(space / 'context') in command.env['B4M_READABLE'].split('\n')
+    # The whole space, its context among it: its repositories and checkouts too.
+    assert str(space) in command.env['B4M_READABLE'].split('\n')
     assert json.loads((store.directory(record.id) / 'session.json').read_text())['space']
 
 

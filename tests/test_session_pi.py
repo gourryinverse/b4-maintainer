@@ -1,5 +1,7 @@
 """Contract: a session's pi command line and files follow its record, profile, and model."""
 
+import json
+
 from sessiondata import make_record
 
 from b4_maintainer.sessions.pi import EXTENSION, LaunchSpec, Site, pi_command, prepare_session
@@ -83,6 +85,7 @@ def test_the_extension_learns_the_session_through_its_environment(tmp_path):
         'B4M_HOOK': '/opt/b4m/bin/b4-maintainer',
         'B4M_PERMISSIONS': 'execute',
         'B4M_EVENTS': str(directory / 'events.jsonl'),
+        'B4M_MAIL': str(directory / 'mail.jsonl'),  # Mail from the maintainer, delivered.
         'B4M_OUT': str(directory / 'work' / 'out'),
         'B4M_WORKTREE': wt.path,
         # What pi's read and search tools may open, one per line.
@@ -217,3 +220,20 @@ def test_a_tree_without_the_series_tells_the_agent_to_apply_it_first(tmp_path):
     assert 'git am --continue' in system and 'kind = "analysis"' in system
     assert 'never skip' in system
     assert 'its last patch' not in system  # There is none yet.
+
+
+def test_a_read_only_session_in_a_workbench_space_reads_the_whole_space(tmp_path):
+    """Its repositories and the checkouts the workbench already has (a forge companion
+    reads the round's code there), read-only: only worktree sessions write in repos/."""
+    space = tmp_path / 'var' / 'workbenches' / 'w1'
+    record = make_record('s1', permissions='read-only').replace(space=str(space))
+    from b4_maintainer.sessions.sandbox import policy_for
+
+    store, cmd = command(tmp_path, record)
+    assert str(space) in cmd.env['B4M_READABLE'].split('\n')
+    launch = {'argv': cmd.argv, 'resume': cmd.argv, 'cwd': cmd.cwd, 'env': cmd.env}
+    store.directory('s1').mkdir(parents=True, exist_ok=True)
+    (store.directory('s1') / 'launch.json').write_text(json.dumps(launch))
+    policy = policy_for(store, 's1')
+    assert str(space) in policy.readable
+    assert not any(w.startswith(str(space)) for w in policy.writable)

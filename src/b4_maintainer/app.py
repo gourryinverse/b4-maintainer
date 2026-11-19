@@ -3743,6 +3743,20 @@ class MaintainerApp(App[None]):
         views.sort(key=lambda v: v.record.created, reverse=True)
         return [(v.record.id, _bench_session_label(v)) for v in views]
 
+    def bench_companions(self, workbench: str) -> list[str]:
+        """The workbench's live forge companions, from the last poll (no reading)."""
+        return [
+            v.record.id
+            for v in self._overview.sessions
+            if v.record.workbench == workbench and v.record.profile_id == 'forge-companion'
+        ]
+
+    def mail_session(self, sid: str, text: str) -> None:
+        """*text* to running session *sid* (blocking: call from a worker)."""
+        hub = self._sessions
+        if hub is not None:
+            hub.mail(sid, text)
+
     def open_bench_session(self, sid: str) -> None:
         """Enter on a workbench session: beside the app, focused; outside tmux, its window."""
         hub = self._sessions

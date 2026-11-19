@@ -60,6 +60,7 @@ AUTHORS = {
     'forge-kernel-style': ('kernel-style', 'kernel-style@forge.local'),
     'forge-sashiko': ('Sashiko', 'sashiko@forge.local'),
     'forge-test': ('forge test robot', 'test@forge.local'),
+    'forge-companion': ('forge companion', 'companion@forge.local'),
 }
 
 NO_GOAL = """\
@@ -84,8 +85,10 @@ folder is the forge's, kept current while you work:
   patch and comment below the quoted lines.
 - state.md: which round is newest, its series branch, and the base. After an upstream
   round the series branch starts at that posting as b4 am makes it (the list's
-  trailers collected).
-- focus.md: the round (and message) the maintainer is looking at, for a companion.
+  trailers collected). It lists the checkouts the forge already has (read them; never
+  write there).
+- focus.md: the round (and message) the maintainer is looking at, and where its code
+  is checked out, for a companion.
 
 Where to leave your results (in your session's out/ folder; the forge collects them):
 
@@ -1592,6 +1595,7 @@ class ForgeService:
             newest[rnd.kind] = rnd
         for rnd in {*newest.values(), *([focus] if focus is not None else [])}:
             write_thread(self._maildir(forge, rnd), threads / f'{rnd.key}.mbx')
+        trees = self.checkouts(forge)
         if focus is not None:
             info = self.round_info(forge, focus)
             lines = [f'Round: {focus.label} (rounds/{focus.key}.mbx)']
@@ -1599,6 +1603,7 @@ class ForgeService:
                 lines.append(
                     f'Its series: branch {info["branch"]} (snapshot {info.get("tip", "")})'
                 )
+            lines += self._focus_code(forge, info, trees)
             if msgid:
                 lines.append(f'The maintainer is on message <{msgid}>')
             (folder / 'focus.md').write_text('\n'.join(lines) + '\n')
@@ -1621,8 +1626,71 @@ class ForgeService:
                     f'{forge.next_branch} starts at {up.label} as b4 am makes it '
                     "(the list's trailers collected)"
                 )
+        if trees:
+            tips = {}
+            for r in rounds:
+                info = self.round_info(forge, r)
+                for end in (info.get('source', ''), info.get('tip', '')):
+                    tips[str(end)] = r.label
+            state.append(f'Checkouts of {self.space_repo(forge)} (read them; never write there):')
+            for path, head, branch in trees:
+                held = f', {tips[head]}' if head in tips else ''
+                state.append(f'- {path}: {branch or "detached"} at {head[:12]}{held}')
         (folder / 'state.md').write_text('\n'.join(state) + '\n')
         return folder
+
+    def checkouts(self, forge: Forge) -> list[tuple[str, str, str]]:
+        """The checkouts of the forge's space repository that exist (blocking): (path,
+        HEAD, branch or ''); not the forge's own prep checkout (sparse, b4's)."""
+        repo = self.space_repo(forge)
+        if not repo.is_dir():
+            return []
+        prep = str(self.forge_dir(forge) / 'tree')
+        found: list[tuple[str, str, str]] = []
+        path = head = branch = ''
+        listed = _git(repo, 'worktree', 'list', '--porcelain', check=False)
+        for line in [*listed.splitlines(), '']:
+            if line.startswith('worktree '):
+                path, head, branch = line[len('worktree ') :], '', ''
+            elif line.startswith('HEAD '):
+                head = line[len('HEAD ') :]
+            elif line.startswith('branch '):
+                branch = line[len('branch ') :].removeprefix('refs/heads/')
+            elif not line and path:
+                if head and path != prep and pathlib.Path(path).is_dir():
+                    found.append((path, head, branch))
+                path = ''
+        return found
+
+    def _focus_code(
+        self, forge: Forge, info: dict[str, Any], trees: Sequence[tuple[str, str, str]]
+    ) -> list[str]:
+        """Where the focused round's code is to read: a checkout at its tip, else one at
+        one of its patches, else its commits in the repository."""
+        tip, fork = str(info.get('tip', '')), str(info.get('fork', ''))
+        if not tip:
+            return []
+        repo = self.space_repo(forge)
+        # The snapshot, or the session branch it was made from (without b4's cover commit).
+        ends = {tip, str(info.get('source', ''))}
+        at_tip = [path for path, head, _branch in trees if head in ends]
+        if at_tip:
+            return [f'Its code, checked out: {at_tip[0]} (read-only)']
+        shas = []
+        if fork:  # Its patches, after b4's cover commit (numbered as v o numbers them).
+            listed = _git(repo, 'rev-list', '--reverse', f'{fork}..{tip}', check=False)
+            shas = listed.split()[1:]
+        within = [
+            f'{path} (at patch {shas.index(head) + 1}/{len(shas)})'
+            for path, head, _branch in trees
+            if head in shas
+        ]
+        lines = [f'Its code at a patch, checked out: {within[0]} (read-only)'] if within else []
+        lines.append(
+            f'Any of its files at its tip, without a checkout: git -C {repo} show {tip[:12]}:<path>'
+            f' (git -C {repo} grep <pattern> {tip[:12]} searches it)'
+        )
+        return lines
 
     # Fold.
 

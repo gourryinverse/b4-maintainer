@@ -854,3 +854,49 @@ def test_the_progress_reads_sashikos_own_lines():
         '      [Patch 3] c | Reviewing...\n'
     )
     assert sashiko_progress(log) == '2/3'
+
+
+def test_a_companions_answer_is_its_own_reply_on_the_thread(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    _repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER})
+    service.collect(forge)
+    first = Round(1, 1)
+    _series, thread = service.thread(forge, first)
+    asked = service.post_reply(forge, first, thread.patches[1].message.msgid, ME, 'Why f2?\n')
+    answer = f'In-Reply-To: <{asked}>\n\n> Why f2?\n\nIt builds on f1.\n'
+    session(service, forge, 'c1', 'forge-companion', {'replies/1.txt': answer})
+    assert service.collect(forge) == ['c1: a reply on v1 r1']
+    _series, thread = service.thread(forge, first)
+    (theirs,) = [r for r in thread.patches[1].replies if 'It builds on f1.' in r.message.body]
+    assert theirs.message.author_email == 'companion@forge.local'
+
+
+def test_the_context_says_where_the_rounds_code_is_checked_out(world, tmp_path):
+    project, service = world
+    forge = service.create('Demo', 'linux', 'main', '')
+    repo, checkout = make_space(service, forge, project, tmp_path)
+    commit_series(checkout, forge, ['one\n', 'two\n'])
+    session(service, forge, 's1', 'forge-implement', {'cover.md': COVER})
+    service.collect(forge)
+    first = Round(1, 1)
+    tip = service.round_info(forge, first)['tip']
+    folder = service.write_context(forge, first)
+    focus = (folder / 'focus.md').read_text()
+    assert f'Its code, checked out: {checkout} (read-only)' in focus  # Its tree is at the tip.
+    state = (folder / 'state.md').read_text()
+    source = service.round_info(forge, first)['source']
+    assert f'- {checkout}: b4m/session/s1 at {source[:12]}, v1 r1' in state
+    assert 'never write there' in state
+
+    # The tree moved on (the next round's work): the round is read from the repository,
+    # or from a checkout at one of its patches.
+    git('reset', '-q', '--hard', 'main', cwd=checkout)
+    focus = (service.write_context(forge, first) / 'focus.md').read_text()
+    assert 'checked out' not in focus
+    assert f'git -C {repo} show {tip[:12]}:<path>' in focus
+    look = service.look(forge, first, 1)
+    focus = (service.write_context(forge, first) / 'focus.md').read_text()
+    assert f'Its code at a patch, checked out: {look} (at patch 1/2) (read-only)' in focus

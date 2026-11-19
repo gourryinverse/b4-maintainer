@@ -24,6 +24,9 @@ EXTENSION = pathlib.Path(__file__).parent / 'extension' / 'b4m.ts'
 # The agent's own directory (its working directory in lightweight sessions): context/ and
 # out/, apart from the session's internals (record, events, launch, pi's transcript).
 WORK = 'work'
+# Mail for a running session (one JSON line each), beside its internals: the extension
+# delivers each as a user message.
+MAIL = 'mail.jsonl'
 # Every session writes its artifacts under out/; the extension and the sandbox decide
 # where writes go (out/ only, or also the worktree for execute).
 TOOLS = ('read', 'grep', 'find', 'ls', 'bash', 'edit', 'write')
@@ -104,7 +107,9 @@ def pi_command(
     projects = dict.fromkeys([record.project, *(p for p, _tree in session_trees(record))])
     readable = [str(work), worktree, *(site.checkouts.get(p, '') for p in projects)]
     readable += [path for _project, path in record.reads]
-    readable += [str(pathlib.Path(record.space) / 'context')] if record.space else []
+    # Its workbench's space, read-only: the shared repositories (every branch and round)
+    # and the checkouts the workbench already has (its other sessions' trees, look/).
+    readable += [record.space] if record.space else []
     readable += [str(s) for s in spec.skills] + [str(r) for r in spec.readable]
     env = {
         'B4M_SESSION': record.id,
@@ -112,6 +117,7 @@ def pi_command(
         'B4M_HOOK': site.hook,
         'B4M_PERMISSIONS': record.permissions,
         'B4M_EVENTS': str(directory / EVENTS),
+        'B4M_MAIL': str(directory / MAIL),
         'B4M_OUT': str(work / 'out'),
         'B4M_WORKTREE': worktree,
         # A space checkout commits into its space's repositories (shared by the workbench).
@@ -133,7 +139,9 @@ SPACE_TEXT = (
     'under mail/ and each file under files/. It is live: when the maintainer adds, moves, '
     'or removes items while you work, it changes, changes.md says what changed and when, '
     'and a note arrives in your inbox. Look there for anything the maintainer refers to '
-    'that your own context does not have.'
+    'that your own context does not have. The rest of the space ({space}) is readable '
+    'too: repos/ holds its repositories (every branch and commit the workbench has, for '
+    "read-only git), and its checkouts (other sessions' trees, look/) may be read."
 )
 SANDBOXED_TEXT = (
     "Shell commands run in a sandbox without network that sees only this session's "
@@ -221,7 +229,9 @@ def system_prompt(
         f'Permissions: {permissions}.',
     ]
     if record.space:
-        facts.append(SPACE_TEXT.format(context=pathlib.Path(record.space) / 'context'))
+        facts.append(
+            SPACE_TEXT.format(context=pathlib.Path(record.space) / 'context', space=record.space)
+        )
     if record.reads:
         facts.append(
             'Project checkouts to read (read-only; never write in them): '

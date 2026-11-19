@@ -284,3 +284,42 @@ def test_a_guidance_repository_is_readable_and_nothing_beside_it(tmp_path, home)
     _events, transcript, _stdout = run(tmp_path, steps, readable=(guidance,))
     assert 'the review protocol' in transcript
     assert 'not for sessions' not in transcript and 'outside the session' in transcript
+
+
+def test_mail_for_an_idle_session_starts_a_turn_with_it(tmp_path, home):
+    import uuid
+
+    from b4_maintainer.sessions.hub import SessionHub
+    from b4_maintainer.sessions.tmuxrunner import TmuxRunner
+
+    socket = f'b4m-test-{uuid.uuid4().hex[:8]}'
+    base = ['tmux', '-L', socket, '-f', '/dev/null']
+    subprocess.run([*base, 'new-session', '-d', '-x', '200', '-y', '50'], check=True)
+    try:
+        store = SessionStore(tmp_path / 'var' / 'sessions')
+        record = make_record('m1', model=DRY_RUN_MODEL)
+        store.create(record)
+        prepare_session(store, record, REQUEST, source='')
+        site = Site(tmp_path, HOOK, PI, args=('--offline',))
+        runner = TmuxRunner(store, site, socket=socket, environ={'TMUX_PANE': '%0'})
+        runner.launch(record, LaunchSpec(REQUEST))
+        log = store.directory('m1') / 'events.jsonl'
+
+        def waits():
+            return log.read_text().count('"event":"waiting"') if log.exists() else 0
+
+        deadline = time.monotonic() + 60
+        while waits() < 1 and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert waits() == 1, log.read_text() if log.exists() else ''
+        hub = SessionHub(store, runner, None)
+        hub.mail('m1', 'The maintainer wrote on v1 r2: message <q@example.org>.')
+        deadline = time.monotonic() + 30
+        while waits() < 2 and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert waits() == 2, log.read_text()  # A turn ran, and the session waits again.
+        transcript = ''.join(p.read_text() for p in (store.directory('m1') / 'pi').rglob('*.jsonl'))
+        assert 'You said: The maintainer wrote on v1 r2: message <q@example.org>.' in transcript
+        runner.stop(record)
+    finally:
+        subprocess.run([*base, 'kill-server'], capture_output=True)

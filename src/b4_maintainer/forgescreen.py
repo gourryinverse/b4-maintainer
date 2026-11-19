@@ -48,6 +48,15 @@ REVIEWS = (
 )
 
 
+def companion_mail(rnd: Round, msgid: str) -> str:
+    """What a companion is told when the maintainer replies on the forge."""
+    return (
+        f"The maintainer wrote on {rnd.label}: message <{msgid}> in the forge's "
+        f'rounds/{rnd.key}.mbx (focus.md is on it). Answer it as a reply in '
+        'out/forge/replies/ (a new file, In-Reply-To that Message-ID), then end your turn.'
+    )
+
+
 def forge_label(forge: Forge, rounds: list[Round]) -> str:
     newest = rounds[-1].label if rounds else 'nothing posted'
     return f'{forge.label} · {forge.project} on {forge.base or "(no base)"} · {newest}'
@@ -907,16 +916,26 @@ class ForgeScreen(Screen[None]):
                 self._status('Nothing written: no reply posted')
                 return
 
+            listed = getattr(self.app, 'bench_companions', None)
+            mailer = getattr(self.app, 'mail_session', None)
+            companions = listed(forge.workbench) if listed is not None and mailer else []
+
             def post() -> str:
                 # b4's own trimming of a hand-edited reply (its scaffolding and trailing
                 # quote); no signature on the local list.
                 from b4.review import _trim_quoted_reply
 
                 me = self._me(forge)
-                return service.post_reply(forge, rnd, msgid, me, _trim_quoted_reply(text))
+                sent = service.post_reply(forge, rnd, msgid, me, _trim_quoted_reply(text))
+                if companions:  # The thread as it is now, then word to each companion.
+                    service.write_context(forge, rnd, sent)
+                    for sid in companions:
+                        mailer(sid, companion_mail(rnd, sent))
+                return sent
 
             def posted(_sent: str) -> None:
-                self._reopen(rnd.key, f'Reply posted to {rnd.label}')
+                told = f'; {len(companions)} companion(s) answer it' if companions else ''
+                self._reopen(rnd.key, f'Reply posted to {rnd.label}{told}')
 
             self._work(post, posted, 'forge-reply')
 
@@ -991,8 +1010,9 @@ class ForgeScreen(Screen[None]):
         )
 
     def _companion(self) -> None:
-        """s c: a short-lived, read-only companion beside the app, on the round (and
-        message) selected: ask it questions while reviewing."""
+        """s c: a read-only companion beside the app, on the round (and message) selected:
+        each reply posted on the forge (r) reaches it, and it answers on the thread; or ask
+        it in its pane."""
         self.action_launch('forge-companion', focus=True)
 
     def action_launch(self, profile: str, focus: bool = False) -> None:

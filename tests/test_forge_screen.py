@@ -1051,3 +1051,52 @@ async def test_s_o_reopens_a_running_session_of_the_forge(demo_root, tmp_path):
         await pilot.press('down', 'enter')
         await settle(pilot)
         assert runner.beside == 's2'  # Beside the app again.
+
+
+async def test_a_reply_reaches_the_forges_companions_with_the_thread_refreshed(
+    demo_root, tmp_path, posted, identity
+):
+    import json
+
+    from sessiondata import make_record
+
+    app, service, runner = make_live(demo_root, tmp_path)
+    forge = reviewed(service, posted)
+    other = service.create('Other', 'linux', 'HEAD', '')
+    for sid, profile, bench in (
+        ('c1', 'forge-companion', forge.workbench),
+        ('i1', 'forge-implement', forge.workbench),  # Not a companion: told nothing.
+        ('c2', 'forge-companion', other.workbench),  # Another forge's.
+    ):
+        runner.add(make_record(sid, scope='workbench', profile_id=profile, workbench=bench))
+
+    def edit(path, cwd):
+        lines = path.read_text().splitlines()
+        path.write_text('\n'.join([*lines[:3], '', 'Why does f2 come second?', *lines[3:]]))
+        return True
+
+    app.edit_in_terminal = edit
+    async with app.run_test(size=(180, 40)) as pilot:
+        screen = await open_tab(pilot)
+        app.poll_sessions()
+        await settle(pilot)
+        screen.select_forge(forge.label)
+        await pilot.press('enter')
+        await settle(pilot)
+        labels = screen.thread_labels()
+        screen.select_message(next(n for n, x in enumerate(labels) if 'add f2' in x))
+        await settle(pilot)
+        await pilot.press('r')
+        await settle(pilot)
+        assert '1 companion(s) answer it' in screen.status_text()
+    rnd = service.rounds(forge)[-1]
+    _series, thread = service.thread(forge, rnd)
+    (reply,) = thread.patches[1].replies
+    mail = app._sessions.store.directory('c1') / 'mail.jsonl'
+    [told] = [json.loads(line)['text'] for line in mail.read_text().splitlines()]
+    assert f'<{reply.message.msgid}>' in told and f'rounds/{rnd.key}.mbx' in told
+    for sid in ('i1', 'c2'):
+        assert not (app._sessions.store.directory(sid) / 'mail.jsonl').exists()
+    folder = service.space(forge) / 'context' / 'forge'
+    assert 'Why does f2 come second?' in (folder / 'rounds' / f'{rnd.key}.mbx').read_text()
+    assert reply.message.msgid in (folder / 'focus.md').read_text()
